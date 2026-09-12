@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       code:
-        description: "인가 코드 (주소창 code= 값. #_ 는 자동 제거됨)"
+        description: "리디렉션된 전체 URL을 그대로 붙여넣으십시오 (code 값만 넣어도 됨)"
         required: true
         type: string
       redirect_uri:
