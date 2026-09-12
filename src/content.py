@@ -1,0 +1,154 @@
+"""무상태 콘텐츠 선택.
+
+DB를 쓰지 않으므로 순번 컬럼 대신 날짜 결정론으로 로테이션한다.
+같은 날 재실행하면 같은 결과가 나오므로 멱등하다.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+
+from . import config
+
+
+class PostKind(str, Enum):
+    PROMO = "promo"
+    OBSERVATION = "observation"
+
+
+class ContentPolicyError(ValueError):
+    """금칙어 또는 길이 위반."""
+
+
+# ---------------------------------------------------------------------------
+# 텍스트 풀
+#  - 시장 수치는 넣지 않는다. 데이터 소스가 없는 상태에서 숫자를 쓰면 허위가 된다.
+#  - 종목/목표가/매매권유 표현을 넣지 않는다.
+#  - 방송형 문장 대신 대화의 첫 문장이 되도록 질문으로 닫는다.
+# ---------------------------------------------------------------------------
+
+PROMO_TEXTS: tuple[str, ...] = (
+    "매일 미국 시장을 히어로 배틀 서사로 바꿔서 기록하고 있습니다.\n"
+    "숫자만 보면 안 남는데, 캐릭터로 보면 이상하게 기억에 남더군요.\n"
+    "같은 방식으로 시장 보시는 분 계신가요?",
+
+    "시장 데이터를 캐릭터 대결로 옮기는 작업을 계속하고 있습니다.\n"
+    "쓰다 보니 지표보다 서사가 먼저 기억에 남습니다.\n"
+    "여러분은 시장을 어떤 방식으로 기록하시나요?",
+
+    "장이 흔들린 날의 기록을 만화로 남기고 있습니다.\n"
+    "차트는 지나가면 잊히는데 장면은 남습니다.\n"
+    "기록 방식에 대한 의견 있으시면 듣고 싶습니다.",
+)
+
+OBSERVATION_TEXTS: tuple[str, ...] = (
+    "지표가 전부 같은 방향을 가리키는 날이 제일 불안합니다.\n"
+    "다들 편할 때가 오히려 이상하더군요.\n"
+    "이런 날 뭘 먼저 확인하시나요?",
+
+    "같은 데이터를 봐도 사람마다 다른 결론이 나옵니다.\n"
+    "결론이 갈리는 지점은 대개 데이터가 아니라 전제였습니다.\n"
+    "본인 전제를 어떻게 점검하시는지 궁금합니다.",
+
+    "자동화를 붙일수록 판단이 편해질 줄 알았는데 반대였습니다.\n"
+    "볼 게 늘어나니 뭘 안 볼지가 더 어려워졌습니다.\n"
+    "정보량 줄이는 본인만의 기준이 있으신가요?",
+
+    "장 끝나고 그날 판단을 다시 읽어보면 절반은 민망합니다.\n"
+    "그래도 안 적어두면 같은 실수를 반복하더군요.\n"
+    "기록 남기시는 분들은 어떤 형식으로 쓰시나요?",
+
+    "숫자보다 그날의 분위기가 먼저 기억나는 날이 있습니다.\n"
+    "그게 기억에는 좋은데 판단에는 나쁩니다.\n"
+    "분위기와 데이터를 어떻게 분리하시나요?",
+
+    "시장이 조용한 날에 뭘 해야 할지가 제일 어렵습니다.\n"
+    "아무것도 안 하는 게 정답인 날이 분명히 있는데 그게 잘 안 됩니다.\n"
+    "쉬는 날을 어떻게 정하시나요?",
+)
+
+
+@dataclass(frozen=True)
+class PostPlan:
+    kind: PostKind
+    text: str
+    image_url: str
+    reply_text: str
+
+
+def _day_index(today: dt.date) -> int:
+    return today.timetuple().tm_yday
+
+
+def pick_kind(today: dt.date) -> PostKind:
+    """홍보형 1 : 관찰형 3 비율을 상태 없이 강제한다."""
+    if _day_index(today) % config.PROMO_CYCLE == 0:
+        return PostKind.PROMO
+    return PostKind.OBSERVATION
+
+
+def pick_text(kind: PostKind, today: dt.date) -> str:
+    pool = PROMO_TEXTS if kind is PostKind.PROMO else OBSERVATION_TEXTS
+    return pool[_day_index(today) % len(pool)]
+
+
+def list_asset_names(assets_dir: Path) -> list[str]:
+    names = sorted(
+        p.name
+        for p in assets_dir.iterdir()
+        if p.suffix.lower() in (".png", ".jpg", ".jpeg")
+    )
+    if not names:
+        raise FileNotFoundError(f"이미지 자산이 없습니다: {assets_dir}")
+    return names
+
+
+def build_image_url(raw_base_url: str, asset_name: str) -> str:
+    """레포의 raw URL을 그대로 쓴다. 별도 스토리지 비용 0원."""
+    return f"{raw_base_url.rstrip('/')}/{asset_name}"
+
+
+def build_reply_text() -> str:
+    """링크는 본문이 아니라 셀프 리플라이에 배치한다."""
+    return (
+        "매일 올리는 곳입니다.\n"
+        f"YouTube: {config.YOUTUBE_URL}\n"
+        f"X: {config.X_URL}"
+    )
+
+
+def lint(text: str) -> None:
+    """발행 직전 정책 검사. 위반 시 발행하지 않는다."""
+    if len(text) > config.TEXT_MAX_LEN:
+        raise ContentPolicyError(
+            f"본문 {len(text)}자 — 상한 {config.TEXT_MAX_LEN}자 초과"
+        )
+
+    hit_advice = [t for t in config.FORBIDDEN_ADVICE_TERMS if t in text]
+    if hit_advice:
+        raise ContentPolicyError(f"투자조언성 금칙어 검출: {hit_advice}")
+
+    hit_bait = [t for t in config.FORBIDDEN_BAIT_TERMS if t in text]
+    if hit_bait:
+        raise ContentPolicyError(f"인게이지먼트 베이트 표현 검출: {hit_bait}")
+
+
+def build_plan(today: dt.date, assets_dir: Path, raw_base_url: str) -> PostPlan:
+    kind = pick_kind(today)
+    text = pick_text(kind, today)
+    assets = list_asset_names(assets_dir)
+    asset = assets[_day_index(today) % len(assets)]
+    reply_text = build_reply_text()
+
+    lint(text)
+    lint(reply_text)
+
+    return PostPlan(
+        kind=kind,
+        text=text,
+        image_url=build_image_url(raw_base_url, asset),
+        reply_text=reply_text,
+    )
