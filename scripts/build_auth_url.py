@@ -63,10 +63,26 @@ def main() -> int:
     parser.add_argument("--redirect-uri", required=True, help="앱 Settings에 등록한 값과 완전 동일")
     parser.add_argument("--with-replies", action="store_true")
     parser.add_argument("--with-insights", action="store_true")
+    parser.add_argument(
+        "--basic-only",
+        action="store_true",
+        help="threads_basic 만 요청. scope 문제와 redirect_uri 문제를 분리하는 격리 테스트용",
+    )
     args = parser.parse_args()
 
     app_id = args.app_id.strip()
     redirect_uri = args.redirect_uri.strip()
+
+    if not app_id:
+        print("[중단] app-id 가 비어 있습니다.", file=sys.stderr)
+        print("       THREADS_APP_ID Secret 이 등록되어 있는지 확인하십시오.", file=sys.stderr)
+        print("       client_id 없이 인가하면 error_code 4476002 가 발생합니다.", file=sys.stderr)
+        return 1
+
+    if app_id.startswith("<") or app_id.endswith(">"):
+        print(f"[중단] app-id 에 꺾쇠가 남아 있습니다: {app_id!r}", file=sys.stderr)
+        print("       플레이스홀더를 실제 값으로 교체하십시오.", file=sys.stderr)
+        return 1
 
     if not app_id.isdigit():
         print(f"[경고] app-id가 숫자가 아닙니다: {app_id!r}", file=sys.stderr)
@@ -76,6 +92,20 @@ def main() -> int:
     for problem in validate_redirect_uri(redirect_uri):
         print(f"[경고] redirect-uri: {problem}", file=sys.stderr)
 
+    if args.basic_only:
+        scopes = ["threads_basic"]
+        print("[격리모드] threads_basic 만 요청합니다. 성공하면 원인은 scope 미등록입니다.",
+              file=sys.stderr)
+        url = build(app_id, redirect_uri, scopes)
+        print("\n===== 격리 테스트 URL (한 줄 복사) =====\n")
+        print(url)
+        print(f"\n[검증] client_id 포함 여부: "
+              f"{'OK' if 'client_id=' in url and app_id in url else 'FAIL'}")
+        print("\n결과 해석")
+        print("  인가 화면이 뜬다  -> 원인은 scope. 콘솔 Permissions 탭에서 누락 scope 추가")
+        print("  동일 오류가 난다  -> 원인은 redirect_uri. 콘솔 등록·저장 상태 재확인\n")
+        return 0
+
     scopes = list(SCOPE_BASE)
     if args.with_replies:
         scopes += SCOPE_REPLIES
@@ -84,8 +114,11 @@ def main() -> int:
 
     url = build(app_id, redirect_uri, scopes)
 
-    print("\n===== STEP 1. 아래 URL을 브라우저 주소창에 붙여넣으십시오 =====\n")
+    print("\n===== STEP 1. 아래 URL 한 줄을 그대로 복사해 주소창에 붙여넣으십시오 =====")
+    print("       (줄바꿈이 섞이면 client_id 가 전송되지 않아 4476002 오류가 납니다)\n")
     print(url)
+    print(f"\n[검증] URL 길이 {len(url)}자 · client_id 포함 여부: "
+          f"{'OK' if 'client_id=' in url and app_id in url else 'FAIL'}")
     print("\n===== 승인 요청 scope =====")
     for s in scopes:
         print(f"  - {s}")
