@@ -6,18 +6,29 @@
 
 # ---------------------------------------------------------------------------
 # 유입 대상 링크 (지시사항: 상수화)
+#
+# 값은 GitHub Variables 로 주입한다. 코드를 편집하지 않으므로 문법 오류가
+# 발생할 수 없다. 등록 위치:
+#   레포 > Settings > Secrets and variables > Actions > Variables 탭
+#     YOUTUBE_URL, X_URL   (비밀값이 아니므로 Secrets 가 아니라 Variables)
 # ---------------------------------------------------------------------------
-# TODO(마스터 확인 필요): YouTube 채널 핸들을 실제 값으로 교체할 것.
-#   추측 입력 금지. 미교체 상태로 실행하면 main.py가 시작 시점에 중단한다.
-YOUTUBE_URL = "https://www.youtube.com/@tiger18272-y"
+import os
 
-X_URL = "https://x.com/tiger18272"
+YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "").strip()
+X_URL = os.environ.get("X_URL", "").strip()
 
 # OAuth 리디렉션 착지 페이지 (docs/index.html -> GitHub Pages)
-# Meta 콘솔 Client OAuth Settings 에 이 값과 완전히 동일하게 등록해야 한다.
 REDIRECT_URI = "https://ryuryan091-spec.github.io/threads-promo/"
 
-YOUTUBE_URL_PLACEHOLDER = "@REPLACE_ME"
+# ---------------------------------------------------------------------------
+# Claude (본문 생성)
+#   API 키는 Secret CLAUDE_AI_KEY 로 주입한다.
+#   생성 실패 시 정적 텍스트 풀로 자동 폴백하므로 발행이 멈추지 않는다.
+# ---------------------------------------------------------------------------
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5").strip()
+AI_ENABLED = os.environ.get("AI_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+AI_MAX_RETRY = 2          # 린트 실패 시 재생성 횟수
+RECENT_POSTS_FOR_DEDUP = 8  # 중복 회피용으로 프롬프트에 넣을 최근 글 수
 
 # ---------------------------------------------------------------------------
 # Threads API
@@ -33,6 +44,28 @@ IMAGE_MAX_WIDTH = 1440
 IMAGE_MAX_ASPECT_RATIO = 10.0
 DAILY_POST_QUOTA = 250
 DAILY_REPLY_QUOTA = 1000
+
+# ---------------------------------------------------------------------------
+# 답글 엔진 (Reply Engine)
+#   X Reply Engine 운영 결정사항 이식: 내 글 댓글만, 좋아요 미사용,
+#   외국어는 무응답이 아니라 한국어 정형 문구, 선택형은 중립 감사만.
+# ---------------------------------------------------------------------------
+REPLY_ENABLED = os.environ.get("REPLY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+REPLY_MAX_LEN = 200                 # 답글 본문 상한
+REPLY_DAILY_CAP = 20                # 자체 일일 답글 상한 (API 한도 1000과 별개)
+REPLY_AUTHOR_DAILY_CAP = 2          # 같은 사람에게 하루 최대 답글 수
+REPLY_SCAN_POSTS = 5                # 최근 내 글 몇 개까지 훑을지
+REPLY_SCAN_LIMIT = 25               # 글당 조회할 댓글 수
+
+# ---------------------------------------------------------------------------
+# 안티봇
+#   동일 일정·동일 문구 금지. 고정 sleep 금지. 일일 상한 필수.
+#   슬롯 방식: 여러 cron 중 하루 하나만 실제 실행 -> 시각 분산 + Actions 분 절약
+# ---------------------------------------------------------------------------
+ANTIBOT_PUBLISH_JITTER = (60, 480)   # 발행 전 1~8분
+ANTIBOT_REPLY_JITTER = (20, 150)     # 답글 사이 20초~2.5분
+ANTIBOT_SLOT_SALT_PUBLISH = "publish"
+ANTIBOT_SLOT_SALT_REPLY = "reply"
 
 MEDIA_TYPE_IMAGE = "IMAGE"
 MEDIA_TYPE_TEXT = "TEXT"

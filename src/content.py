@@ -7,14 +7,17 @@ DB를 쓰지 않으므로 순번 컬럼 대신 날짜 결정론으로 로테이�
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
-from . import config
+from . import ai_writer, config
+
+_log = logging.getLogger(__name__)
 
 
-class PostKind(str, Enum):
+class PostKind(StrEnum):
     PROMO = "promo"
     OBSERVATION = "observation"
 
@@ -77,6 +80,9 @@ class PostPlan:
     text: str
     image_url: str
     reply_text: str
+    pillar: str = ""
+    seed: str = ""
+    source: str = "static"   # "ai" | "static"
 
 
 def _day_index(today: dt.date) -> int:
@@ -136,14 +142,69 @@ def lint(text: str) -> None:
         raise ContentPolicyError(f"인게이지먼트 베이트 표현 검출: {hit_bait}")
 
 
-def build_plan(today: dt.date, assets_dir: Path, raw_base_url: str) -> PostPlan:
-    kind = pick_kind(today)
-    text = pick_text(kind, today)
-    assets = list_asset_names(assets_dir)
-    asset = assets[_day_index(today) % len(assets)]
-    reply_text = build_reply_text()
+def _generate_with_ai(
+    api_key: str,
+    pillar_key: str,
+    seed: str,
+    recent_texts: list[str],
+) -> str:
+    """AI 생성 + 린트. 린트 실패 시 재시도. 모두 실패하면 예외."""
+    last_error: Exception | None = None
 
-    lint(text)
+    for attempt in range(1, config.AI_MAX_RETRY + 1):
+        try:
+            text = ai_writer.generate(api_key, pillar_key, seed, recent_texts)
+            lint(text)
+            return text
+        except ContentPolicyError as exc:
+            last_error = exc
+            _log.warning("생성문 린트 실패 (%d/%d): %s",
+                         attempt, config.AI_MAX_RETRY, exc)
+        except ai_writer.AiWriterError as exc:
+            last_error = exc
+            _log.warning("생성 실패 (%d/%d): %s",
+                         attempt, config.AI_MAX_RETRY, exc)
+
+    raise ai_writer.AiWriterError(f"재시도 소진: {last_error}")
+
+
+def build_plan(
+    today: dt.date,
+    assets_dir: Path,
+    raw_base_url: str,
+    *,
+    claude_api_key: str = "",
+    recent_texts: list[str] | None = None,
+) -> PostPlan:
+    """오늘 발행할 게시물을 구성한다.
+
+    AI 키가 있으면 생성문을, 없거나 실패하면 정적 텍스트 풀을 쓴다.
+    어느 경로든 린트를 통과한 텍스트만 반환한다.
+    """
+    day_index = _day_index(today)
+    pillar_key = ai_writer.pick_pillar(day_index)
+    seed = ai_writer.pick_seed(pillar_key, day_index)
+    kind = PostKind.PROMO if pillar_key == "PROMO" else PostKind.OBSERVATION
+
+    source = "static"
+    text = ""
+
+    if config.AI_ENABLED and claude_api_key:
+        try:
+            text = _generate_with_ai(
+                claude_api_key, pillar_key, seed, recent_texts or []
+            )
+            source = "ai"
+        except ai_writer.AiWriterError as exc:
+            _log.warning("AI 생성 포기 — 정적 텍스트로 폴백: %s", exc)
+
+    if not text:
+        text = pick_text(kind, today)
+        lint(text)
+
+    assets = list_asset_names(assets_dir)
+    asset = assets[day_index % len(assets)]
+    reply_text = build_reply_text()
     lint(reply_text)
 
     return PostPlan(
@@ -151,4 +212,7 @@ def build_plan(today: dt.date, assets_dir: Path, raw_base_url: str) -> PostPlan:
         text=text,
         image_url=build_image_url(raw_base_url, asset),
         reply_text=reply_text,
+        pillar=pillar_key,
+        seed=seed,
+        source=source,
     )

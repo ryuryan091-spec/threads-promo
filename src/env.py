@@ -70,11 +70,18 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
 
+    # 본문 생성용. 없으면 정적 텍스트 풀로 동작한다.
+    claude_api_key: str
+
     dry_run: bool
 
     @property
     def can_persist_token(self) -> bool:
         return bool(self.gh_pat and self.gh_repo)
+
+    @property
+    def can_generate(self) -> bool:
+        return bool(self.claude_api_key)
 
     @property
     def can_notify(self) -> bool:
@@ -92,5 +99,6 @@ def load_settings() -> Settings:
         gh_repo=_optional("GITHUB_REPOSITORY"),
         telegram_bot_token=_optional("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_optional("TELEGRAM_ALERT_CHAT_ID"),
+        claude_api_key=_optional("CLAUDE_AI_KEY"),
         dry_run=dry_run_raw not in ("false", "0", "no"),
     )

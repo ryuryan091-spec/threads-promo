@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import config, content, notifier, token_manager
+from . import antibot, config, content, notifier, token_manager
 from .env import MissingEnvError, Settings, load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
@@ -97,10 +97,29 @@ def _acquire_token(settings: Settings) -> str:
     return new_token
 
 
+VERSION = "1.1.0"
+
+
+def _slot_gate(today: dt.date) -> bool:
+    """오늘 이 슬롯이 실행 대상인지. 아니면 즉시 종료해 Actions 분을 아낀다."""
+    slots = [s for s in os.environ.get("PUBLISH_SLOTS", "").split(",") if s.strip()]
+    current = os.environ.get("SLOT", "").strip()
+    if not slots or not current:
+        return True
+    return antibot.should_run_this_slot(
+        today, current, slots, config.ANTIBOT_SLOT_SALT_PUBLISH
+    )
+
+
 def run() -> int:
+    log.info("[Publish] v%s 시작", VERSION)
     _preflight()
     settings = load_settings()
     today = dt.datetime.now(KST).date()
+
+    if not _slot_gate(today):
+        log.info("오늘 슬롯이 아님 — 종료")
+        return 0
 
     token = _acquire_token(settings)
 
@@ -116,13 +135,32 @@ def run() -> int:
     if quota.remaining < 2:  # 본문 1 + 셀프 리플라이 1
         raise RuntimeError(f"쿼터 부족 — 잔여 {quota.remaining}")
 
-    plan = content.build_plan(today, ASSETS_DIR, _resolve_raw_base_url(settings))
-    log.info("유형=%s 이미지=%s", plan.kind.value, plan.image_url)
+    recent_texts: list[str] = []
+    if settings.can_generate and config.AI_ENABLED:
+        recent_texts = client.get_recent_texts(config.RECENT_POSTS_FOR_DEDUP)
+        log.info("중복 회피용 최근 글 %d건 확보", len(recent_texts))
+    else:
+        log.info("AI 생성 비활성 — 정적 텍스트 풀 사용")
+
+    plan = content.build_plan(
+        today,
+        ASSETS_DIR,
+        _resolve_raw_base_url(settings),
+        claude_api_key=settings.claude_api_key,
+        recent_texts=recent_texts,
+    )
+    log.info(
+        "기둥=%s 소재=%s 생성=%s 이미지=%s",
+        plan.pillar, plan.seed, plan.source, plan.image_url,
+    )
 
     if settings.dry_run:
         log.info("DRY_RUN — 실제 발행하지 않습니다.\n--- 본문 ---\n%s\n--- 리플 ---\n%s",
                  plan.text, plan.reply_text)
         return 0
+
+    # 안티봇 — 매번 다른 시각에 발행되도록 랜덤 지연
+    antibot.jitter_sleep(*config.ANTIBOT_PUBLISH_JITTER, label="발행 전")
 
     post_id = client.publish_image_post(plan.image_url, plan.text)
     log.info("본문 발행 완료 post_id=%s", post_id)

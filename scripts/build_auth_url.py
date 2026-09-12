@@ -29,21 +29,46 @@ SCOPE_REPLIES = ["threads_read_replies", "threads_manage_replies"]
 SCOPE_INSIGHTS = ["threads_manage_insights"]
 
 
-def validate_redirect_uri(uri: str) -> list[str]:
-    """앱에 등록한 값과 완전히 일치해야 하므로 흔한 실수를 사전 차단한다."""
-    problems: list[str] = []
-    parsed = urlparse(uri)
+# 붙여넣기 중 앞글자가 잘렸을 때 나타나는 대표적 형태
+TRUNCATED_SCHEMES = {
+    "ttps": "https",
+    "tps": "https",
+    "ps": "https",
+    "ttp": "http",
+    "tp": "http",
+    "htps": "https",
+    "htt": "http",
+}
 
-    if parsed.scheme != "https":
-        problems.append(
-            f"scheme이 '{parsed.scheme}' 입니다. Meta는 HTTPS를 요구합니다."
-        )
-    if not parsed.netloc:
-        problems.append("호스트가 비어 있습니다.")
+
+def validate_redirect_uri(uri: str) -> list[str]:
+    """앱에 등록한 값과 완전히 일치해야 하므로 흔한 실수를 사전 차단한다.
+
+    여기서 걸러내지 못하면 Meta 는 4476001(리디렉션 URI 없음)로 응답한다.
+    """
+    problems: list[str] = []
+
     if uri != uri.strip():
-        problems.append("앞뒤 공백이 포함되어 있습니다.")
-    if " " in uri:
+        problems.append("앞뒤 공백 또는 개행이 포함되어 있습니다.")
+    if " " in uri.strip():
         problems.append("중간에 공백이 포함되어 있습니다.")
+
+    parsed = urlparse(uri.strip())
+    scheme = parsed.scheme
+
+    if scheme in TRUNCATED_SCHEMES:
+        problems.append(
+            f"scheme 이 '{scheme}' 입니다. 붙여넣기 중 앞글자가 잘린 것으로 보입니다. "
+            f"'{TRUNCATED_SCHEMES[scheme]}://' 로 시작해야 합니다."
+        )
+    elif scheme != "https":
+        problems.append(
+            f"scheme 이 '{scheme}' 입니다. Meta 는 HTTPS 를 요구합니다."
+        )
+
+    if not parsed.netloc:
+        problems.append("호스트가 비어 있습니다. URL 형식이 아닙니다.")
+
     return problems
 
 
@@ -89,8 +114,14 @@ def main() -> int:
         print("       Threads app ID는 숫자입니다. App Secret을 잘못 넣었는지 확인하십시오.\n",
               file=sys.stderr)
 
-    for problem in validate_redirect_uri(redirect_uri):
-        print(f"[경고] redirect-uri: {problem}", file=sys.stderr)
+    problems = validate_redirect_uri(redirect_uri)
+    if problems:
+        print(f"[중단] redirect-uri 가 올바르지 않습니다: {redirect_uri!r}", file=sys.stderr)
+        for problem in problems:
+            print(f"       - {problem}", file=sys.stderr)
+        print("       잘못된 값으로 인가하면 error_code 4476001 이 발생합니다.",
+              file=sys.stderr)
+        return 1
 
     if args.basic_only:
         scopes = ["threads_basic"]

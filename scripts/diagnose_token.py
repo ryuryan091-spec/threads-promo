@@ -79,7 +79,26 @@ def inspect(raw: str) -> list[str]:
     return problems
 
 
-def live_check(token: str) -> int:
+def persist_user_id(user_id: str) -> None:
+    """조회한 사용자 ID를 GitHub Secret 에 기록한다."""
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from src import token_manager
+
+    repo = _os.environ.get("GITHUB_REPOSITORY", "").strip()
+    pat = _os.environ.get("GH_PAT_SECRETS_WRITE", "").strip()
+    if not repo or not pat:
+        print("[PERSIST] 생략 — GITHUB_REPOSITORY / GH_PAT_SECRETS_WRITE 미설정")
+        print("[PERSIST] 아래 값을 THREADS_USER_ID Secret 에 직접 등록하십시오:")
+        print(f"          {user_id}")
+        return
+
+    token_manager.persist_token_to_secret(repo, pat, user_id, "THREADS_USER_ID")
+    print("[PERSIST] THREADS_USER_ID 기록 완료")
+
+
+def live_check(token: str, do_persist: bool = False) -> int:
     """실제 API로 유효성 확인. 성공 시 작성자 계정을 출력한다."""
     resp = requests.get(
         f"{API_BASE}/me",
@@ -88,7 +107,11 @@ def live_check(token: str) -> int:
     )
     if resp.status_code == 200:
         body = resp.json()
-        print(f"[LIVE] 유효. 작성자 계정 = @{body.get('username')} (id={body.get('id')})")
+        user_id = str(body.get("id", ""))
+        print(f"[LIVE] 유효. 작성자 계정 = @{body.get('username')} (id={user_id})")
+        print("       이 계정 명의로 게시물이 발행됩니다.")
+        if do_persist and user_id:
+            persist_user_id(user_id)
         return 0
 
     print(f"[LIVE] 실패 {resp.status_code}: {resp.text[:300]}")
@@ -111,6 +134,11 @@ def main() -> int:
     parser.add_argument(
         "--live", action="store_true", help="실제 API 호출로 유효성까지 확인"
     )
+    parser.add_argument(
+        "--persist-user-id",
+        action="store_true",
+        help="조회한 THREADS_USER_ID 를 GitHub Secret 에 기록 (--live 필요)",
+    )
     args = parser.parse_args()
 
     raw = os.environ.get("THREADS_LONG_LIVED_TOKEN")
@@ -131,7 +159,7 @@ def main() -> int:
     print("[형식] 이상 없음")
 
     if args.live:
-        return live_check(raw.strip())
+        return live_check(raw.strip(), args.persist_user_id)
 
     print("실제 유효성 확인은 --live 옵션으로 수행하십시오.")
     return 0

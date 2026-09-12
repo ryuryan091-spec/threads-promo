@@ -118,6 +118,84 @@ class ThreadsClient:
             total=int(cfg.get("quota_total", config.DAILY_POST_QUOTA)),
         )
 
+    def get_recent_texts(self, limit: int = 8) -> list[str]:
+        """최근 발행한 본문을 가져온다. 중복 회피 프롬프트에 넣는다.
+
+        DB 없이 중복을 피하기 위한 방법이다. 실패해도 발행을 막지 않는다.
+        """
+        try:
+            data = _request(
+                "GET",
+                f"{config.THREADS_API_BASE}/{self._user_id}/threads",
+                params={
+                    "fields": "text",
+                    "limit": limit,
+                    "access_token": self._token,
+                },
+            )
+        except ThreadsApiError as exc:
+            log.warning("최근 글 조회 실패 — 중복 회피 없이 진행: %s", exc)
+            return []
+
+        texts = []
+        for item in data.get("data", []):
+            value = (item.get("text") or "").strip()
+            if value:
+                texts.append(value)
+        return texts
+
+    def get_reply_quota(self) -> Quota:
+        """답글 발행 쿼터. 24시간 이동구간 1,000건이 API 한도."""
+        data = _request(
+            "GET",
+            f"{config.THREADS_API_BASE}/{self._user_id}/threads_publishing_limit",
+            params={
+                "fields": "reply_quota_usage,reply_config",
+                "access_token": self._token,
+            },
+        )
+        entry = (data.get("data") or [{}])[0]
+        cfg = entry.get("reply_config") or {}
+        return Quota(
+            used=int(entry.get("reply_quota_usage", 0)),
+            total=int(cfg.get("quota_total", config.DAILY_REPLY_QUOTA)),
+        )
+
+    def get_my_posts(self, limit: int = 5) -> list[dict]:
+        """최근 내 글 목록. id 와 text 를 함께 받는다."""
+        data = _request(
+            "GET",
+            f"{config.THREADS_API_BASE}/{self._user_id}/threads",
+            params={
+                "fields": "id,text,timestamp",
+                "limit": limit,
+                "access_token": self._token,
+            },
+        )
+        return list(data.get("data") or [])
+
+    def get_conversation(self, post_id: str, limit: int = 25) -> list[dict]:
+        """글 하나의 전체 대화(최상위+중첩 평탄화)를 가져온다.
+
+        공식 필드 목록에서 필요한 것만 요청한다:
+          id, text, username, timestamp, replied_to, is_reply,
+          is_reply_owned_by_me, hide_status
+        """
+        data = _request(
+            "GET",
+            f"{config.THREADS_API_BASE}/{post_id}/conversation",
+            params={
+                "fields": (
+                    "id,text,username,timestamp,replied_to,"
+                    "is_reply,is_reply_owned_by_me,hide_status"
+                ),
+                "limit": limit,
+                "reverse": "false",
+                "access_token": self._token,
+            },
+        )
+        return list(data.get("data") or [])
+
     # -- 발행 -------------------------------------------------------------
     def create_image_container(self, image_url: str, text: str) -> str:
         return self._create_container(

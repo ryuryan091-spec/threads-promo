@@ -170,7 +170,14 @@ def main() -> int:
 
     code = extract_code(args.code)
     validate_code(code)
+
     redirect_uri = args.redirect_uri.strip()
+    if not redirect_uri.startswith("https://"):
+        raise SystemExit(
+            f"redirect-uri 가 'https://' 로 시작하지 않습니다: {redirect_uri!r}\n"
+            "  붙여넣기 중 앞글자가 잘렸는지 확인하십시오.\n"
+            "  이 값은 인가 시 사용한 값 및 Meta 콘솔 등록값과 완전히 같아야 합니다."
+        )
 
     print(f"[STEP2] 인가 코드 교환 (코드 길이 {len(code)})")
     short_token = exchange_code_for_short_lived(app_id, app_secret, code, redirect_uri)
