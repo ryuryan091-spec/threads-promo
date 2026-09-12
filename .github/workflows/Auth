@@ -1,0 +1,48 @@
+name: Build Auth URL
+
+# 인가(Authorization Window) URL을 정확히 조립해 출력한다.
+# 손으로 만들면 줄바꿈 / URL 인코딩 / 꺾쇠 미제거로 실패하므로 자동화한다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      redirect_uri:
+        description: "Meta 콘솔 Settings에 등록·저장한 Redirect URI (완전 동일하게)"
+        required: true
+        type: string
+      with_replies:
+        description: "답글 자동화 scope 포함 (권장: true. 사후 추가 불가)"
+        required: true
+        type: boolean
+        default: true
+      with_insights:
+        description: "인사이트 조회 scope 포함"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build authorization URL
+        env:
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          REDIRECT_URI: ${{ inputs.redirect_uri }}
+          WITH_REPLIES: ${{ inputs.with_replies }}
+          WITH_INSIGHTS: ${{ inputs.with_insights }}
+        run: |
+          ARGS="--app-id $THREADS_APP_ID --redirect-uri $REDIRECT_URI"
+          if [ "$WITH_REPLIES" = "true" ]; then ARGS="$ARGS --with-replies"; fi
+          if [ "$WITH_INSIGHTS" = "true" ]; then ARGS="$ARGS --with-insights"; fi
+          python scripts/build_auth_url.py $ARGS
