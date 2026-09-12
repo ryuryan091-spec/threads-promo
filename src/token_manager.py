@@ -66,8 +66,10 @@ def _encrypt_for_repo(public_key_b64: str, secret_value: str) -> str:
     return base64.b64encode(sealed).decode("utf-8")
 
 
-def persist_token_to_secret(repo: str, pat: str, token_value: str) -> None:
-    """새 토큰을 GitHub Secret에 덮어쓴다.
+def persist_token_to_secret(
+    repo: str, pat: str, token_value: str, secret_name: str = TOKEN_SECRET_NAME
+) -> None:
+    """값을 GitHub Secret에 덮어쓴다.
 
     주의: 워크플로우 기본 GITHUB_TOKEN으로는 불가하다.
           secrets:write 권한을 가진 Fine-grained PAT가 별도로 필요하다.
@@ -90,7 +92,7 @@ def persist_token_to_secret(repo: str, pat: str, token_value: str) -> None:
     encrypted = _encrypt_for_repo(key_body["key"], token_value)
 
     put_resp = requests.put(
-        f"{GITHUB_API}/repos/{repo}/actions/secrets/{TOKEN_SECRET_NAME}",
+        f"{GITHUB_API}/repos/{repo}/actions/secrets/{secret_name}",
         headers=headers,
         json={"encrypted_value": encrypted, "key_id": key_body["key_id"]},
         timeout=config.HTTP_TIMEOUT_SEC,
@@ -98,4 +100,4 @@ def persist_token_to_secret(repo: str, pat: str, token_value: str) -> None:
     if put_resp.status_code not in (201, 204):
         raise SecretPersistError(f"Secret 갱신 실패 {put_resp.status_code}: {put_resp.text[:200]}")
 
-    log.info("Secret %s 갱신 완료", TOKEN_SECRET_NAME)
+    log.info("Secret %s 갱신 완료", secret_name)
