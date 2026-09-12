@@ -10,7 +10,7 @@
 # TODO(마스터 확인 필요): YouTube 채널 핸들을 실제 값으로 교체할 것.
 #   추측 입력 금지. 미교체 상태로 실행하면 main.py가 시작 시점에 중단한다.
 YOUTUBE_URL = "https://www.youtube.com/@tiger18272-y"
-"
+
 X_URL = "https://x.com/tiger18272"
 
 # OAuth 리디렉션 착지 페이지 (docs/index.html -> GitHub Pages)
