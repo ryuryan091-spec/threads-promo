@@ -1,0 +1,53 @@
+name: Bootstrap Threads Token
+
+# 최초 1회 또는 재인가 시 수동 실행한다.
+# 토큰을 로그에 출력하지 않고 GitHub Secret에 직접 기록한다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: "인가 코드 (주소창 code= 값. #_ 는 자동 제거됨)"
+        required: true
+        type: string
+      redirect_uri:
+        description: "앱 Settings에 등록한 Redirect URI와 완전 동일하게"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Issue and persist token
+        env:
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/bootstrap_token.py \
+            --code "${{ inputs.code }}" \
+            --redirect-uri "${{ inputs.redirect_uri }}" \
+            --persist
+
+      - name: Verify
+        env:
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+        run: |
+          echo "주의: 이 스텝은 직전 스텝에서 갱신되기 전의 Secret 값을 봅니다."
+          echo "정확한 검증은 이 워크플로우를 다시 실행하지 말고,"
+          echo "Threads Publish 워크플로우를 DRY_RUN 으로 돌려서 확인하십시오."
