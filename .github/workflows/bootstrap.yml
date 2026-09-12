@@ -11,9 +11,10 @@ on:
         required: true
         type: string
       redirect_uri:
-        description: "앱 Settings에 등록한 Redirect URI와 완전 동일하게"
+        description: "인가 시 사용한 Redirect URI (기본값 그대로 쓰면 됨)"
         required: true
         type: string
+        default: "https://ryuryan091-spec.github.io/threads-promo/"
 
 permissions:
   contents: read

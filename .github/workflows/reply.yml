@@ -1,12 +1,14 @@
-name: Threads Publish
+name: Threads Reply
+
+# 내 글에 달린 댓글에 자동 답글.
+# 안티봇: 3개 슬롯 중 하루 하나만 실제 실행. 나머지는 즉시 종료해 분을 아낀다.
 
 "on":
   schedule:
-    # KST 09:30 = UTC 00:30
-    # KST 08:41 / 09:37 / 10:19  (정각·반각 회피, 하루 하나만 실제 실행)
-    - cron: "41 23 * * *"
-    - cron: "37 0 * * *"
-    - cron: "19 1 * * *"
+    # KST 11:23 / 15:47 / 20:13  (정각·반각 회피)
+    - cron: "23 2 * * *"
+    - cron: "47 6 * * *"
+    - cron: "13 11 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -19,13 +21,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: threads-publish
+  group: threads-reply
   cancel-in-progress: false
 
 jobs:
-  publish:
+  reply:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -40,13 +42,13 @@ jobs:
         id: slot
         run: |
           case "${{ github.event.schedule }}" in
-            "41 23 * * *") echo "slot=A" >> "$GITHUB_OUTPUT" ;;
-            "37 0 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
-            "19 1 * * *")  echo "slot=C" >> "$GITHUB_OUTPUT" ;;
+            "23 2 * * *")  echo "slot=A" >> "$GITHUB_OUTPUT" ;;
+            "47 6 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
+            "13 11 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
             *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - name: Publish
+      - name: Reply
         env:
           THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
@@ -55,13 +57,12 @@ jobs:
           GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
           CLAUDE_AI_KEY: ${{ secrets.CLAUDE_AI_KEY }}
           CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
-          AI_ENABLED: ${{ vars.AI_ENABLED || 'true' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
-          ASSET_RAW_BASE_URL: ${{ vars.ASSET_RAW_BASE_URL }}
-          PUBLISH_SLOTS: "A,B,C"
+          REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+          REPLY_SLOTS: "A,B,C"
           SLOT: ${{ steps.slot.outputs.slot }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
-        run: python -m src.main
+        run: python -m src.run_reply

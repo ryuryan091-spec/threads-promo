@@ -1,0 +1,46 @@
+name: Verify Token
+
+# 사용자 토큰 생성기로 발급받은 토큰을 검증하고,
+# THREADS_USER_ID 를 조회해 Secret 에 기록한다.
+#
+# 사전 조건
+#   1. Meta 콘솔 > 사용자 토큰 생성기 > 액세스 토큰 생성하기
+#   2. 발급된 토큰을 THREADS_LONG_LIVED_TOKEN Secret 에 직접 등록
+#      (워크플로우 입력란이 아님 — 입력값은 실행 기록에 남는다)
+
+on:
+  workflow_dispatch:
+    inputs:
+      persist_user_id:
+        description: "THREADS_USER_ID 를 Secret 에 자동 기록 (PAT 필요)"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Verify token and resolve user id
+        env:
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PERSIST: ${{ inputs.persist_user_id }}
+        run: |
+          ARGS="--live"
+          if [ "$PERSIST" = "true" ]; then ARGS="$ARGS --persist-user-id"; fi
+          python scripts/diagnose_token.py $ARGS

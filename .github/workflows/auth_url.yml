@@ -7,9 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       redirect_uri:
-        description: "Meta 콘솔 Settings에 등록·저장한 Redirect URI (완전 동일하게)"
+        description: "Meta 콘솔에 등록한 Redirect URI (기본값 그대로 쓰면 됨)"
         required: true
         type: string
+        default: "https://ryuryan091-spec.github.io/threads-promo/"
       with_replies:
         description: "답글 자동화 scope 포함 (권장: true. 사후 추가 불가)"
         required: true
