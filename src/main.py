@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 from . import config, content, notifier, token_manager
 from .env import MissingEnvError, Settings, load_settings
-from .threads_client import ThreadsApiError, ThreadsClient
+from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
 KST = ZoneInfo("Asia/Seoul")
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -38,11 +38,22 @@ for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
 
 
 def _preflight() -> None:
-    if config.YOUTUBE_URL_PLACEHOLDER in config.YOUTUBE_URL:
+    """링크 미설정 상태로 발행되는 것을 막는다."""
+    missing = [
+        name
+        for name, value in (("YOUTUBE_URL", config.YOUTUBE_URL),
+                            ("X_URL", config.X_URL))
+        if not value
+    ]
+    if missing:
         raise RuntimeError(
-            "config.YOUTUBE_URL이 플레이스홀더 상태입니다. "
-            "실제 채널 핸들로 교체한 뒤 실행하십시오."
+            f"GitHub Variables 미설정: {', '.join(missing)}\n"
+            "  Settings > Secrets and variables > Actions > Variables 탭에서 등록하십시오."
         )
+
+    for name, value in (("YOUTUBE_URL", config.YOUTUBE_URL), ("X_URL", config.X_URL)):
+        if not value.startswith("https://"):
+            raise RuntimeError(f"{name} 이 https:// 로 시작하지 않습니다: {value!r}")
 
 
 def _resolve_raw_base_url(settings: Settings) -> str:
@@ -92,7 +103,13 @@ def run() -> int:
     today = dt.datetime.now(KST).date()
 
     token = _acquire_token(settings)
-    client = ThreadsClient(settings.threads_user_id, token)
+
+    user_id = settings.threads_user_id
+    if user_id == "me":
+        user_id, username = fetch_user_id(token)
+        log.info("사용자 ID 조회 완료 — @%s (id=%s)", username, user_id)
+
+    client = ThreadsClient(user_id, token)
 
     quota = client.get_post_quota()
     log.info("발행 쿼터 %d/%d (잔여 %d)", quota.used, quota.total, quota.remaining)
