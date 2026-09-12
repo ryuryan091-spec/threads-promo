@@ -12,7 +12,7 @@
 YOUTUBE_URL = "https://www.youtube.com/@tiger18272-y"
 X_URL = "https://x.com/tiger18272"
 
-YOUTUBE_URL_PLACEHOLDER = "@tiger18272"
+YOUTUBE_URL_PLACEHOLDER = "@REPLACE_ME"
 
 # ---------------------------------------------------------------------------
 # Threads API
