@@ -20,6 +20,11 @@ on:
         required: true
         type: boolean
         default: false
+      basic_only:
+        description: "격리 테스트: threads_basic 만 요청 (오류 원인 분리용)"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,8 +46,10 @@ jobs:
           REDIRECT_URI: ${{ inputs.redirect_uri }}
           WITH_REPLIES: ${{ inputs.with_replies }}
           WITH_INSIGHTS: ${{ inputs.with_insights }}
+          BASIC_ONLY: ${{ inputs.basic_only }}
         run: |
           ARGS="--app-id $THREADS_APP_ID --redirect-uri $REDIRECT_URI"
           if [ "$WITH_REPLIES" = "true" ]; then ARGS="$ARGS --with-replies"; fi
           if [ "$WITH_INSIGHTS" = "true" ]; then ARGS="$ARGS --with-insights"; fi
+          if [ "$BASIC_ONLY" = "true" ]; then ARGS="$ARGS --basic-only"; fi
           python scripts/build_auth_url.py $ARGS
