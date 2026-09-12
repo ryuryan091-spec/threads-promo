@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -30,19 +31,66 @@ API_BASE = "https://graph.threads.net/v1.0"
 TIMEOUT = 20
 
 
-def sanitize_code(raw: str) -> str:
-    """인가 코드에 딸려오는 잡문자를 제거한다.
+def extract_code(raw: str) -> str:
+    """인가 코드를 추출한다.
 
-    리디렉션 주소 끝에 '#_' 가 붙지만 코드의 일부가 아니다.
-    실수로 'code=' 접두어째 복사하는 경우도 흔하다.
+    전체 리디렉션 URL을 그대로 넣어도 되고, code 값만 넣어도 된다.
+    주소창 끝의 '#_' 는 코드의 일부가 아니므로 제거한다.
     """
     value = raw.strip().strip('"').strip("'")
+
+    # 전체 URL을 붙여넣은 경우 -> 쿼리스트링에서 추출
+    if value.startswith("http://") or value.startswith("https://"):
+        parsed = urlparse(value)
+        codes = parse_qs(parsed.query).get("code")
+        if not codes:
+            raise SystemExit(
+                "URL에 code 파라미터가 없습니다.\n"
+                f"  입력: {value[:80]}...\n"
+                "  인가에 실패했거나 잘못된 URL입니다. 인가 URL 접속부터 다시 하십시오."
+            )
+        value = codes[0]
+
     if value.startswith("code="):
         value = value[len("code="):]
+
     for suffix in ("#_", "#"):
         if value.endswith(suffix):
             value = value[: -len(suffix)]
+
     return value.strip()
+
+
+def validate_code(code: str) -> None:
+    """명백히 코드가 아닌 값을 교환 전에 차단한다.
+
+    인가 코드는 1회용이므로, 잘못된 값으로 시도해 실패하면
+    원래 코드가 이미 소모되었을 수 있다. 사전 차단이 중요하다.
+    """
+    if not code:
+        raise SystemExit("인가 코드가 비어 있습니다.")
+
+    if len(code) == 32 and all(c in "0123456789abcdefABCDEF" for c in code):
+        raise SystemExit(
+            f"입력값이 32자 16진 문자열입니다 (길이 {len(code)}).\n"
+            "  THREADS_APP_SECRET 을 인가 코드 자리에 넣었을 가능성이 큽니다.\n"
+            "  브라우저 인가 후 리디렉션된 주소의 code= 값을 사용하십시오."
+        )
+
+    if len(code) < 60:
+        raise SystemExit(
+            f"인가 코드가 너무 짧습니다 (길이 {len(code)}).\n"
+            "  Meta 인가 코드는 통상 이보다 훨씬 깁니다. 복사 중 잘렸을 수 있습니다.\n"
+            "  주소창을 클릭하고 Ctrl+A 로 전체 선택해 URL 전체를 붙여넣으십시오.\n"
+            "  이 스크립트는 전체 URL 입력을 지원합니다."
+        )
+
+    if not code.startswith("AQ"):
+        print(
+            f"[경고] 인가 코드가 'AQ' 로 시작하지 않습니다 (시작: {code[:4]}). "
+            "값이 올바른지 확인하십시오.",
+            file=sys.stderr,
+        )
 
 
 def exchange_code_for_short_lived(
@@ -102,7 +150,11 @@ def fetch_user(long_token: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--code", required=True, help="Authorization Window가 발급한 코드")
+    parser.add_argument(
+        "--code",
+        required=True,
+        help="리디렉션된 전체 URL 또는 code 값. 전체 URL 권장",
+    )
     parser.add_argument("--redirect-uri", required=True, help="앱에 등록한 값과 완전 동일")
     parser.add_argument(
         "--persist",
@@ -116,7 +168,8 @@ def main() -> int:
     if not app_id or not app_secret:
         raise SystemExit("THREADS_APP_ID / THREADS_APP_SECRET 환경변수를 설정하십시오.")
 
-    code = sanitize_code(args.code)
+    code = extract_code(args.code)
+    validate_code(code)
     redirect_uri = args.redirect_uri.strip()
 
     print(f"[STEP2] 인가 코드 교환 (코드 길이 {len(code)})")

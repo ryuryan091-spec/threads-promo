@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Threads OAuth Redirect</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+         "Helvetica Neue", sans-serif; margin: 0; padding: 32px;
+         background: #0f0f10; color: #e8e8ea; line-height: 1.6; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 24px; }
+  .box { background: #1a1a1c; border: 1px solid #2c2c30; border-radius: 8px;
+         padding: 20px; margin-bottom: 16px; }
+  .label { font-size: 12px; color: #8a8a90; margin-bottom: 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         font-size: 13px; word-break: break-all; display: block;
+         background: #0a0a0b; border: 1px solid #2c2c30; border-radius: 6px;
+         padding: 12px; color: #7ee787; }
+  .err { color: #ff7b72; }
+  button { font-size: 14px; padding: 10px 18px; border-radius: 6px;
+           border: 1px solid #3a3a40; background: #26262a; color: #e8e8ea;
+           cursor: pointer; margin-top: 12px; }
+  button:hover { background: #303036; }
+  ol { padding-left: 20px; color: #b8b8c0; font-size: 14px; }
+  .muted { color: #8a8a90; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Threads OAuth Redirect</h1>
+
+  <div class="box">
+    <div class="label">상태</div>
+    <div id="status" class="muted">확인 중...</div>
+  </div>
+
+  <div class="box" id="codeBox" style="display:none">
+    <div class="label">인가 코드 (authorization code)</div>
+    <code id="code"></code>
+    <button onclick="copyCode()">코드 복사</button>
+    <span id="copied" class="muted" style="margin-left:12px"></span>
+  </div>
+
+  <div class="box" id="urlBox" style="display:none">
+    <div class="label">전체 URL (Bootstrap 워크플로우 입력용 — 이쪽 권장)</div>
+    <code id="fullUrl"></code>
+    <button onclick="copyUrl()">전체 URL 복사</button>
+    <span id="copiedUrl" class="muted" style="margin-left:12px"></span>
+  </div>
+
+  <div class="box">
+    <div class="label">다음 단계</div>
+    <ol>
+      <li>위 <strong>전체 URL 복사</strong> 클릭</li>
+      <li>GitHub → Actions → <strong>Bootstrap Threads Token</strong> → Run workflow</li>
+      <li><code style="display:inline;padding:2px 6px">code</code> 입력란에 붙여넣기</li>
+      <li><code style="display:inline;padding:2px 6px">redirect_uri</code> 에
+          이 페이지 주소 입력</li>
+    </ol>
+    <p class="muted">인가 코드는 1시간 유효하며 1회만 사용할 수 있습니다.</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var code = params.get('code');
+  var error = params.get('error') || params.get('error_message');
+  var statusEl = document.getElementById('status');
+
+  if (code) {
+    statusEl.innerHTML = '인가 성공. 코드를 수신했습니다.';
+    document.getElementById('code').textContent = code;
+    document.getElementById('fullUrl').textContent = window.location.href;
+    document.getElementById('codeBox').style.display = 'block';
+    document.getElementById('urlBox').style.display = 'block';
+  } else if (error) {
+    statusEl.innerHTML = '<span class="err">인가 실패: ' +
+      escapeHtml(error) + '</span>';
+  } else {
+    statusEl.textContent =
+      '이 페이지는 Threads OAuth 리디렉션 착지 페이지입니다. ' +
+      '인가 URL을 통해 접근하면 코드가 표시됩니다.';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;',
+               '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+})();
+
+function copyCode() {
+  navigator.clipboard.writeText(document.getElementById('code').textContent)
+    .then(function () { document.getElementById('copied').textContent = '복사됨'; });
+}
+function copyUrl() {
+  navigator.clipboard.writeText(document.getElementById('fullUrl').textContent)
+    .then(function () { document.getElementById('copiedUrl').textContent = '복사됨'; });
+}
+</script>
+</body>
+</html>
