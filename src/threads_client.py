@@ -80,6 +80,24 @@ def _request(method: str, url: str, *, params: dict[str, Any]) -> dict[str, Any]
     raise ThreadsApiError(0, f"재시도 소진: {last_error}")
 
 
+def fetch_user_id(access_token: str) -> tuple[str, str]:
+    """토큰 소유자의 숫자 사용자 ID와 계정명을 조회한다.
+
+    /me 는 프로필 조회에서만 동작하고, 발행·쿼터 엔드포인트는 숫자 ID를
+    요구한다. 따라서 실행 시점에 한 번 조회해서 쓰는 편이 확실하다.
+    Secret 에 ID 를 보관할 필요가 없어지고, 잘못된 값이 들어갈 여지도 없다.
+    """
+    data = _request(
+        "GET",
+        f"{config.THREADS_API_BASE}/me",
+        params={"fields": "id,username", "access_token": access_token},
+    )
+    user_id = str(data.get("id", ""))
+    if not user_id.isdigit():
+        raise ThreadsApiError(200, f"사용자 ID 조회 실패: {data}")
+    return user_id, str(data.get("username", ""))
+
+
 class ThreadsClient:
     def __init__(self, user_id: str, access_token: str):
         self._user_id = user_id
