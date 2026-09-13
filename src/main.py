@@ -101,11 +101,33 @@ VERSION = "1.1.0"
 
 
 def _slot_gate(today: dt.date) -> bool:
-    """오늘 이 슬롯이 실행 대상인지. 아니면 즉시 종료해 Actions 분을 아낀다."""
+    """오늘 이 슬롯이 실행 대상인지. 아니면 즉시 종료해 Actions 분을 아낀다.
+
+    수동 실행(workflow_dispatch)은 슬롯과 무관하게 항상 통과시킨다.
+    슬롯 분산은 스케줄 실행에만 적용되는 안티봇 장치이며,
+    사람이 직접 누른 실행까지 막으면 검증·긴급 발행이 불가능해진다.
+    """
+    event = os.environ.get("EVENT_NAME", "").strip()
+    if event and event != "schedule":
+        log.info("수동 실행(%s) — 슬롯 판정을 건너뜁니다.", event)
+        return True
+
     slots = [s for s in os.environ.get("PUBLISH_SLOTS", "").split(",") if s.strip()]
     current = os.environ.get("SLOT", "").strip()
+
     if not slots or not current:
         return True
+
+    if current not in slots:
+        # cron 문자열과 Resolve slot 의 case 분기가 어긋난 상태.
+        # 조용히 매번 발행되면 안 되므로 경고 후 중단한다.
+        log.error(
+            "슬롯 '%s' 이 등록 목록 %s 에 없습니다. "
+            "cron 문자열과 Resolve slot case 분기가 일치하는지 확인하십시오.",
+            current, slots,
+        )
+        return False
+
     return antibot.should_run_this_slot(
         today, current, slots, config.ANTIBOT_SLOT_SALT_PUBLISH
     )
@@ -116,6 +138,9 @@ def run() -> int:
     _preflight()
     settings = load_settings()
     today = dt.datetime.now(KST).date()
+
+    if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
+        return 0
 
     if not _slot_gate(today):
         log.info("오늘 슬롯이 아님 — 종료")
