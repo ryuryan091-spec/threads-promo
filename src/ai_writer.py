@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
 
 import requests
@@ -192,15 +193,54 @@ def _build_user_prompt(
 
 
 def _extract_json(raw: str) -> dict:
+    """모델 응답에서 JSON 객체를 뽑아낸다.
+
+    본문에 줄바꿈이 들어가는 것이 정상이므로(시스템 프롬프트가 그렇게 지시한다),
+    문자열 안의 raw 제어문자를 허용해야 한다. strict=True 로 파싱하면
+    "Invalid control character" 로 실패한다.
+
+    파싱 실패는 반드시 AiWriterError 로 감싼다. 그래야 호출자가 재시도하고,
+    끝내 실패하면 정적 텍스트로 폴백할 수 있다.
+    """
     text = raw.strip()
     if text.startswith("```"):
-        text = text.split("```")[1]
+        parts = text.split("```")
+        if len(parts) > 1:
+            text = parts[1]
         if text.startswith("json"):
             text = text[4:]
+
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise AiWriterError(f"JSON 형식이 아닙니다: {raw[:200]}")
-    return json.loads(text[start : end + 1])
+
+    payload = text[start : end + 1]
+
+    try:
+        # strict=False : 문자열 안의 줄바꿈·탭 등 제어문자를 허용한다.
+        return json.loads(payload, strict=False)
+    except json.JSONDecodeError as exc:
+        # 이스케이프되지 않은 따옴표 등으로 여전히 실패할 수 있다.
+        # 마지막 수단으로 text 값만 정규식으로 회수한다.
+        recovered = _recover_text_field(payload)
+        if recovered:
+            log.warning("JSON 파싱 실패 — text 필드만 회수했습니다: %s", exc)
+            return {"text": recovered}
+        raise AiWriterError(f"JSON 파싱 실패: {exc} / 원문: {payload[:200]}") from exc
+
+
+def _recover_text_field(payload: str) -> str:
+    """깨진 JSON 에서 text 값만 건져낸다.
+
+    모델이 따옴표를 이스케이프하지 않는 경우가 있어 최후 수단으로 둔다.
+    """
+    match = re.search(r'"text"\s*:\s*"(.*)"\s*}\s*$', payload, re.DOTALL)
+    if not match:
+        return ""
+    value = match.group(1)
+    # 이스케이프 시퀀스를 실제 문자로 되돌린다.
+    value = value.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+    return value.strip()
 
 
 def generate(

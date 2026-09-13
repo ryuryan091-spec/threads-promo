@@ -238,8 +238,6 @@ def compose(
 
 
 def _generate_reply(api_key: str, post_text: str, comment_text: str) -> str:
-    import json
-
     import requests
 
     payload = {
@@ -268,15 +266,10 @@ def _generate_reply(api_key: str, post_text: str, comment_text: str) -> str:
         for b in resp.json().get("content", [])
         if b.get("type") == "text"
     ]
-    raw = "".join(chunks).strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1:
-        raise ai_writer.AiWriterError(f"JSON 아님: {raw[:150]}")
-    text = str(json.loads(raw[start : end + 1]).get("text", "")).strip()
+    # 파싱은 ai_writer 와 동일한 내구성 로직을 쓴다.
+    # 줄바꿈이 든 JSON 문자열에서 strict 파싱이 깨지는 문제를 함께 회피한다.
+    parsed = ai_writer._extract_json("".join(chunks))
+    text = str(parsed.get("text", "")).strip()
     if not text:
         raise ai_writer.AiWriterError("답글 본문 비어 있음")
     return text

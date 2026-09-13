@@ -285,3 +285,49 @@ class TestNetworkResilience:
                 assert "Read and write" in str(exc)
             else:
                 raise AssertionError("예외가 발생하지 않았습니다")
+
+
+class TestJsonRobustness:
+    """실제 발행에서 터진 케이스. 본문에 줄바꿈이 드는 것은 정상 동작이다."""
+
+    def test_literal_newline_in_string(self):
+        raw = '{"text": "첫 줄입니다.\n두 번째 줄입니다."}'
+        assert "\n" in ai_writer._extract_json(raw)["text"]
+
+    def test_literal_tab_in_string(self):
+        raw = '{"text": "앞\t뒤"}'
+        assert ai_writer._extract_json(raw)["text"]
+
+    def test_code_fence_with_newline(self):
+        raw = '```json\n{"text": "첫 줄\n둘째 줄"}\n```'
+        assert "둘째 줄" in ai_writer._extract_json(raw)["text"]
+
+    def test_unescaped_quotes_recovered(self):
+        raw = '{"text": "그가 "그렇다"고 했습니다.\n정말?"}'
+        assert "그렇다" in ai_writer._extract_json(raw)["text"]
+
+    def test_unrecoverable_raises_ai_writer_error(self):
+        with pytest.raises(ai_writer.AiWriterError):
+            ai_writer._extract_json('{"txt": ')
+
+    def test_parse_failure_is_wrapped_not_raw_json_error(self):
+        """JSONDecodeError 가 그대로 새면 폴백이 동작하지 않는다."""
+        import json as _json
+
+        try:
+            ai_writer._extract_json("{ not json at all ")
+        except _json.JSONDecodeError:
+            raise AssertionError("JSONDecodeError 가 그대로 전파되었습니다") from None
+        except ai_writer.AiWriterError:
+            pass
+
+    def test_generate_falls_back_on_broken_json(self):
+        """생성 결과가 깨져도 AiWriterError 로 나와 재시도·폴백이 가능해야 한다."""
+        body = {"content": [{"type": "text", "text": "완전히 깨진 응답"}]}
+        with (
+            mock.patch.object(
+                ai_writer.requests, "post", return_value=_resp(200, body)
+            ),
+            pytest.raises(ai_writer.AiWriterError),
+        ):
+            ai_writer.generate("key", "BUILD", "소재")
