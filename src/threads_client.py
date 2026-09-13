@@ -11,6 +11,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -78,6 +79,80 @@ def _request(method: str, url: str, *, params: dict[str, Any]) -> dict[str, Any]
         time.sleep(config.HTTP_RETRY_BACKOFF_SEC * attempt)
 
     raise ThreadsApiError(0, f"재시도 소진: {last_error}")
+
+
+ALLOWED_IMAGE_TYPES = ("image/jpeg", "image/jpg", "image/png")
+
+# 자산 호스트로 쓰일 수 없는 도메인. 설정 오류를 조기에 잡는다.
+FORBIDDEN_ASSET_HOSTS = (
+    "youtube.com", "youtu.be", "x.com", "twitter.com",
+    "threads.com", "threads.net", "instagram.com",
+)
+
+
+class ImageValidationError(RuntimeError):
+    """이미지 URL이 Threads 요구사항을 만족하지 않는다."""
+
+
+def verify_image_url(url: str) -> None:
+    """발행 전에 이미지 URL을 검증한다.
+
+    Threads 는 이 URL 에서 직접 이미지를 내려받는다. 접근이 안 되거나
+    이미지가 아니면 code=36001(Unknown Image Format) 이 발생한다.
+    지연·발행 이전에 잡아야 시간과 쿼터를 낭비하지 않는다.
+    """
+    if not url.startswith("https://"):
+        raise ImageValidationError(f"https 로 시작하지 않습니다: {url}")
+
+    host = urlparse(url).netloc.lower()
+    for bad in FORBIDDEN_ASSET_HOSTS:
+        if host.endswith(bad):
+            raise ImageValidationError(
+                f"자산 호스트가 될 수 없는 도메인입니다: {host}\n"
+                "  ASSET_RAW_BASE_URL Variable 에 잘못된 값이 들어 있습니다.\n"
+                "  해당 Variable 을 삭제하면 레포 raw URL 이 자동 조립됩니다."
+            )
+
+    try:
+        resp = requests.head(url, timeout=config.HTTP_TIMEOUT_SEC, allow_redirects=True)
+        if resp.status_code == 405:  # HEAD 미지원 서버 대비
+            resp = requests.get(
+                url, timeout=config.HTTP_TIMEOUT_SEC, stream=True, allow_redirects=True
+            )
+            resp.close()
+    except requests.RequestException as exc:
+        raise ImageValidationError(f"URL 접근 실패: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise ImageValidationError(
+            f"HTTP {resp.status_code} — 파일이 없거나 접근할 수 없습니다: {url}"
+        )
+
+    content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        hint = ""
+        if content_type.startswith("text/"):
+            hint = (
+                "\n  이미지가 아니라 웹페이지가 반환되었습니다. "
+                "raw.githubusercontent.com 형식인지 확인하십시오."
+            )
+        elif content_type.startswith("image/"):
+            hint = "\n  Threads 는 JPEG 와 PNG 만 지원합니다. 변환이 필요합니다."
+        raise ImageValidationError(
+            f"Content-Type 이 {content_type or '없음'} 입니다. "
+            f"허용: {', '.join(ALLOWED_IMAGE_TYPES)}{hint}"
+        )
+
+    length = resp.headers.get("Content-Length")
+    if length and int(length) > config.IMAGE_MAX_BYTES:
+        raise ImageValidationError(
+            f"파일 크기 {int(length):,}바이트 — 상한 {config.IMAGE_MAX_BYTES:,}바이트 초과"
+        )
+
+    log.info(
+        "이미지 검증 통과 — %s (%s바이트)",
+        content_type, f"{int(length):,}" if length else "크기 미상",
+    )
 
 
 def fetch_user_id(access_token: str) -> tuple[str, str]:

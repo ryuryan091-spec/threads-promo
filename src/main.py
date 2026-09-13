@@ -16,11 +16,17 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from . import antibot, config, content, notifier, token_manager
 from .env import MissingEnvError, Settings, load_settings
-from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
+from .threads_client import (
+    ThreadsApiError,
+    ThreadsClient,
+    fetch_user_id,
+    verify_image_url,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -57,12 +63,39 @@ def _preflight() -> None:
 
 
 def _resolve_raw_base_url(settings: Settings) -> str:
-    """레포 raw URL. 오버라이드가 있으면 그 값을 우선한다."""
-    override = os.environ.get("ASSET_RAW_BASE_URL", "").strip()
+    """이미지 자산의 base URL을 결정한다.
+
+    ASSET_RAW_BASE_URL Variable 이 있으면 그것을 쓰되, 명백히 자산 호스트가
+    아닌 값(YouTube, X 등)이면 무시하고 레포 raw URL 을 자동 조립한다.
+    설정 실수로 발행이 계속 실패하는 것을 막기 위한 방어다.
+    """
+    from .threads_client import FORBIDDEN_ASSET_HOSTS
+
+    override = os.environ.get("ASSET_RAW_BASE_URL", "").strip().rstrip("/")
     if override:
-        return override
-    ref = os.environ.get("GITHUB_REF_NAME", "main").strip() or "main"
-    return f"https://raw.githubusercontent.com/{settings.gh_repo}/{ref}/assets"
+        host = urlparse(override).netloc.lower()
+        if any(host.endswith(bad) for bad in FORBIDDEN_ASSET_HOSTS):
+            log.error(
+                "ASSET_RAW_BASE_URL 이 자산 호스트가 아닙니다: %s\n"
+                "  이 값을 무시하고 레포 raw URL 을 사용합니다.\n"
+                "  Variables 에서 ASSET_RAW_BASE_URL 을 삭제하십시오.",
+                override,
+            )
+        elif not override.startswith("https://"):
+            log.error(
+                "ASSET_RAW_BASE_URL 이 https 로 시작하지 않습니다: %s — 무시합니다.",
+                override,
+            )
+        else:
+            return override
+
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if not repo:
+        raise RuntimeError(
+            "GITHUB_REPOSITORY 를 알 수 없어 이미지 base URL 을 만들 수 없습니다."
+        )
+    branch = os.environ.get("GITHUB_REF_NAME", "main").strip() or "main"
+    return f"https://raw.githubusercontent.com/{repo}/{branch}/assets"
 
 
 def _acquire_token(settings: Settings) -> str:
@@ -183,6 +216,10 @@ def run() -> int:
         log.info("DRY_RUN — 실제 발행하지 않습니다.\n--- 본문 ---\n%s\n--- 리플 ---\n%s",
                  plan.text, plan.reply_text)
         return 0
+
+    # 지연 이전에 이미지 URL 을 검증한다.
+    # 실패가 확정된 요청을 위해 수 분을 대기하면 Actions 분만 낭비된다.
+    verify_image_url(plan.image_url)
 
     # 안티봇 — 매번 다른 시각에 발행되도록 랜덤 지연
     antibot.jitter_sleep(*config.ANTIBOT_PUBLISH_JITTER, label="발행 전")

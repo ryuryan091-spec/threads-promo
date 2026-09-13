@@ -131,6 +131,7 @@ Actions → Threads Reply → Run workflow
 | 로그 | 의미 | 조치 |
 |---|---|---|
 | `Secret 갱신 실패` | PAT 문제. **갱신값이 저장되지 않음** | PAT 만료·권한 확인 |
+| `공개키 조회 실패 401 Bad credentials` | PAT 미등록·만료·값 손상 | PAT 재발급 후 Secret 교체 |
 | `남은 유효기간 약 30일` 이하 | 갱신이 며칠째 저장 안 됨 | 즉시 PAT 확인 |
 | `토큰 갱신 실패 — 기존 토큰으로 진행` | 갱신 API 실패 | 1~2회는 무시. 반복 시 재발급 |
 
@@ -163,6 +164,7 @@ OAuth 경로(`auth_url.yml` → `bootstrap.yml`)는 예비로 남겨둔 것입�
 | `190` | Cannot parse access token | Secret 값이 토큰이 아님 | 값 확인: `THAA` 시작, 100자 이상, 따옴표·공백 없음 |
 | `190` | Invalid OAuth 2.0 Access Token | 토큰 만료 또는 다른 앱 발급 | 4-3으로 재발급 |
 | `100` / subcode 33 | Object with ID '...' does not exist | `THREADS_USER_ID` 오류 | Secret 삭제 → 런타임 자동 조회 |
+| `36001` / subcode 2207083 | 이미지 포맷 인식 불가 | URL이 이미지가 아니거나 JPEG/PNG 아님 | `ASSET_RAW_BASE_URL` 삭제, 파일 실제 포맷 확인 |
 | `1349245` | 테스트 초대 미수락 | Threads Tester 수락 안 함 | Threads 앱 → 설정 → 웹사이트 권한 → 초대 → 수락 |
 | `1349168` | 리디렉션 URI 화이트리스트 없음 | 콜백 URL 미등록 | Meta 콘솔 → 설정 → 리디렉션 콜백 URL |
 | `4476001` | URI에 리디렉션이 없습니다 | `redirect_uri` 파라미터 누락·손상 | `https://` 로 시작하는지 확인 |

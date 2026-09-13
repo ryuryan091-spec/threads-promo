@@ -146,3 +146,67 @@ class TestSlotGate:
 
     def test_no_env_runs(self):
         assert self._gate({})
+
+
+class TestImageUrlGuard:
+    """잘못된 이미지 base URL이 발행까지 흘러가지 않는지 확인한다."""
+
+    @staticmethod
+    def _resolve(override: str) -> str:
+        import os
+
+        from src import main
+        from src.env import load_settings
+
+        os.environ.update(
+            GITHUB_REPOSITORY="owner/repo",
+            GITHUB_REF_NAME="main",
+            THREADS_APP_ID="1",
+            THREADS_APP_SECRET="s",
+            THREADS_LONG_LIVED_TOKEN="t",
+        )
+        os.environ["ASSET_RAW_BASE_URL"] = override
+        try:
+            return main._resolve_raw_base_url(load_settings())
+        finally:
+            os.environ.pop("ASSET_RAW_BASE_URL", None)
+
+    def test_social_host_is_rejected(self):
+        got = self._resolve("https://www.youtube.com/@handle")
+        assert got == "https://raw.githubusercontent.com/owner/repo/main/assets"
+
+    def test_non_https_is_rejected(self):
+        got = self._resolve("http://example.com/assets")
+        assert got.startswith("https://raw.githubusercontent.com")
+
+    def test_valid_override_is_kept(self):
+        assert self._resolve("https://cdn.example.com/assets") == (
+            "https://cdn.example.com/assets"
+        )
+
+    def test_empty_falls_back(self):
+        assert self._resolve("") == (
+            "https://raw.githubusercontent.com/owner/repo/main/assets"
+        )
+
+
+class TestImageValidation:
+    def test_forbidden_host(self):
+        from src.threads_client import ImageValidationError, verify_image_url
+
+        try:
+            verify_image_url("https://www.youtube.com/@x/promo_01.png")
+        except ImageValidationError as exc:
+            assert "자산 호스트" in str(exc)
+        else:
+            raise AssertionError("차단되지 않았습니다")
+
+    def test_non_https(self):
+        from src.threads_client import ImageValidationError, verify_image_url
+
+        try:
+            verify_image_url("http://example.com/a.png")
+        except ImageValidationError as exc:
+            assert "https" in str(exc)
+        else:
+            raise AssertionError("차단되지 않았습니다")
