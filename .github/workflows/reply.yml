@@ -63,6 +63,7 @@ jobs:
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+          EVENT_NAME: ${{ github.event_name }}
           REPLY_SLOTS: "A,B,C"
           SLOT: ${{ steps.slot.outputs.slot }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
