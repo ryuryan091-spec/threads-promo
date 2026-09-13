@@ -3,10 +3,12 @@ name: Threads Publish
 "on":
   schedule:
     # KST 09:30 = UTC 00:30
-    # KST 08:41 / 09:37 / 10:19  (정각·반각 회피, 하루 하나만 실제 실행)
-    - cron: "41 23 * * *"
-    - cron: "37 0 * * *"
-    - cron: "19 1 * * *"
+    # KST 08:23(출근) / 12:47(점심) / 20:31(저녁)
+    #   - 최적 시간대 3개에 하나씩 배치. 하루 하나만 실제 실행.
+    #   - 정각·반각 회피. 실제 발행 범위 12시간 이상으로 분산.
+    - cron: "23 23 * * *"
+    - cron: "47 3 * * *"
+    - cron: "31 11 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -40,9 +42,9 @@ jobs:
         id: slot
         run: |
           case "${{ github.event.schedule }}" in
-            "41 23 * * *") echo "slot=A" >> "$GITHUB_OUTPUT" ;;
-            "37 0 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
-            "19 1 * * *")  echo "slot=C" >> "$GITHUB_OUTPUT" ;;
+            "23 23 * * *") echo "slot=A" >> "$GITHUB_OUTPUT" ;;
+            "47 3 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
+            "31 11 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
             *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -62,6 +64,7 @@ jobs:
           X_URL: ${{ vars.X_URL }}
           ASSET_RAW_BASE_URL: ${{ vars.ASSET_RAW_BASE_URL }}
           PUBLISH_SLOTS: "A,B,C"
+          PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           SLOT: ${{ steps.slot.outputs.slot }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
         run: python -m src.main
