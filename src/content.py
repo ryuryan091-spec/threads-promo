@@ -112,6 +112,17 @@ def list_asset_names(assets_dir: Path) -> list[str]:
     return names
 
 
+def order_asset_candidates(assets: list[str], day_index: int) -> list[str]:
+    """오늘의 1순위부터 시작해 나머지를 순환 배열한다.
+
+    1순위가 깨져 있어도 다음 후보로 넘어갈 수 있게 한다.
+    """
+    if not assets:
+        return []
+    start = day_index % len(assets)
+    return assets[start:] + assets[:start]
+
+
 def build_image_url(raw_base_url: str, asset_name: str) -> str:
     """레포의 raw URL을 그대로 쓴다. 별도 스토리지 비용 0원."""
     return f"{raw_base_url.rstrip('/')}/{asset_name}"

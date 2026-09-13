@@ -164,7 +164,8 @@ OAuth 경로(`auth_url.yml` → `bootstrap.yml`)는 예비로 남겨둔 것입�
 | `190` | Cannot parse access token | Secret 값이 토큰이 아님 | 값 확인: `THAA` 시작, 100자 이상, 따옴표·공백 없음 |
 | `190` | Invalid OAuth 2.0 Access Token | 토큰 만료 또는 다른 앱 발급 | 4-3으로 재발급 |
 | `100` / subcode 33 | Object with ID '...' does not exist | `THREADS_USER_ID` 오류 | Secret 삭제 → 런타임 자동 조회 |
-| `36001` / subcode 2207083 | 이미지 포맷 인식 불가 | URL이 이미지가 아니거나 JPEG/PNG 아님 | `ASSET_RAW_BASE_URL` 삭제, 파일 실제 포맷 확인 |
+| `36001` / subcode 2207083 | 이미지 포맷 인식 불가 | URL이 이미지가 아니거나 JPEG/PNG 아님 | 실행 시 출력되는 `진단:` 줄 참조 |
+| exit 5 | 이미지 검증 실패 | 발행 전 사전 차단 | `진단:` 줄이 원인을 지목함 |
 | `1349245` | 테스트 초대 미수락 | Threads Tester 수락 안 함 | Threads 앱 → 설정 → 웹사이트 권한 → 초대 → 수락 |
 | `1349168` | 리디렉션 URI 화이트리스트 없음 | 콜백 URL 미등록 | Meta 콘솔 → 설정 → 리디렉션 콜백 URL |
 | `4476001` | URI에 리디렉션이 없습니다 | `redirect_uri` 파라미터 누락·손상 | `https://` 로 시작하는지 확인 |
@@ -335,6 +336,7 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | `X_URL` | — | 유입 목적지 |
 | `DRY_RUN` | `true` | 발행 차단 스위치 |
 | `AI_ENABLED` | `true` | AI 생성 스위치 |
+| `IMAGE_FALLBACK_TO_TEXT` | `true` | 이미지 실패 시 텍스트 전용 발행 |
 | `REPLY_ENABLED` | `true` | 답글 스위치 |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |

@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from . import antibot, config, content, notifier, token_manager
 from .env import MissingEnvError, Settings, load_settings
 from .threads_client import (
+    ImageValidationError,
     ThreadsApiError,
     ThreadsClient,
     fetch_user_id,
@@ -217,19 +218,87 @@ def run() -> int:
                  plan.text, plan.reply_text)
         return 0
 
-    # 지연 이전에 이미지 URL 을 검증한다.
-    # 실패가 확정된 요청을 위해 수 분을 대기하면 Actions 분만 낭비된다.
-    verify_image_url(plan.image_url)
+    # ------------------------------------------------------------------
+    # Tier 1~2 : 사용 가능한 이미지를 찾는다.
+    #   지연 이전에 검증한다. 실패가 확정된 요청을 위해 수 분을 대기하면
+    #   Actions 분만 낭비된다.
+    # ------------------------------------------------------------------
+    image_url, degrade_reasons = _select_usable_image(plan, settings)
+
+    if image_url is None and not config.IMAGE_FALLBACK_TO_TEXT:
+        raise ImageValidationError(
+            "사용 가능한 이미지가 없고 텍스트 폴백이 비활성 상태입니다.\n"
+            + "\n".join(degrade_reasons)
+        )
 
     # 안티봇 — 매번 다른 시각에 발행되도록 랜덤 지연
     antibot.jitter_sleep(*config.ANTIBOT_PUBLISH_JITTER, label="발행 전")
 
-    post_id = client.publish_image_post(plan.image_url, plan.text)
-    log.info("본문 발행 완료 post_id=%s", post_id)
+    # ------------------------------------------------------------------
+    # Tier 3 : 이미지가 없으면 텍스트 전용으로 발행한다.
+    #   이미지 하나 때문에 그날 발행을 거르는 것이 더 큰 손해다.
+    # ------------------------------------------------------------------
+    if image_url:
+        post_id = client.publish_image_post(image_url, plan.text)
+        log.info("본문 발행 완료 (이미지) post_id=%s", post_id)
+    else:
+        post_id = client.publish_text_post(plan.text)
+        log.warning("본문 발행 완료 (텍스트 전용 폴백) post_id=%s", post_id)
+        _notify_safe(
+            "[Threads] 이미지 없이 텍스트만 발행했습니다.\n"
+            + "\n".join(degrade_reasons[:3])
+        )
 
     reply_id = client.publish_self_reply(post_id, plan.reply_text)
     log.info("셀프 리플라이 발행 완료 reply_id=%s", reply_id)
     return 0
+
+
+def _select_usable_image(plan, settings: Settings) -> tuple[str | None, list[str]]:
+    """검증을 통과하는 이미지 URL 을 찾는다.
+
+    Tier 1  오늘의 1순위 이미지
+    Tier 2  같은 디렉토리의 다른 이미지 (최대 IMAGE_CANDIDATE_LIMIT 개)
+    실패하면 (None, 사유목록) 을 돌려주고 호출자가 텍스트 폴백을 결정한다.
+
+    반환하는 사유 목록은 알림에 그대로 실어 보낸다. 어떤 파일이 왜 안 됐는지
+    남기지 않으면 조용한 품질 저하가 반복된다.
+    """
+    reasons: list[str] = []
+
+    try:
+        assets = content.list_asset_names(ASSETS_DIR)
+    except FileNotFoundError as exc:
+        reasons.append(f"자산 디렉토리 문제: {exc}")
+        return None, reasons
+
+    base_url = _resolve_raw_base_url(settings)
+    day_index = content._day_index(dt.datetime.now(KST).date())
+    candidates = content.order_asset_candidates(assets, day_index)[
+        : config.IMAGE_CANDIDATE_LIMIT
+    ]
+
+    for rank, name in enumerate(candidates, start=1):
+        url = content.build_image_url(base_url, name)
+        try:
+            verify_image_url(url)
+        except ImageValidationError as exc:
+            first_line = str(exc).split("\n")[0]
+            log.warning("이미지 후보 %d/%d 실패 — %s: %s",
+                        rank, len(candidates), name, first_line)
+            reasons.append(f"{name}: {first_line}")
+            continue
+
+        if rank > 1:
+            log.warning("1순위 이미지 실패 — 대체 이미지 %s 로 발행합니다.", name)
+            _notify_safe(
+                f"[Threads] 1순위 이미지 실패, 대체본 사용\n대체: {name}\n"
+                + "\n".join(reasons)
+            )
+        return url, reasons
+
+    log.error("사용 가능한 이미지가 없습니다. 후보 %d개 전부 실패.", len(candidates))
+    return None, reasons
 
 
 def main() -> int:
@@ -247,6 +316,10 @@ def main() -> int:
         log.error("Threads API 오류%s: %s", hint, exc)
         _notify_safe(f"[Threads] 발행 실패{hint}\n{exc}")
         return 4
+    except ImageValidationError as exc:
+        log.error("이미지 검증 실패 — 발행하지 않습니다.\n%s", exc)
+        _notify_safe(f"[Threads] 이미지 검증 실패\n{exc}")
+        return 5
     except Exception as exc:  # noqa: BLE001 — 최상위 방어
         log.exception("예기치 못한 오류")
         _notify_safe(f"[Threads] 예기치 못한 오류\n{exc}")

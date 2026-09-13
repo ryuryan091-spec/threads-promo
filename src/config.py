@@ -75,6 +75,16 @@ ANTIBOT_SLOT_SALT_REPLY = "reply"
 MEDIA_TYPE_IMAGE = "IMAGE"
 MEDIA_TYPE_TEXT = "TEXT"
 
+# ---------------------------------------------------------------------------
+# 발행 폴백 (이중화)
+#   이미지 하나 때문에 그날 발행을 거르면, 매일 발행하는 계정이라는 신호를
+#   잃는다. 이미지 없이 올리는 편이 낫다는 판단.
+# ---------------------------------------------------------------------------
+IMAGE_FALLBACK_TO_TEXT = os.environ.get(
+    "IMAGE_FALLBACK_TO_TEXT", "true"
+).strip().lower() not in ("false", "0", "no")
+IMAGE_CANDIDATE_LIMIT = 3   # Tier 2 에서 시도할 대체 이미지 최대 개수
+
 HTTP_TIMEOUT_SEC = 20
 HTTP_RETRY_COUNT = 3
 HTTP_RETRY_BACKOFF_SEC = 3

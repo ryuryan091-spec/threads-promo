@@ -94,6 +94,57 @@ class ImageValidationError(RuntimeError):
     """이미지 URL이 Threads 요구사항을 만족하지 않는다."""
 
 
+def _diagnose_payload(url: str, content_type: str) -> str:
+    """실제 응답 앞부분을 읽어 원인을 구체적으로 짚는다.
+
+    Content-Type 만으로는 "왜 이미지가 아닌지"를 알 수 없다.
+    파일 시그니처를 보면 Git LFS 포인터인지, 텍스트 자리표시자인지,
+    다른 이미지 포맷인지 바로 구분된다.
+    """
+    try:
+        resp = requests.get(
+            url,
+            headers={"Range": "bytes=0-511"},
+            timeout=config.HTTP_TIMEOUT_SEC,
+            allow_redirects=True,
+        )
+        head = resp.content[:512]
+    except requests.RequestException as exc:
+        return f"  (원인 진단 실패: {exc})"
+
+    signatures = (
+        (b"\x89PNG\r\n\x1a\n", "실제로는 PNG 입니다. 서버가 타입을 잘못 보냈을 수 있습니다."),
+        (b"\xff\xd8\xff", "실제로는 JPEG 입니다. 서버가 타입을 잘못 보냈을 수 있습니다."),
+        (b"GIF8", "GIF 파일입니다. Threads 는 JPEG/PNG 만 지원합니다."),
+        (b"RIFF", "WebP 파일입니다. PNG 로 변환하십시오."),
+        (b"\x00\x00\x00 ftypheic", "HEIC 파일입니다. PNG 로 변환하십시오."),
+        (b"<!DOCTYPE", "HTML 페이지입니다. raw URL 이 아닙니다."),
+        (b"<html", "HTML 페이지입니다. raw URL 이 아닙니다."),
+    )
+    for magic, message in signatures:
+        if head.startswith(magic) or magic in head[:32]:
+            return f"  진단: {message}"
+
+    if head.startswith(b"version https://git-lfs"):
+        return (
+            "  진단: Git LFS 포인터 파일입니다. 실제 이미지가 아닌 텍스트 메타데이터입니다.\n"
+            "        .gitattributes 에서 이미지 확장자의 LFS 설정을 제거하고\n"
+            "        파일을 일반 바이너리로 다시 커밋하십시오."
+        )
+
+    if not head:
+        return "  진단: 파일이 비어 있습니다(0바이트)."
+
+    try:
+        preview = head.decode("utf-8", errors="replace")[:120].replace("\n", " ")
+        return (
+            f"  진단: 이미지가 아닌 텍스트 파일입니다. 앞부분: {preview!r}\n"
+            "        assets 에 실제 PNG/JPEG 바이너리를 커밋했는지 확인하십시오."
+        )
+    except Exception:  # noqa: BLE001
+        return "  진단: 알 수 없는 바이너리입니다."
+
+
 def verify_image_url(url: str) -> None:
     """발행 전에 이미지 URL을 검증한다.
 
@@ -130,17 +181,10 @@ def verify_image_url(url: str) -> None:
 
     content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if content_type not in ALLOWED_IMAGE_TYPES:
-        hint = ""
-        if content_type.startswith("text/"):
-            hint = (
-                "\n  이미지가 아니라 웹페이지가 반환되었습니다. "
-                "raw.githubusercontent.com 형식인지 확인하십시오."
-            )
-        elif content_type.startswith("image/"):
-            hint = "\n  Threads 는 JPEG 와 PNG 만 지원합니다. 변환이 필요합니다."
         raise ImageValidationError(
             f"Content-Type 이 {content_type or '없음'} 입니다. "
-            f"허용: {', '.join(ALLOWED_IMAGE_TYPES)}{hint}"
+            f"허용: {', '.join(ALLOWED_IMAGE_TYPES)}\n"
+            f"{_diagnose_payload(url, content_type)}"
         )
 
     length = resp.headers.get("Content-Length")
@@ -281,6 +325,15 @@ class ThreadsClient:
             }
         )
 
+    def create_text_container(self, text: str) -> str:
+        """텍스트 전용 게시물 컨테이너. 이미지 폴백 시 사용한다."""
+        return self._create_container(
+            {
+                "media_type": config.MEDIA_TYPE_TEXT,
+                "text": text,
+            }
+        )
+
     def create_reply_container(self, parent_post_id: str, text: str) -> str:
         return self._create_container(
             {
@@ -317,6 +370,10 @@ class ThreadsClient:
 
     def publish_image_post(self, image_url: str, text: str) -> str:
         return self.publish(self.create_image_container(image_url, text))
+
+    def publish_text_post(self, text: str) -> str:
+        """텍스트 전용 발행. 이미지 폴백 경로."""
+        return self.publish(self.create_text_container(text))
 
     def publish_self_reply(self, parent_post_id: str, text: str) -> str:
         return self.publish(self.create_reply_container(parent_post_id, text))
