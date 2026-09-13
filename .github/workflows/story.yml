@@ -70,5 +70,7 @@ jobs:
           EVENT_DAILY_CAP: ${{ vars.EVENT_DAILY_CAP || '2' }}
           EVENT_MIN_GAP_HOURS: ${{ vars.EVENT_MIN_GAP_HOURS || '4' }}
           EVENT_RUN: "true"
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch'
+             && inputs.mode == 'live' && 'false'
+             || vars.DRY_RUN || 'true' }}
         run: python -m src.run_story
