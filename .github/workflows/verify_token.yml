@@ -34,6 +34,12 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: Check scopes
+        env:
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+        continue-on-error: true
+        run: python scripts/check_scopes.py
+
       - name: Verify token and resolve user id
         env:
           THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
