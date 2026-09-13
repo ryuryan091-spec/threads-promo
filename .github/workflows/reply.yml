@@ -71,5 +71,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REPLY_SLOTS: "A,B,C"
           SLOT: ${{ steps.slot.outputs.slot }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch'
+             && inputs.mode == 'live' && 'false'
+             || vars.DRY_RUN || 'true' }}
         run: python -m src.run_reply
