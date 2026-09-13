@@ -76,9 +76,20 @@ def run() -> int:
     today = dt.datetime.now(KST).date()
 
     # 1) 슬롯 판정 — 시각 분산. 당첨 아니면 즉시 종료해 Actions 분을 아낀다.
+    event = os.environ.get("EVENT_NAME", "").strip()
     slots = [s for s in os.environ.get("REPLY_SLOTS", "").split(",") if s.strip()]
     current_slot = os.environ.get("SLOT", "").strip()
-    if slots and current_slot:
+
+    if event and event != "schedule":
+        log.info("수동 실행(%s) — 슬롯 판정을 건너뜁니다.", event)
+    elif slots and current_slot:
+        if current_slot not in slots:
+            log.error(
+                "슬롯 '%s' 이 등록 목록 %s 에 없습니다. "
+                "cron 문자열과 Resolve slot case 분기를 확인하십시오.",
+                current_slot, slots,
+            )
+            return 0
         if not antibot.should_run_this_slot(
             today, current_slot, slots, config.ANTIBOT_SLOT_SALT_REPLY
         ):
