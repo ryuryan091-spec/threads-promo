@@ -5,10 +5,11 @@ name: Threads Reply
 
 "on":
   schedule:
-    # KST 11:23 / 15:47 / 20:13  (정각·반각 회피)
-    - cron: "23 2 * * *"
-    - cron: "47 6 * * *"
-    - cron: "13 11 * * *"
+    # KST 10:19 / 16:53 / 22:07
+    #   발행 슬롯(08:23/12:47/20:31)과 겹치지 않게 배치.
+    - cron: "19 1 * * *"
+    - cron: "53 7 * * *"
+    - cron: "07 13 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -42,9 +43,9 @@ jobs:
         id: slot
         run: |
           case "${{ github.event.schedule }}" in
-            "23 2 * * *")  echo "slot=A" >> "$GITHUB_OUTPUT" ;;
-            "47 6 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
-            "13 11 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
+            "19 1 * * *")  echo "slot=A" >> "$GITHUB_OUTPUT" ;;
+            "53 7 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
+            "07 13 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
             *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
           esac
 
