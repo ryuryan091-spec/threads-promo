@@ -63,6 +63,7 @@ jobs:
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           ASSET_RAW_BASE_URL: ${{ vars.ASSET_RAW_BASE_URL }}
+          EVENT_NAME: ${{ github.event_name }}
           PUBLISH_SLOTS: "A,B,C"
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           SLOT: ${{ steps.slot.outputs.slot }}
