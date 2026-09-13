@@ -107,6 +107,7 @@ Actions → Threads Reply → Run workflow
 
 | 주기 | 항목 | 방법 | 이상 시 |
 |---|---|---|---|
+| 상시 | 워치독 경보 | 텔레그램 `[Threads Watchdog]` |
 | 주 1회 | Threads Account Status | Threads 앱 → 설정 → 계정 상태 | 강등 표시 시 6-2 참조 |
 | 주 1회 | 답글 수 추이 | 내 글 댓글 수 | 0에 수렴하면 콘텐츠 재설계 |
 | 주 1회 | 발행 성공률 | Actions 탭 | 실패 반복 시 런북 |

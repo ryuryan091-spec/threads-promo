@@ -209,10 +209,10 @@ def build_plan(
         try:
             # 기둥마다 근거 종류가 다르다.
             #   BUILD -> 커밋 로그 / STORY -> 회차 기록 / 나머지 -> 근거 없음
-            evidence = {
-                "BUILD": facts_block,
-                "STORY": episode_block,
-            }.get(pillar_key, "")
+            # 기둥마다 근거 종류가 다르다.
+            #   STORY -> Notion 트래커 회차 기록 / 나머지 -> 근거 없음
+            #   (BUILD 기둥 제거로 커밋 근거 경로는 현재 미사용)
+            evidence = {"STORY": episode_block}.get(pillar_key, "")
             text = _generate_with_ai(
                 claude_api_key, pillar_key, seed, recent_texts or [], evidence
             )

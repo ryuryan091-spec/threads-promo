@@ -72,12 +72,15 @@ class TestFactsBlock:
 class TestEvidencePolicy:
     """근거가 없는 기둥에서 구체 진술을 금지하는지."""
 
-    def test_build_has_evidence(self):
-        assert ai_writer.PILLARS["BUILD"].evidence_available
-
-    def test_story_has_evidence_after_notion_wiring(self):
-        """STORY 는 Notion Tracker 연결로 근거 있는 기둥으로 승격되었다."""
+    def test_story_is_the_evidence_pillar(self):
+        """BUILD 제거 후 근거 보유 기둥은 STORY 뿐이다."""
         assert ai_writer.PILLARS["STORY"].evidence_available
+
+    def test_build_pillar_removed(self):
+        """BUILD 는 유입 정합성 문제로 제거되었다."""
+        assert "BUILD" not in ai_writer.PILLARS
+        assert "BUILD" not in ai_writer.PILLAR_ROTATION
+        assert not ai_writer.uses_commit_evidence()
 
     def test_market_promo_have_none(self):
         """근거 소스가 없는 기둥은 구체 진술을 금지해야 한다."""
@@ -87,7 +90,7 @@ class TestEvidencePolicy:
     def test_evidence_pillar_gets_facts(self):
         block = facts.Facts(commits=["폴백 구현"]).to_prompt_block()
         prompt = ai_writer._build_user_prompt(
-            ai_writer.PILLARS["BUILD"], "소재", [], block
+            ai_writer.PILLARS["STORY"], "소재", [], block
         )
         assert "폴백 구현" in prompt
         assert "여기 없는 작업" in prompt
@@ -102,9 +105,23 @@ class TestEvidencePolicy:
 
     def test_evidence_pillar_without_facts_gets_warning(self):
         prompt = ai_writer._build_user_prompt(
-            ai_writer.PILLARS["BUILD"], "소재", [], ""
+            ai_writer.PILLARS["STORY"], "소재", [], ""
         )
         assert "근거 없음" in prompt
+
+    def test_rotation_balance(self):
+        """PROMO 25% 상한 유지. 홍보를 늘리면 도달이 떨어진다."""
+        import collections
+
+        c = collections.Counter(ai_writer.PILLAR_ROTATION)
+        total = len(ai_writer.PILLAR_ROTATION)
+        assert c["PROMO"] / total <= 0.25
+        assert c["STORY"] / total >= 0.3
+
+    def test_no_adjacent_duplicates(self):
+        r = ai_writer.PILLAR_ROTATION
+        for i in range(len(r)):
+            assert r[i] != r[(i + 1) % len(r)]
 
 
 class TestFactConstraintsInPrompt:

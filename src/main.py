@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from . import (
+    ai_writer,
     antibot,
     config,
     content,
@@ -246,6 +247,7 @@ def run() -> int:
         quota_used=quota.used,
         recent_post_count=len(recent_texts),
         episodes=episodes,
+        include_commits=ai_writer.uses_commit_evidence(),
     )
 
     plan = content.build_plan(
@@ -260,7 +262,7 @@ def run() -> int:
     log.info(
         "기둥=%s 소재=%s 생성=%s 근거=%s 이미지=%s",
         plan.pillar, plan.seed, plan.source,
-        f"커밋{len(collected.commits)}/회차{len(collected.episodes)}",
+        f"회차{len(collected.episodes)}건" if collected.has_episodes else "없음",
         plan.image_url,
     )
 

@@ -139,9 +139,14 @@ def collect(
     quota_used: int | None = None,
     recent_post_count: int | None = None,
     episodes: list[str] | None = None,
+    include_commits: bool = True,
 ) -> Facts:
-    """사실을 모은다. 어떤 단계가 실패해도 나머지는 유지한다."""
-    commits = collect_commits(repo_root)
+    """사실을 모은다. 어떤 단계가 실패해도 나머지는 유지한다.
+
+    include_commits=False 면 git log 를 돌리지 않는다.
+    커밋을 근거로 쓰는 기둥이 없으면 수집할 이유가 없다.
+    """
+    commits = collect_commits(repo_root) if include_commits else []
 
     asset_count = 0
     try:

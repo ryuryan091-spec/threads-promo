@@ -163,7 +163,7 @@ class TestAiWriterParsing:
             ),
             pytest.raises(ai_writer.AiWriterError, match="401"),
         ):
-            ai_writer.generate("key", "BUILD", "소재")
+            ai_writer.generate("key", "STORY", "소재")
 
     def test_network_error_raises(self):
         with (
@@ -173,7 +173,7 @@ class TestAiWriterParsing:
             ),
             pytest.raises(ai_writer.AiWriterError),
         ):
-            ai_writer.generate("key", "BUILD", "소재")
+            ai_writer.generate("key", "STORY", "소재")
 
     def test_empty_text_raises(self):
         body = {"content": [{"type": "text", "text": '{"text": ""}'}]}
@@ -183,7 +183,7 @@ class TestAiWriterParsing:
             ),
             pytest.raises(ai_writer.AiWriterError),
         ):
-            ai_writer.generate("key", "BUILD", "소재")
+            ai_writer.generate("key", "STORY", "소재")
 
     def test_unknown_pillar_raises(self):
         with pytest.raises(ai_writer.AiWriterError, match="기둥"):
@@ -194,10 +194,10 @@ class TestAiWriterParsing:
         with mock.patch.object(
             ai_writer.requests, "post", return_value=_resp(200, body)
         ):
-            assert ai_writer.generate("key", "BUILD", "소재") == "생성된 본문"
+            assert ai_writer.generate("key", "STORY", "소재") == "생성된 본문"
 
     def test_recent_texts_in_prompt(self):
-        pillar = ai_writer.PILLARS["BUILD"]
+        pillar = ai_writer.PILLARS["STORY"]
         prompt = ai_writer._build_user_prompt(pillar, "소재", ["어제 글", "그제 글"])
         assert "어제 글" in prompt
         assert "겹치지 않게" in prompt
@@ -211,10 +211,10 @@ class TestAiWriterParsing:
         assert set(ai_writer.PILLAR_ROTATION) == set(ai_writer.PILLARS)
 
     def test_seed_is_deterministic(self):
-        a = ai_writer.pick_seed("BUILD", 100)
-        b = ai_writer.pick_seed("BUILD", 100)
+        a = ai_writer.pick_seed("STORY", 100)
+        b = ai_writer.pick_seed("STORY", 100)
         assert a == b
-        assert a in ai_writer.PILLARS["BUILD"].seeds
+        assert a in ai_writer.PILLARS["STORY"].seeds
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +330,7 @@ class TestJsonRobustness:
             ),
             pytest.raises(ai_writer.AiWriterError),
         ):
-            ai_writer.generate("key", "BUILD", "소재")
+            ai_writer.generate("key", "STORY", "소재")
 
 
 class TestExpiryAssessment:
