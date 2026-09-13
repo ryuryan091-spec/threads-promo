@@ -69,6 +69,21 @@ ANTIBOT_REPLY_JITTER = (20, 150)     # 답글 사이 20초~2.5분
 # 주 3~4회가 지속 가능 하한이므로 주 6회는 여전히 안전 구간.
 PUBLISH_WEEKLY_REST_DAYS = int(os.environ.get("PUBLISH_WEEKLY_REST_DAYS", "0"))
 
+# ---------------------------------------------------------------------------
+# 인덱스 축
+#   콘텐츠 선택을 날짜 하나로만 정하면, 같은 날 두 번 발행할 때
+#   이미지·기둥·소재가 전부 같아진다. 실행 구분자를 축으로 하나 더 둔다.
+#   시각 기반은 쓰지 않는다. 같은 슬롯 재실행 시 결과가 달라져 멱등성이 깨진다.
+# ---------------------------------------------------------------------------
+#   곱셈(day * N + disc)은 쓰지 않는다. N 이 로테이션 길이의 배수면
+#   나머지가 항상 같아져 한 슬롯이 같은 기둥만 뽑는다(실측 확인).
+#   덧셈(day + disc)은 로테이션 길이와 무관하게 항상 안전하다.
+DISCRIMINATOR_MAX = 8
+
+# 실행 구분자. 정기 슬롯과 이벤트 발행이 겹치지 않도록 값을 분리한다.
+DISCRIMINATOR_BY_SLOT = {"A": 0, "B": 1, "C": 2, "MANUAL": 0}
+DISCRIMINATOR_EVENT = 4
+
 ANTIBOT_SLOT_SALT_PUBLISH = "publish"
 ANTIBOT_SLOT_SALT_REPLY = "reply"
 
@@ -84,6 +99,10 @@ IMAGE_FALLBACK_TO_TEXT = os.environ.get(
     "IMAGE_FALLBACK_TO_TEXT", "true"
 ).strip().lower() not in ("false", "0", "no")
 IMAGE_CANDIDATE_LIMIT = 3   # Tier 2 에서 시도할 대체 이미지 최대 개수
+
+# 자산 수량 하한. 주 9~10회 발행 시 2주 주기를 확보하려면 20개가 필요하다.
+# 미달이면 경고만 남기고 발행은 계속한다.
+ASSET_COUNT_RECOMMENDED = 20
 
 # ---------------------------------------------------------------------------
 # 컨테이너 처리 대기
@@ -124,6 +143,24 @@ TOKEN_CRITICAL_DAYS = 3   # 이하면 최우선
 NOTION_DB_ID = os.environ.get("NOTION_DB_ID", "").strip()
 NOTION_EPISODE_LIMIT = int(os.environ.get("NOTION_EPISODE_LIMIT", "6"))
 NOTION_FIELD_ALLOWLIST = os.environ.get("NOTION_FIELD_ALLOWLIST", "").strip()
+
+# 트래커 상태 필터. 진행중 회차를 Threads 가 먼저 언급하는 사고를 막는다.
+# 속성명을 추측하지 않는다. 비워두면 필터를 적용하지 않는다.
+NOTION_STATUS_PROPERTY = os.environ.get("NOTION_STATUS_PROPERTY", "발행 상태").strip()
+NOTION_STATUS_VALUE = os.environ.get("NOTION_STATUS_VALUE", "완료").strip()
+
+# ---------------------------------------------------------------------------
+# 이벤트 기반 STORY 발행
+#   EDT 회차가 올라오면 그 회차를 근거로 STORY 를 발행한다.
+#   신규 판정은 created_time 시간창으로 한다(무상태).
+# ---------------------------------------------------------------------------
+EVENT_STORY_ENABLED = os.environ.get(
+    "EVENT_STORY_ENABLED", "false"
+).strip().lower() in ("true", "1", "yes")
+EVENT_WINDOW_HOURS = float(os.environ.get("EVENT_WINDOW_HOURS", "7.2"))
+EVENT_DAILY_CAP = int(os.environ.get("EVENT_DAILY_CAP", "2"))
+EVENT_MIN_GAP_HOURS = float(os.environ.get("EVENT_MIN_GAP_HOURS", "4"))
+ANTIBOT_EVENT_JITTER = (600, 3000)   # 10~50분
 
 
 HTTP_TIMEOUT_SEC = 20

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -86,19 +87,52 @@ class PostPlan:
 
 
 def _day_index(today: dt.date) -> int:
+    """날짜만의 인덱스. 하위 호환용으로 남긴다."""
     return today.timetuple().tm_yday
 
 
-def pick_kind(today: dt.date) -> PostKind:
+def run_index(today: dt.date, discriminator: int = 0) -> int:
+    """콘텐츠 선택 인덱스.
+
+    날짜 하나만 축으로 쓰면 같은 날 두 번 발행할 때 이미지·기둥·소재가
+    전부 같아진다. 실행 구분자를 곱해 축을 하나 더 만든다.
+
+    같은 날 같은 구분자로 재실행하면 동일 결과가 나온다(멱등성 유지).
+
+    곱셈이 아니라 덧셈을 쓴다. day * N + disc 형태는 N 이 로테이션 길이의
+    배수일 때 나머지가 항상 같아져, 한 슬롯이 같은 기둥만 뽑는 사고가 난다.
+    덧셈은 로테이션 길이와 무관하게 안전하고, 고정 슬롯에서 하루 한 칸씩
+    전진하는 기존 동작도 그대로 유지된다.
+    """
+    if not 0 <= discriminator < config.DISCRIMINATOR_MAX:
+        raise ValueError(
+            f"discriminator 는 0 이상 {config.DISCRIMINATOR_MAX} 미만이어야 합니다: "
+            f"{discriminator}"
+        )
+    return _day_index(today) + discriminator
+
+
+def discriminator_from_env() -> int:
+    """환경변수에서 실행 구분자를 읽는다.
+
+    정기 발행은 SLOT(A/B/C), 이벤트 발행은 EVENT_RUN=true 로 구분한다.
+    """
+    if os.environ.get("EVENT_RUN", "").strip().lower() in ("true", "1", "yes"):
+        return config.DISCRIMINATOR_EVENT
+    slot = os.environ.get("SLOT", "").strip().upper()
+    return config.DISCRIMINATOR_BY_SLOT.get(slot, 0)
+
+
+def pick_kind(today: dt.date, discriminator: int = 0) -> PostKind:
     """홍보형 1 : 관찰형 3 비율을 상태 없이 강제한다."""
-    if _day_index(today) % config.PROMO_CYCLE == 0:
+    if run_index(today, discriminator) % config.PROMO_CYCLE == 0:
         return PostKind.PROMO
     return PostKind.OBSERVATION
 
 
-def pick_text(kind: PostKind, today: dt.date) -> str:
+def pick_text(kind: PostKind, today: dt.date, discriminator: int = 0) -> str:
     pool = PROMO_TEXTS if kind is PostKind.PROMO else OBSERVATION_TEXTS
-    return pool[_day_index(today) % len(pool)]
+    return pool[run_index(today, discriminator) % len(pool)]
 
 
 def list_asset_names(assets_dir: Path) -> list[str]:
@@ -191,15 +225,19 @@ def build_plan(
     recent_texts: list[str] | None = None,
     facts_block: str = "",
     episode_block: str = "",
+    discriminator: int | None = None,
 ) -> PostPlan:
     """오늘 발행할 게시물을 구성한다.
 
     AI 키가 있으면 생성문을, 없거나 실패하면 정적 텍스트 풀을 쓴다.
     어느 경로든 린트를 통과한 텍스트만 반환한다.
     """
-    day_index = _day_index(today)
-    pillar_key = ai_writer.pick_pillar(day_index)
-    seed = ai_writer.pick_seed(pillar_key, day_index)
+    if discriminator is None:
+        discriminator = discriminator_from_env()
+
+    idx = run_index(today, discriminator)
+    pillar_key = ai_writer.pick_pillar(idx)
+    seed = ai_writer.pick_seed(pillar_key, idx)
     kind = PostKind.PROMO if pillar_key == "PROMO" else PostKind.OBSERVATION
 
     source = "static"
@@ -221,11 +259,11 @@ def build_plan(
             _log.warning("AI 생성 포기 — 정적 텍스트로 폴백: %s", exc)
 
     if not text:
-        text = pick_text(kind, today)
+        text = pick_text(kind, today, discriminator)
         lint(text)
 
     assets = list_asset_names(assets_dir)
-    asset = assets[day_index % len(assets)]
+    asset = assets[idx % len(assets)]
     reply_text = build_reply_text()
     lint(reply_text)
 

@@ -336,9 +336,17 @@ def _select_usable_image(plan, settings: Settings) -> tuple[str | None, list[str
         reasons.append(f"자산 디렉토리 문제: {exc}")
         return None, reasons
 
+    if len(assets) < config.ASSET_COUNT_RECOMMENDED:
+        log.warning(
+            "자산 %d개 — 권장 %d개 미만. 반복 주기가 짧아 도달이 떨어질 수 있습니다.",
+            len(assets), config.ASSET_COUNT_RECOMMENDED,
+        )
+
     base_url = _resolve_raw_base_url(settings)
-    day_index = content._day_index(dt.datetime.now(KST).date())
-    candidates = content.order_asset_candidates(assets, day_index)[
+    idx = content.run_index(
+        dt.datetime.now(KST).date(), content.discriminator_from_env()
+    )
+    candidates = content.order_asset_candidates(assets, idx)[
         : config.IMAGE_CANDIDATE_LIMIT
     ]
 

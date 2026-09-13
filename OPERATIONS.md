@@ -344,6 +344,12 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | `DRY_RUN` | `true` | 발행 차단 스위치 |
 | `AI_ENABLED` | `true` | AI 생성 스위치 |
 | `IMAGE_FALLBACK_TO_TEXT` | `true` | 이미지 실패 시 텍스트 전용 발행 |
+| `EVENT_STORY_ENABLED` | `false` | 이벤트 STORY 발행. 관찰 종료 후 `true` |
+| `EVENT_WINDOW_HOURS` | `7.2` | 신규 판정 시간창 (cron 주기의 1.2배) |
+| `EVENT_DAILY_CAP` | `2` | 하루 이벤트 발행 상한 |
+| `EVENT_MIN_GAP_HOURS` | `4` | 직전 발행과 최소 간격 |
+| `NOTION_STATUS_PROPERTY` | `발행 상태` | 트래커 상태 컬럼명 |
+| `NOTION_STATUS_VALUE` | `완료` | 대상 상태값 |
 | `REPLY_ENABLED` | `true` | 답글 스위치 |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |

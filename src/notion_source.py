@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 
@@ -125,6 +126,108 @@ def _row_to_line(props: dict, allow: set[str]) -> str:
         parts.append(clean if ptype == "title" else f"{name}={clean}")
 
     return " / ".join(parts)
+
+
+def _query(token: str, database_id: str, payload: dict) -> dict | None:
+    """Notion DB 질의. 실패해도 예외를 올리지 않고 None 을 돌려준다."""
+    try:
+        resp = requests.post(
+            f"{NOTION_API}/databases/{database_id}/query",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Notion-Version": NOTION_VERSION,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=config.HTTP_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        log.warning("Notion 조회 네트워크 오류: %s", exc)
+        return None
+
+    if resp.status_code != 200:
+        hint = ""
+        if resp.status_code == 401:
+            hint = " — NOTION_TOKEN 이 잘못되었거나 만료되었습니다."
+        elif resp.status_code == 404:
+            hint = (
+                " — NOTION_DB_ID 가 잘못되었거나, 통합이 이 DB 에 "
+                "연결되지 않았습니다(Notion 페이지 > 연결 추가)."
+            )
+        elif resp.status_code == 400:
+            hint = " — 필터 속성명이 DB 스키마와 다를 수 있습니다."
+        log.warning("Notion 조회 실패 %s%s: %s",
+                    resp.status_code, hint, resp.text[:200])
+        return None
+
+    return resp.json()
+
+
+def fetch_new_episodes(
+    token: str,
+    database_id: str,
+    since: dt.datetime,
+    limit: int,
+    *,
+    status_property: str = "",
+    status_value: str = "",
+) -> list[str]:
+    """시간창 안에 새로 생성된 회차를 가져온다.
+
+    무상태 신규 판정. 마지막 처리 회차를 저장하지 않고, created_time 이
+    since 이후인 행만 조회한다. 워크플로우 주기와 시간창을 맞추면
+    상태 없이 "지난 창 안의 신규"를 판정할 수 있다.
+
+    status_property 를 지정하면 그 값이 status_value 인 행만 가져온다.
+    스키마를 모르는 상태에서 속성명을 추측하지 않기 위해 기본은 미적용이며,
+    설정으로 켠다. 필터가 실패하면 필터 없이 재시도한다.
+    """
+    if not token or not database_id:
+        log.info("Notion 설정 없음 — 신규 회차 조회를 생략합니다.")
+        return []
+
+    time_filter = {
+        "timestamp": "created_time",
+        "created_time": {"on_or_after": since.astimezone(dt.UTC).isoformat()},
+    }
+
+    def _payload(filter_obj: dict) -> dict:
+        # 매번 새 dict 를 만든다. 같은 객체를 변형하면 재시도 시
+        # 이전 요청 내용까지 함께 바뀌어 추적이 어려워진다.
+        return {
+            "page_size": max(1, min(limit, 20)),
+            "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+            "filter": filter_obj,
+        }
+
+    used_status_filter = bool(status_property and status_value)
+    if used_status_filter:
+        combined = {
+            "and": [
+                time_filter,
+                {"property": status_property, "select": {"equals": status_value}},
+            ]
+        }
+        body = _query(token, database_id, _payload(combined))
+    else:
+        body = _query(token, database_id, _payload(time_filter))
+
+    # 상태 필터가 스키마와 맞지 않으면 시간창만으로 재시도한다.
+    if body is None and used_status_filter:
+        log.warning("상태 필터 조회 실패 — 시간창만으로 재시도합니다.")
+        body = _query(token, database_id, _payload(time_filter))
+
+    if body is None:
+        return []
+
+    allow = _allowlist()
+    lines = [
+        line[:120]
+        for row in body.get("results", [])
+        if (line := _row_to_line(row.get("properties", {}) or {}, allow))
+    ]
+    log.info("신규 회차 %d건 (기준 %s 이후)", len(lines), since.isoformat())
+    return lines
 
 
 def fetch_episodes(token: str, database_id: str, limit: int) -> list[str]:

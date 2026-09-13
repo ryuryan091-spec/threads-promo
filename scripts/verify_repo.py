@@ -31,7 +31,8 @@ VERSION = "1.0.0"
 REQUIRED_MODULES = [
     "config", "env", "ai_writer", "antibot", "content", "facts",
     "main", "notifier", "notion_source", "reply_engine",
-    "run_reply", "run_watchdog", "threads_client", "token_manager", "watchdog",
+    "run_reply", "run_story", "run_watchdog", "threads_client",
+    "token_manager", "watchdog",
 ]
 
 REQUIRED_FILES = [
@@ -40,6 +41,7 @@ REQUIRED_FILES = [
     ".github/workflows/publish.yml",
     ".github/workflows/reply.yml",
     ".github/workflows/watchdog.yml",
+    ".github/workflows/story.yml",
     ".github/workflows/verify_token.yml",
 ]
 
@@ -48,6 +50,7 @@ WORKFLOW_ENTRYPOINTS = {
     ".github/workflows/publish.yml": "src.main",
     ".github/workflows/reply.yml": "src.run_reply",
     ".github/workflows/watchdog.yml": "src.run_watchdog",
+    ".github/workflows/story.yml": "src.run_story",
 }
 
 
