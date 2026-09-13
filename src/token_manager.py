@@ -40,11 +40,17 @@ def refresh_long_lived_token(current_token: str) -> str:
     갱신 가능 조건: 발급 후 24시간 경과 + 미만료 + threads_basic 권한 보유.
     일 1회 실행 스케줄이면 24시간 조건은 항상 충족된다.
     """
-    resp = requests.get(
-        f"{config.THREADS_AUTH_BASE}/refresh_access_token",
-        params={"grant_type": "th_refresh_token", "access_token": current_token},
-        timeout=config.HTTP_TIMEOUT_SEC,
-    )
+    try:
+        resp = requests.get(
+            f"{config.THREADS_AUTH_BASE}/refresh_access_token",
+            params={"grant_type": "th_refresh_token", "access_token": current_token},
+            timeout=config.HTTP_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        # 네트워크 오류도 TokenRefreshError 로 감싼다.
+        # 그래야 호출자가 기존 토큰으로 폴백할 수 있다.
+        raise TokenRefreshError(f"네트워크 오류: {exc}") from exc
+
     if resp.status_code != 200:
         raise TokenRefreshError(f"{resp.status_code}: {resp.text[:300]}")
 
@@ -80,23 +86,40 @@ def persist_token_to_secret(
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    key_resp = requests.get(
-        f"{GITHUB_API}/repos/{repo}/actions/secrets/public-key",
-        headers=headers,
-        timeout=config.HTTP_TIMEOUT_SEC,
-    )
+    try:
+        key_resp = requests.get(
+            f"{GITHUB_API}/repos/{repo}/actions/secrets/public-key",
+            headers=headers,
+            timeout=config.HTTP_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise SecretPersistError(f"공개키 조회 네트워크 오류: {exc}") from exc
+
     if key_resp.status_code != 200:
-        raise SecretPersistError(f"공개키 조회 실패 {key_resp.status_code}: {key_resp.text[:200]}")
+        hint = ""
+        if key_resp.status_code == 401:
+            hint = " — GH_PAT_SECRETS_WRITE 가 미등록·만료되었거나 값이 손상되었습니다."
+        elif key_resp.status_code == 403:
+            hint = " — PAT 에 Secrets: Read and write 권한이 없습니다."
+        elif key_resp.status_code == 404:
+            hint = " — PAT 의 Repository access 에 이 레포가 포함되지 않았습니다."
+        raise SecretPersistError(
+            f"공개키 조회 실패 {key_resp.status_code}{hint}: {key_resp.text[:200]}"
+        )
 
     key_body = key_resp.json()
     encrypted = _encrypt_for_repo(key_body["key"], token_value)
 
-    put_resp = requests.put(
-        f"{GITHUB_API}/repos/{repo}/actions/secrets/{secret_name}",
-        headers=headers,
-        json={"encrypted_value": encrypted, "key_id": key_body["key_id"]},
-        timeout=config.HTTP_TIMEOUT_SEC,
-    )
+    try:
+        put_resp = requests.put(
+            f"{GITHUB_API}/repos/{repo}/actions/secrets/{secret_name}",
+            headers=headers,
+            json={"encrypted_value": encrypted, "key_id": key_body["key_id"]},
+            timeout=config.HTTP_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise SecretPersistError(f"Secret 갱신 네트워크 오류: {exc}") from exc
+
     if put_resp.status_code not in (201, 204):
         raise SecretPersistError(f"Secret 갱신 실패 {put_resp.status_code}: {put_resp.text[:200]}")
 
