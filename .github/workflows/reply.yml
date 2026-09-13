@@ -32,7 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # facts.py 가 최근 커밋 로그를 읽는다. 기본 depth 1 이면 비어 있다.
+          # BUILD 기둥 제거로 커밋 로그는 현재 미사용.
+          # 기둥을 되살릴 때를 대비해 depth 는 유지한다(비용 없음).
           fetch-depth: 50
 
       - uses: actions/setup-python@v5

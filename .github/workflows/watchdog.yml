@@ -1,0 +1,48 @@
+name: Threads Watchdog
+
+# 파이프라인이 조용히 멈춘 것을 감지한다.
+# 발행 워크플로우는 '실행됐는데 실패한 것'만 알린다.
+# 아예 실행되지 않은 경우는 아무 소리도 나지 않으므로 외부 감시가 필요하다.
+#
+# 정상이면 알림을 보내지 않는다. 조용한 감시자여야 한다.
+
+"on":
+  schedule:
+    # KST 09:53 / 21:37 — 발행 슬롯(08:23/12:47/20:31) 직후에 배치.
+    #   슬롯 직전에 돌면 아직 발행 전 상태를 보게 되어 오탐이 늘어난다.
+    - cron: "53 0 * * *"
+    - cron: "37 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threads-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Watch
+        env:
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          TOKEN_ISSUED_AT: ${{ vars.TOKEN_ISSUED_AT }}
+          REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+        run: python -m src.run_watchdog
