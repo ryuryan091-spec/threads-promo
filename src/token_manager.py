@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import logging
+from dataclasses import dataclass
 
 import requests
 from nacl import encoding, public
@@ -32,6 +34,67 @@ class TokenRefreshError(RuntimeError):
 
 class SecretPersistError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ExpiryAssessment:
+    """저장 실패 상태에서 기존 토큰이 얼마나 남았는지에 대한 판정."""
+
+    days_left: int | None      # 발급일 미상이면 None
+    level: str                 # ok | warn | urgent | critical | unknown
+    message: str
+
+    @property
+    def should_alert(self) -> bool:
+        return self.level in ("warn", "urgent", "critical", "unknown")
+
+
+def assess_expiry(today: dt.date, issued_at_raw: str) -> ExpiryAssessment:
+    """발급일 기준으로 기존 토큰의 잔여 수명을 판정한다.
+
+    저장이 실패해 갱신값이 반영되지 않은 상태에서만 의미가 있다.
+    저장이 성공하면 토큰은 매번 새로 60일이 되므로 경보가 불필요하다.
+    """
+    if not issued_at_raw:
+        return ExpiryAssessment(
+            None,
+            "unknown",
+            "TOKEN_ISSUED_AT Variable 이 없어 잔여 수명을 계산할 수 없습니다. "
+            "토큰 발급일(YYYY-MM-DD)을 등록하면 만료 전에 경보를 받을 수 있습니다.",
+        )
+
+    try:
+        issued = dt.date.fromisoformat(issued_at_raw)
+    except ValueError:
+        return ExpiryAssessment(
+            None,
+            "unknown",
+            f"TOKEN_ISSUED_AT 형식이 잘못되었습니다: {issued_at_raw!r} (YYYY-MM-DD 필요)",
+        )
+
+    days_left = config.TOKEN_LIFETIME_DAYS - (today - issued).days
+    expiry = issued + dt.timedelta(days=config.TOKEN_LIFETIME_DAYS)
+
+    if days_left <= 0:
+        level = "critical"
+        message = (
+            f"토큰이 이미 만료되었을 수 있습니다 (발급 {issued}, 만료 예정 {expiry}). "
+            "즉시 재발급하십시오."
+        )
+    elif days_left <= config.TOKEN_CRITICAL_DAYS:
+        level = "critical"
+        message = f"토큰 만료까지 {days_left}일. 오늘 재발급하십시오. (만료 {expiry})"
+    elif days_left <= config.TOKEN_URGENT_DAYS:
+        level = "urgent"
+        message = f"토큰 만료까지 {days_left}일. 재발급을 서두르십시오. (만료 {expiry})"
+    elif days_left <= config.TOKEN_WARN_DAYS:
+        level = "warn"
+        message = f"토큰 만료까지 {days_left}일. PAT 를 복구하거나 재발급을 준비하십시오. (만료 {expiry})"
+    else:
+        level = "ok"
+        message = f"토큰 만료까지 {days_left}일 (만료 {expiry})."
+
+    return ExpiryAssessment(days_left, level, message)
 
 
 def refresh_long_lived_token(current_token: str) -> str:

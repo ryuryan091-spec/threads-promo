@@ -331,3 +331,107 @@ class TestJsonRobustness:
             pytest.raises(ai_writer.AiWriterError),
         ):
             ai_writer.generate("key", "BUILD", "소재")
+
+
+class TestExpiryAssessment:
+    """저장 실패 상태에서 기존 토큰 잔여 수명 판정."""
+
+    TODAY = __import__("datetime").date(2026, 9, 13)
+
+    @pytest.mark.parametrize(
+        ("issued", "level", "alert"),
+        [
+            ("2026-09-13", "ok", False),
+            ("2026-08-09", "ok", False),
+            ("2026-07-30", "warn", True),
+            ("2026-07-23", "urgent", True),
+            ("2026-07-17", "critical", True),
+            ("2026-07-13", "critical", True),
+        ],
+    )
+    def test_levels(self, issued: str, level: str, alert: bool):
+        got = token_manager.assess_expiry(self.TODAY, issued)
+        assert got.level == level
+        assert got.should_alert is alert
+
+    def test_missing_issued_at_is_unknown_and_alerts(self):
+        got = token_manager.assess_expiry(self.TODAY, "")
+        assert got.level == "unknown"
+        assert got.should_alert
+        assert got.days_left is None
+
+    def test_bad_format_is_unknown(self):
+        got = token_manager.assess_expiry(self.TODAY, "2026/09/13")
+        assert got.level == "unknown"
+        assert "형식" in got.message
+
+    def test_expired_message_urges_reissue(self):
+        got = token_manager.assess_expiry(self.TODAY, "2026-07-01")
+        assert got.days_left is not None and got.days_left < 0
+        assert "재발급" in got.message
+
+    def test_message_includes_expiry_date(self):
+        got = token_manager.assess_expiry(self.TODAY, "2026-07-30")
+        assert "2026-09-28" in got.message
+
+
+class TestExpiryAlertWiring:
+    """영속화 실패 시 경보가 실제로 나가는지."""
+
+    @staticmethod
+    def _settings(**over):
+        s = mock.Mock()
+        s.telegram_bot_token = "bot"
+        s.telegram_chat_id = "chat"
+        s.threads_token = "THAAold"
+        s.can_persist_token = True
+        s.gh_repo = "owner/repo"
+        s.gh_pat = "pat"
+        for k, v in over.items():
+            setattr(s, k, v)
+        return s
+
+    def test_persist_failure_sends_alert(self):
+        from src import config, main
+
+        with (
+            mock.patch.object(main.token_manager, "refresh_long_lived_token",
+                              return_value="THAAnew"),
+            mock.patch.object(main.token_manager, "persist_token_to_secret",
+                              side_effect=token_manager.SecretPersistError("401")),
+            mock.patch.object(config, "TOKEN_ISSUED_AT", "2026-07-23"),
+            mock.patch.object(main.notifier, "send") as send,
+        ):
+            got = main._acquire_token(self._settings())
+
+        assert got == "THAAnew"
+        assert send.called
+        assert "긴급" in send.call_args[0][2]
+
+    def test_no_pat_sends_alert(self):
+        from src import config, main
+
+        with (
+            mock.patch.object(main.token_manager, "refresh_long_lived_token",
+                              return_value="THAAnew"),
+            mock.patch.object(config, "TOKEN_ISSUED_AT", ""),
+            mock.patch.object(main.notifier, "send") as send,
+        ):
+            main._acquire_token(self._settings(can_persist_token=False))
+
+        assert send.called
+        assert "확인필요" in send.call_args[0][2]
+
+    def test_success_sends_no_expiry_alert(self):
+        from src import main
+
+        with (
+            mock.patch.object(main.token_manager, "refresh_long_lived_token",
+                              return_value="THAAnew"),
+            mock.patch.object(main.token_manager, "persist_token_to_secret"),
+            mock.patch.object(main.notifier, "send") as send,
+        ):
+            got = main._acquire_token(self._settings())
+
+        assert got == "THAAnew"
+        assert not send.called

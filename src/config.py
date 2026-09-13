@@ -102,6 +102,20 @@ CONTAINER_STATUS_ERROR = "ERROR"
 CONTAINER_STATUS_EXPIRED = "EXPIRED"
 CONTAINER_STATUS_PUBLISHED = "PUBLISHED"
 
+# ---------------------------------------------------------------------------
+# 토큰 만료 사전 경보
+#   갱신 응답의 expires_in 은 '새 토큰'의 수명이다. 저장에 실패하면 그 토큰은
+#   버려지므로, 실제로 쓰는 기존 토큰의 남은 수명은 알 수 없다.
+#   따라서 저장 실패 시에는 발급일 기준 경과일로 판정한다.
+#   TOKEN_ISSUED_AT Variable 에 최초 발급일(YYYY-MM-DD)을 넣으면 경보가 동작한다.
+# ---------------------------------------------------------------------------
+TOKEN_ISSUED_AT = os.environ.get("TOKEN_ISSUED_AT", "").strip()
+TOKEN_LIFETIME_DAYS = 60
+TOKEN_WARN_DAYS = 20      # 이하면 경고
+TOKEN_URGENT_DAYS = 10    # 이하면 긴급
+TOKEN_CRITICAL_DAYS = 3   # 이하면 최우선
+
+
 HTTP_TIMEOUT_SEC = 20
 HTTP_RETRY_COUNT = 3
 HTTP_RETRY_BACKOFF_SEC = 3

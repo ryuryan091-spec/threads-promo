@@ -132,6 +132,10 @@ Actions → Threads Reply → Run workflow
 |---|---|---|
 | `Secret 갱신 실패` | PAT 문제. **갱신값이 저장되지 않음** | PAT 만료·권한 확인 |
 | `공개키 조회 실패 401 Bad credentials` | PAT 미등록·만료·값 손상 | PAT 재발급 후 Secret 교체 |
+| `[Threads][경고] 토큰 영속화 실패` | 잔여 20일 이하 | PAT 복구 또는 토큰 재발급 |
+| `[Threads][긴급]` | 잔여 10일 이하 | 재발급 서두를 것 |
+| `[Threads][최우선]` | 잔여 3일 이하 | 당일 재발급 |
+| `[Threads][확인필요]` | `TOKEN_ISSUED_AT` 미설정 | Variable 등록 |
 | `남은 유효기간 약 30일` 이하 | 갱신이 며칠째 저장 안 됨 | 즉시 PAT 확인 |
 | `토큰 갱신 실패 — 기존 토큰으로 진행` | 갱신 API 실패 | 1~2회는 무시. 반복 시 재발급 |
 
@@ -342,6 +346,8 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | `REPLY_ENABLED` | `true` | 답글 스위치 |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |
+| `TOKEN_ISSUED_AT` | — | 토큰 최초 발급일 `YYYY-MM-DD`. 만료 사전 경보용 |
+| (워크플로우) `fetch-depth: 50` | — | 커밋 로그 수집용. 줄이면 근거 주입 실패 |
 | `ASSET_RAW_BASE_URL` | **미설정 권장** | 설정 시 자동 조립을 덮어씀 |
 
 ---

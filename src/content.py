@@ -158,13 +158,16 @@ def _generate_with_ai(
     pillar_key: str,
     seed: str,
     recent_texts: list[str],
+    facts_block: str = "",
 ) -> str:
     """AI 생성 + 린트. 린트 실패 시 재시도. 모두 실패하면 예외."""
     last_error: Exception | None = None
 
     for attempt in range(1, config.AI_MAX_RETRY + 1):
         try:
-            text = ai_writer.generate(api_key, pillar_key, seed, recent_texts)
+            text = ai_writer.generate(
+                api_key, pillar_key, seed, recent_texts, facts_block=facts_block
+            )
             lint(text)
             return text
         except ContentPolicyError as exc:
@@ -186,6 +189,7 @@ def build_plan(
     *,
     claude_api_key: str = "",
     recent_texts: list[str] | None = None,
+    facts_block: str = "",
 ) -> PostPlan:
     """오늘 발행할 게시물을 구성한다.
 
@@ -203,7 +207,7 @@ def build_plan(
     if config.AI_ENABLED and claude_api_key:
         try:
             text = _generate_with_ai(
-                claude_api_key, pillar_key, seed, recent_texts or []
+                claude_api_key, pillar_key, seed, recent_texts or [], facts_block
             )
             source = "ai"
         except ai_writer.AiWriterError as exc:

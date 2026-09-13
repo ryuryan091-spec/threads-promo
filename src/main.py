@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from . import antibot, config, content, notifier, token_manager
+from . import antibot, config, content, facts, notifier, token_manager
 from .env import MissingEnvError, Settings, load_settings
 from .threads_client import (
     ContainerNotReadyError,
@@ -100,6 +100,36 @@ def _resolve_raw_base_url(settings: Settings) -> str:
     return f"https://raw.githubusercontent.com/{repo}/{branch}/assets"
 
 
+LEVEL_PREFIX = {
+    "critical": "[Threads][최우선]",
+    "urgent": "[Threads][긴급]",
+    "warn": "[Threads][경고]",
+    "unknown": "[Threads][확인필요]",
+    "ok": "[Threads]",
+}
+
+
+def _alert_expiry(settings: Settings, cause: str) -> None:
+    """영속화가 안 된 상태에서 기존 토큰의 잔여 수명을 경보한다.
+
+    저장이 실패하면 갱신값이 반영되지 않으므로 만료 시계가 멈추지 않는다.
+    발급일(TOKEN_ISSUED_AT)을 알면 남은 일수를 계산해 단계별로 알린다.
+    """
+    assessment = token_manager.assess_expiry(
+        dt.datetime.now(KST).date(), config.TOKEN_ISSUED_AT
+    )
+    prefix = LEVEL_PREFIX.get(assessment.level, "[Threads]")
+    body = f"{prefix} 토큰 영속화 실패\n{cause}\n{assessment.message}"
+
+    if assessment.level in ("critical", "urgent"):
+        log.error(body)
+    else:
+        log.warning(body)
+
+    if assessment.should_alert:
+        notifier.send(settings.telegram_bot_token, settings.telegram_chat_id, body)
+
+
 def _acquire_token(settings: Settings) -> str:
     """갱신 실패는 치명적이지 않다. 기존 토큰이 아직 유효할 수 있으므로 폴백한다."""
     try:
@@ -111,11 +141,9 @@ def _acquire_token(settings: Settings) -> str:
         return settings.threads_token
 
     if not settings.can_persist_token:
-        notifier.send(
-            settings.telegram_bot_token,
-            settings.telegram_chat_id,
-            "[Threads] 경고: GH_PAT_SECRETS_WRITE 미설정으로 갱신 토큰을 "
-            "영속화하지 못했습니다. 이대로면 60일 후 재인가가 필요합니다.",
+        _alert_expiry(
+            settings,
+            "GH_PAT_SECRETS_WRITE 미설정으로 갱신 토큰을 영속화하지 못했습니다.",
         )
         return new_token
 
@@ -124,11 +152,7 @@ def _acquire_token(settings: Settings) -> str:
             settings.gh_repo, settings.gh_pat, new_token
         )
     except token_manager.SecretPersistError as exc:
-        notifier.send(
-            settings.telegram_bot_token,
-            settings.telegram_chat_id,
-            f"[Threads] 토큰 Secret 영속화 실패 — 60일 만료 위험.\n{exc}",
-        )
+        _alert_expiry(settings, f"토큰 Secret 영속화 실패.\n{exc}")
     return new_token
 
 
@@ -202,16 +226,26 @@ def run() -> int:
     else:
         log.info("AI 생성 비활성 — 정적 텍스트 풀 사용")
 
+    collected = facts.collect(
+        REPO_ROOT,
+        ASSETS_DIR,
+        quota_used=quota.used,
+        recent_post_count=len(recent_texts),
+    )
+
     plan = content.build_plan(
         today,
         ASSETS_DIR,
         _resolve_raw_base_url(settings),
         claude_api_key=settings.claude_api_key,
         recent_texts=recent_texts,
+        facts_block=collected.to_prompt_block(),
     )
     log.info(
-        "기둥=%s 소재=%s 생성=%s 이미지=%s",
-        plan.pillar, plan.seed, plan.source, plan.image_url,
+        "기둥=%s 소재=%s 생성=%s 근거=%s 이미지=%s",
+        plan.pillar, plan.seed, plan.source,
+        f"커밋{len(collected.commits)}건" if collected.has_evidence else "없음",
+        plan.image_url,
     )
 
     if settings.dry_run:

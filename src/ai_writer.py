@@ -40,6 +40,9 @@ class Pillar:
     label: str
     brief: str
     seeds: tuple[str, ...]
+    # 이 기둥에 실제 근거(커밋 로그 등)를 붙일 수 있는지.
+    # False 인 기둥에서 구체적 경험담을 요구하면 모델은 지어낼 수밖에 없다.
+    evidence_available: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +62,7 @@ PILLARS: dict[str, Pillar] = {
             "성공담보다 삽질과 사소한 깨달음이 좋다. "
             "기술 용어는 한두 개까지만, 비개발자도 읽히게."
         ),
+        evidence_available=True,
         seeds=(
             "예상보다 오래 걸린 작업",
             "자동화했더니 오히려 늘어난 일",
@@ -76,7 +80,9 @@ PILLARS: dict[str, Pillar] = {
         brief=(
             "시장을 오래 지켜본 사람의 감각을 쓴다. "
             "구체적 종목, 가격, 수치, 전망은 절대 쓰지 않는다. "
-            "판단이 아니라 관찰과 질문으로 끝낸다."
+            "이 기둥에는 확인 가능한 근거가 없다. 따라서 '어제 이런 일이 있었다' 같은 "
+            "구체적 사건을 만들어내지 말고, 오래 지켜보며 갖게 된 태도나 습관을 "
+            "일반화된 형태로 쓴 뒤 질문으로 닫는다."
         ),
         seeds=(
             "모두가 같은 방향을 볼 때의 불안",
@@ -93,9 +99,10 @@ PILLARS: dict[str, Pillar] = {
         key="STORY",
         label="작품 뒷이야기",
         brief=(
-            "시장 데이터를 히어로 배틀 만화로 옮기는 작업 이야기를 쓴다. "
-            "캐릭터 설정, 각색하며 고민한 지점, 독자 반응 등. "
-            "작품 홍보가 아니라 창작 과정 공유의 톤."
+            "시장 데이터를 히어로 배틀 만화로 옮기는 작업에 대해 쓴다. "
+            "이 기둥에는 확인 가능한 근거가 없다. 특정 회차, 특정 캐릭터의 "
+            "구체적 사건을 지어내지 말고, 창작에서 반복적으로 부딪히는 고민을 "
+            "질문 형태로 던진다."
         ),
         seeds=(
             "캐릭터에 성격을 붙이는 기준",
@@ -155,6 +162,15 @@ SYSTEM_PROMPT = """당신은 한국어로 Threads(스레드)에 글을 쓰는 �
 - 마지막은 질문으로 닫습니다. 단, 매번 같은 형태의 질문은 금지.
 - 해시태그, 이모지, 링크, URL을 절대 쓰지 않습니다.
 
+# 사실 제약 (가장 중요. 다른 모든 지시보다 우선한다)
+- 실제로 하지 않은 작업, 측정하지 않은 결과, 존재하지 않는 기능을 했다고 쓰지 않습니다.
+- 지어낸 수치를 쓰지 않습니다. "하루 5분", "대부분", "세 번 중 두 번" 같은 표현은
+  근거로 제시된 사실에 있을 때만 씁니다.
+- 근거가 제시되면 그 범위 안에서만 구체적으로 씁니다. 근거를 넘어서 확장하지 않습니다.
+- 근거가 제시되지 않으면 특정 사건을 지어내지 말고, 반복적으로 겪는 종류의 고민을
+  단정하지 않는 형태로 쓴 뒤 질문으로 닫습니다.
+- 확신이 서지 않으면 단정하는 대신 되묻는 문장을 씁니다.
+
 # 절대 금지
 - 투자 조언성 표현: 매수, 매도, 목표가, 추천주, 종목추천, 손절, 익절, 수익보장, 리딩
 - 구체적 종목명, 가격, 수익률, 시장 전망
@@ -168,7 +184,10 @@ JSON 한 개만 출력합니다. 다른 말은 붙이지 마세요.
 
 
 def _build_user_prompt(
-    pillar: Pillar, seed: str, recent_texts: list[str]
+    pillar: Pillar,
+    seed: str,
+    recent_texts: list[str],
+    facts_block: str = "",
 ) -> str:
     parts = [
         f"# 오늘의 주제 영역: {pillar.label}",
@@ -176,9 +195,26 @@ def _build_user_prompt(
         "",
         f"# 소재 힌트\n{seed}",
         "",
-        "이 힌트는 방향만 잡는 용도입니다. 그대로 제목처럼 쓰지 말고,"
-        " 구체적인 한 장면이나 한 순간으로 풀어내세요.",
+        "이 힌트는 방향만 잡는 용도입니다. 그대로 제목처럼 쓰지 마세요.",
     ]
+
+    if pillar.evidence_available and facts_block:
+        parts += [
+            "",
+            facts_block,
+            "",
+            "위 기록에 있는 일만 소재로 씁니다. 여기 없는 작업·수치·결과를"
+            " 추가하지 마세요. 기록 한 줄을 골라 그때의 판단이나 막힘을 쓰고"
+            " 질문으로 닫습니다.",
+        ]
+    else:
+        parts += [
+            "",
+            "# 근거 없음",
+            "확인 가능한 기록이 제공되지 않았습니다. 특정 사건이나 수치를"
+            " 지어내지 말고, 반복해서 겪는 종류의 고민을 단정하지 않는 형태로"
+            " 쓴 뒤 질문으로 닫으세요.",
+        ]
 
     if recent_texts:
         joined = "\n".join(f"- {t[:80]}" for t in recent_texts[:8])
@@ -249,6 +285,7 @@ def generate(
     seed: str,
     recent_texts: list[str] | None = None,
     model: str | None = None,
+    facts_block: str = "",
 ) -> str:
     """Claude 로 게시글 본문을 생성한다. 실패 시 AiWriterError."""
     pillar = PILLARS.get(pillar_key)
@@ -262,7 +299,9 @@ def generate(
         "messages": [
             {
                 "role": "user",
-                "content": _build_user_prompt(pillar, seed, recent_texts or []),
+                "content": _build_user_prompt(
+                    pillar, seed, recent_texts or [], facts_block
+                ),
             }
         ],
     }
