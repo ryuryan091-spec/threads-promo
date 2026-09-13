@@ -56,6 +56,27 @@ def should_run_this_slot(
     return decision
 
 
+def is_rest_day(today: dt.date, rest_days_per_week: int, salt: str = "rest") -> bool:
+    """이번 주 쉬는 날인지 판정한다.
+
+    매일 100% 발행하는 패턴을 없애기 위한 장치.
+    주 단위로 쉬는 요일을 뽑으므로 주마다 다른 요일에 쉰다.
+    같은 날 재실행 시 동일 판정(멱등).
+    """
+    if rest_days_per_week <= 0:
+        return False
+    if rest_days_per_week >= 7:
+        return True
+
+    year, week, _ = today.isocalendar()
+    rng = random.Random(_day_seed(dt.date(year, 1, 1), f"{salt}-w{week}"))
+    rest_weekdays = rng.sample(range(7), rest_days_per_week)
+    decision = today.weekday() in rest_weekdays
+    if decision:
+        log.info("이번 주 휴식일 — 발행하지 않습니다 (%s)", today.isoformat())
+    return decision
+
+
 def jitter_sleep(
     min_sec: int, max_sec: int, *, label: str = "", dry_run: bool = False
 ) -> int:
