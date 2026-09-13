@@ -64,6 +64,11 @@ REPLY_SCAN_LIMIT = 25               # 글당 조회할 댓글 수
 # ---------------------------------------------------------------------------
 ANTIBOT_PUBLISH_JITTER = (60, 480)   # 발행 전 1~8분
 ANTIBOT_REPLY_JITTER = (20, 150)     # 답글 사이 20초~2.5분
+# 주간 휴식일. 0 = 매일 발행, 1 = 주 1회 쉬는 날(요일은 주마다 랜덤).
+# 매일 100% 빠짐없이 발행하는 것 자체가 기계적 패턴이라는 판단에 따른 옵션.
+# 주 3~4회가 지속 가능 하한이므로 주 6회는 여전히 안전 구간.
+PUBLISH_WEEKLY_REST_DAYS = int(os.environ.get("PUBLISH_WEEKLY_REST_DAYS", "0"))
+
 ANTIBOT_SLOT_SALT_PUBLISH = "publish"
 ANTIBOT_SLOT_SALT_REPLY = "reply"
 

@@ -105,3 +105,44 @@ class TestAntibot:
     def test_daily_cap(self):
         assert antibot.within_daily_cap(5, 20)
         assert not antibot.within_daily_cap(20, 20)
+
+
+class TestSlotGate:
+    """수동 실행이 슬롯 게이트에 막히지 않는지 확인한다."""
+
+    @staticmethod
+    def _gate(monkeypatch_env: dict) -> bool:
+        import datetime as dt
+        import os
+
+        from src import main
+
+        for key in ("EVENT_NAME", "SLOT", "PUBLISH_SLOTS"):
+            os.environ.pop(key, None)
+        os.environ.update(monkeypatch_env)
+        try:
+            return main._slot_gate(dt.date(2026, 9, 13))
+        finally:
+            for key in ("EVENT_NAME", "SLOT", "PUBLISH_SLOTS"):
+                os.environ.pop(key, None)
+
+    def test_manual_dispatch_always_runs(self):
+        assert self._gate(
+            {"EVENT_NAME": "workflow_dispatch", "SLOT": "MANUAL",
+             "PUBLISH_SLOTS": "A,B,C"}
+        )
+
+    def test_scheduled_non_matching_slot_skips(self):
+        results = {
+            self._gate({"EVENT_NAME": "schedule", "SLOT": s, "PUBLISH_SLOTS": "A,B,C"})
+            for s in ("A", "B", "C")
+        }
+        assert results == {True, False}
+
+    def test_unknown_slot_on_schedule_blocks(self):
+        assert not self._gate(
+            {"EVENT_NAME": "schedule", "SLOT": "MANUAL", "PUBLISH_SLOTS": "A,B,C"}
+        )
+
+    def test_no_env_runs(self):
+        assert self._gate({})
