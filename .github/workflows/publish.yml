@@ -75,5 +75,7 @@ jobs:
           PUBLISH_SLOTS: "A,B,C"
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           SLOT: ${{ steps.slot.outputs.slot }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch'
+             && inputs.mode == 'live' && 'false'
+             || vars.DRY_RUN || 'true' }}
         run: python -m src.main
