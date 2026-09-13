@@ -90,6 +90,13 @@ FORBIDDEN_ASSET_HOSTS = (
 )
 
 
+class ContainerNotReadyError(RuntimeError):
+    """컨테이너가 발행 가능한 상태가 되지 못했다.
+
+    호출자는 이 예외를 잡아 폴백(텍스트 전용 발행)으로 넘어갈 수 있다.
+    """
+
+
 class ImageValidationError(RuntimeError):
     """이미지 URL이 Threads 요구사항을 만족하지 않는다."""
 
@@ -356,6 +363,72 @@ class ThreadsClient:
             raise ThreadsApiError(200, f"creation_id 없음: {data}")
         return str(creation_id)
 
+    def get_container_status(self, container_id: str) -> tuple[str, str]:
+        """컨테이너 처리 상태를 조회한다.
+
+        반환: (status, error_message)
+        status 는 FINISHED / IN_PROGRESS / ERROR / EXPIRED / PUBLISHED.
+        """
+        data = _request(
+            "GET",
+            f"{config.THREADS_API_BASE}/{container_id}",
+            params={"fields": "status,error_message", "access_token": self._token},
+        )
+        return (
+            str(data.get("status", "")).upper(),
+            str(data.get("error_message", "")),
+        )
+
+    def wait_until_ready(
+        self, container_id: str, initial_wait_sec: int, *, dry_run: bool = False
+    ) -> None:
+        """컨테이너가 FINISHED 가 될 때까지 대기한다.
+
+        Meta 는 생성 직후 평균 30초 대기를 권장한다. 즉시 발행하면
+        code=24 (Media Not Found) 가 발생한다.
+        상태 조회는 1분 간격, 총 5분을 넘기지 않는다.
+        """
+        if dry_run:
+            log.info("DRY_RUN — 컨테이너 대기를 건너뜁니다.")
+            return
+
+        log.info("컨테이너 처리 대기 %d초 (id=%s)", initial_wait_sec, container_id)
+        time.sleep(initial_wait_sec)
+
+        waited = initial_wait_sec
+        while True:
+            status, error_message = self.get_container_status(container_id)
+            log.info("컨테이너 상태=%s (누적 대기 %d초)", status, waited)
+
+            if status in (
+                config.CONTAINER_STATUS_FINISHED,
+                config.CONTAINER_STATUS_PUBLISHED,
+            ):
+                return
+
+            if status == config.CONTAINER_STATUS_ERROR:
+                raise ContainerNotReadyError(
+                    f"컨테이너 처리 실패 (id={container_id}): "
+                    f"{error_message or '사유 미상'}"
+                )
+
+            if status == config.CONTAINER_STATUS_EXPIRED:
+                raise ContainerNotReadyError(
+                    f"컨테이너가 만료되었습니다 (id={container_id}). "
+                    "생성 후 24시간이 지났습니다."
+                )
+
+            if waited >= config.CONTAINER_POLL_MAX_SEC:
+                raise ContainerNotReadyError(
+                    f"컨테이너가 {waited}초 안에 준비되지 않았습니다 "
+                    f"(id={container_id}, 마지막 상태={status})."
+                )
+
+            remaining = config.CONTAINER_POLL_MAX_SEC - waited
+            interval = min(config.CONTAINER_POLL_INTERVAL_SEC, remaining)
+            time.sleep(interval)
+            waited += interval
+
     def publish(self, creation_id: str) -> str:
         """컨테이너는 생성 후 24시간이면 만료되므로 즉시 발행한다."""
         data = _request(
@@ -368,12 +441,28 @@ class ThreadsClient:
             raise ThreadsApiError(200, f"post_id 없음: {data}")
         return str(post_id)
 
-    def publish_image_post(self, image_url: str, text: str) -> str:
-        return self.publish(self.create_image_container(image_url, text))
+    def publish_image_post(
+        self, image_url: str, text: str, *, dry_run: bool = False
+    ) -> str:
+        container_id = self.create_image_container(image_url, text)
+        self.wait_until_ready(
+            container_id, config.CONTAINER_WAIT_IMAGE_SEC, dry_run=dry_run
+        )
+        return self.publish(container_id)
 
-    def publish_text_post(self, text: str) -> str:
+    def publish_text_post(self, text: str, *, dry_run: bool = False) -> str:
         """텍스트 전용 발행. 이미지 폴백 경로."""
-        return self.publish(self.create_text_container(text))
+        container_id = self.create_text_container(text)
+        self.wait_until_ready(
+            container_id, config.CONTAINER_WAIT_TEXT_SEC, dry_run=dry_run
+        )
+        return self.publish(container_id)
 
-    def publish_self_reply(self, parent_post_id: str, text: str) -> str:
-        return self.publish(self.create_reply_container(parent_post_id, text))
+    def publish_self_reply(
+        self, parent_post_id: str, text: str, *, dry_run: bool = False
+    ) -> str:
+        container_id = self.create_reply_container(parent_post_id, text)
+        self.wait_until_ready(
+            container_id, config.CONTAINER_WAIT_TEXT_SEC, dry_run=dry_run
+        )
+        return self.publish(container_id)

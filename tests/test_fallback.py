@@ -208,3 +208,103 @@ class TestDayIndexStability:
         first = content.order_asset_candidates(assets, day)[0]
         second = content.order_asset_candidates(assets, day)[0]
         assert first == second
+
+
+class TestContainerWait:
+    """컨테이너 처리 대기. code=24 (Media Not Found) 재발 방지."""
+
+    @staticmethod
+    def _client() -> object:
+        from src.threads_client import ThreadsClient
+
+        return ThreadsClient("123", "token")
+
+    def test_finished_returns_immediately(self):
+        client = self._client()
+        with (
+            mock.patch.object(client, "get_container_status",
+                              return_value=("FINISHED", "")),
+            mock.patch("src.threads_client.time.sleep") as sleep,
+        ):
+            client.wait_until_ready("c1", 30)
+        assert sleep.call_count == 1
+        sleep.assert_called_with(30)
+
+    def test_in_progress_then_finished(self):
+        from src import config
+
+        client = self._client()
+        statuses = [("IN_PROGRESS", ""), ("FINISHED", "")]
+        with (
+            mock.patch.object(client, "get_container_status",
+                              side_effect=statuses),
+            mock.patch("src.threads_client.time.sleep") as sleep,
+        ):
+            client.wait_until_ready("c1", 30)
+        assert sleep.call_count == 2
+        assert sleep.call_args_list[1][0][0] == config.CONTAINER_POLL_INTERVAL_SEC
+
+    def test_error_status_raises(self):
+        from src.threads_client import ContainerNotReadyError
+
+        client = self._client()
+        with (
+            mock.patch.object(client, "get_container_status",
+                              return_value=("ERROR", "FAILED_DOWNLOADING_VIDEO")),
+            mock.patch("src.threads_client.time.sleep"),
+            pytest.raises(ContainerNotReadyError, match="FAILED_DOWNLOADING_VIDEO"),
+        ):
+            client.wait_until_ready("c1", 30)
+
+    def test_expired_status_raises(self):
+        from src.threads_client import ContainerNotReadyError
+
+        client = self._client()
+        with (
+            mock.patch.object(client, "get_container_status",
+                              return_value=("EXPIRED", "")),
+            mock.patch("src.threads_client.time.sleep"),
+            pytest.raises(ContainerNotReadyError, match="만료"),
+        ):
+            client.wait_until_ready("c1", 30)
+
+    def test_timeout_raises(self):
+        from src.threads_client import ContainerNotReadyError
+
+        client = self._client()
+        with (
+            mock.patch.object(client, "get_container_status",
+                              return_value=("IN_PROGRESS", "")),
+            mock.patch("src.threads_client.time.sleep"),
+            pytest.raises(ContainerNotReadyError, match="준비되지 않았"),
+        ):
+            client.wait_until_ready("c1", 30)
+
+    def test_dry_run_skips_wait(self):
+        client = self._client()
+        with (
+            mock.patch.object(client, "get_container_status") as status,
+            mock.patch("src.threads_client.time.sleep") as sleep,
+        ):
+            client.wait_until_ready("c1", 30, dry_run=True)
+        assert not sleep.called
+        assert not status.called
+
+    def test_publish_waits_before_publishing(self):
+        """create -> wait -> publish 순서가 지켜지는지."""
+        from src import config
+
+        client = self._client()
+        order: list[str] = []
+        with (
+            mock.patch.object(client, "create_image_container",
+                              side_effect=lambda *a: order.append("create") or "c1"),
+            mock.patch.object(client, "wait_until_ready",
+                              side_effect=lambda *a, **k: order.append("wait")),
+            mock.patch.object(client, "publish",
+                              side_effect=lambda *a: order.append("publish") or "p1"),
+        ):
+            got = client.publish_image_post("https://x/y.png", "본문")
+        assert got == "p1"
+        assert order == ["create", "wait", "publish"]
+        assert config.CONTAINER_WAIT_IMAGE_SEC >= 30

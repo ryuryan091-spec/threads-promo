@@ -85,6 +85,23 @@ IMAGE_FALLBACK_TO_TEXT = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 IMAGE_CANDIDATE_LIMIT = 3   # Tier 2 에서 시도할 대체 이미지 최대 개수
 
+# ---------------------------------------------------------------------------
+# 컨테이너 처리 대기
+#   Meta 는 컨테이너 생성 후 발행까지 평균 30초 대기를 권장한다.
+#   즉시 발행하면 code=24 (Media Not Found) 가 발생한다.
+#   상태 조회는 1분 간격, 최대 5분까지 권장.
+# ---------------------------------------------------------------------------
+CONTAINER_WAIT_IMAGE_SEC = 30     # 이미지 컨테이너 최초 대기
+CONTAINER_WAIT_TEXT_SEC = 5       # 텍스트 컨테이너 최초 대기
+CONTAINER_POLL_INTERVAL_SEC = 60  # 상태 재조회 간격 (Meta 권장)
+CONTAINER_POLL_MAX_SEC = 300      # 총 대기 상한 (Meta 권장)
+
+CONTAINER_STATUS_FINISHED = "FINISHED"
+CONTAINER_STATUS_IN_PROGRESS = "IN_PROGRESS"
+CONTAINER_STATUS_ERROR = "ERROR"
+CONTAINER_STATUS_EXPIRED = "EXPIRED"
+CONTAINER_STATUS_PUBLISHED = "PUBLISHED"
+
 HTTP_TIMEOUT_SEC = 20
 HTTP_RETRY_COUNT = 3
 HTTP_RETRY_BACKOFF_SEC = 3

@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from . import antibot, config, content, notifier, token_manager
 from .env import MissingEnvError, Settings, load_settings
 from .threads_client import (
+    ContainerNotReadyError,
     ImageValidationError,
     ThreadsApiError,
     ThreadsClient,
@@ -238,18 +239,29 @@ def run() -> int:
     # Tier 3 : 이미지가 없으면 텍스트 전용으로 발행한다.
     #   이미지 하나 때문에 그날 발행을 거르는 것이 더 큰 손해다.
     # ------------------------------------------------------------------
+    post_id = None
+
     if image_url:
-        post_id = client.publish_image_post(image_url, plan.text)
-        log.info("본문 발행 완료 (이미지) post_id=%s", post_id)
-    else:
-        post_id = client.publish_text_post(plan.text)
+        try:
+            post_id = client.publish_image_post(image_url, plan.text, dry_run=settings.dry_run)
+            log.info("본문 발행 완료 (이미지) post_id=%s", post_id)
+        except (ContainerNotReadyError, ThreadsApiError) as exc:
+            # 컨테이너 처리 실패도 텍스트 폴백 대상이다.
+            # 이미지 때문에 그날 발행을 통째로 잃는 것이 더 큰 손해다.
+            log.error("이미지 발행 실패 — 텍스트 폴백으로 전환: %s", exc)
+            degrade_reasons.append(f"이미지 발행 실패: {str(exc)[:200]}")
+            if not config.IMAGE_FALLBACK_TO_TEXT:
+                raise
+
+    if post_id is None:
+        post_id = client.publish_text_post(plan.text, dry_run=settings.dry_run)
         log.warning("본문 발행 완료 (텍스트 전용 폴백) post_id=%s", post_id)
         _notify_safe(
             "[Threads] 이미지 없이 텍스트만 발행했습니다.\n"
             + "\n".join(degrade_reasons[:3])
         )
 
-    reply_id = client.publish_self_reply(post_id, plan.reply_text)
+    reply_id = client.publish_self_reply(post_id, plan.reply_text, dry_run=settings.dry_run)
     log.info("셀프 리플라이 발행 완료 reply_id=%s", reply_id)
     return 0
 
@@ -316,6 +328,10 @@ def main() -> int:
         log.error("Threads API 오류%s: %s", hint, exc)
         _notify_safe(f"[Threads] 발행 실패{hint}\n{exc}")
         return 4
+    except ContainerNotReadyError as exc:
+        log.error("컨테이너 처리 실패: %s", exc)
+        _notify_safe(f"[Threads] 컨테이너 처리 실패\n{exc}")
+        return 6
     except ImageValidationError as exc:
         log.error("이미지 검증 실패 — 발행하지 않습니다.\n%s", exc)
         _notify_safe(f"[Threads] 이미지 검증 실패\n{exc}")
