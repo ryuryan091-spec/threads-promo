@@ -60,6 +60,9 @@ jobs:
           GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
           TOKEN_ISSUED_AT: ${{ vars.TOKEN_ISSUED_AT }}
           CLAUDE_AI_KEY: ${{ secrets.CLAUDE_AI_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+          NOTION_FIELD_ALLOWLIST: ${{ vars.NOTION_FIELD_ALLOWLIST }}
           CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
           AI_ENABLED: ${{ vars.AI_ENABLED || 'true' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
