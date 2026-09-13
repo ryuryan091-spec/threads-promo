@@ -19,7 +19,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from . import antibot, config, content, facts, notifier, token_manager
+from . import (
+    antibot,
+    config,
+    content,
+    facts,
+    notifier,
+    notion_source,
+    token_manager,
+)
 from .env import MissingEnvError, Settings, load_settings
 from .threads_client import (
     ContainerNotReadyError,
@@ -226,11 +234,18 @@ def run() -> int:
     else:
         log.info("AI 생성 비활성 — 정적 텍스트 풀 사용")
 
+    episodes: list[str] = []
+    if settings.can_fetch_episodes:
+        episodes = notion_source.fetch_episodes(
+            settings.notion_token, config.NOTION_DB_ID, config.NOTION_EPISODE_LIMIT
+        )
+
     collected = facts.collect(
         REPO_ROOT,
         ASSETS_DIR,
         quota_used=quota.used,
         recent_post_count=len(recent_texts),
+        episodes=episodes,
     )
 
     plan = content.build_plan(
@@ -240,11 +255,12 @@ def run() -> int:
         claude_api_key=settings.claude_api_key,
         recent_texts=recent_texts,
         facts_block=collected.to_prompt_block(),
+        episode_block=collected.to_episode_block(),
     )
     log.info(
         "기둥=%s 소재=%s 생성=%s 근거=%s 이미지=%s",
         plan.pillar, plan.seed, plan.source,
-        f"커밋{len(collected.commits)}건" if collected.has_evidence else "없음",
+        f"커밋{len(collected.commits)}/회차{len(collected.episodes)}",
         plan.image_url,
     )
 

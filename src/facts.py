@@ -39,11 +39,25 @@ class Facts:
     module_count: int = 0
     quota_used: int | None = None
     recent_post_count: int | None = None
+    episodes: list[str] = field(default_factory=list)
 
     @property
     def has_evidence(self) -> bool:
-        """소재로 쓸 만한 사실이 있는지."""
+        """BUILD 기둥용 근거(커밋)가 있는지."""
         return bool(self.commits)
+
+    @property
+    def has_episodes(self) -> bool:
+        """STORY 기둥용 근거(회차 기록)가 있는지."""
+        return bool(self.episodes)
+
+    def to_episode_block(self) -> str:
+        """STORY 기둥에 넣을 회차 기록 블록."""
+        if not self.episodes:
+            return ""
+        lines = ["# 실제로 발행한 회차 기록"]
+        lines += [f"- {e}" for e in self.episodes]
+        return "\n".join(lines)
 
     def to_prompt_block(self) -> str:
         """프롬프트에 넣을 문자열. 사실이 없으면 빈 문자열."""
@@ -124,6 +138,7 @@ def collect(
     *,
     quota_used: int | None = None,
     recent_post_count: int | None = None,
+    episodes: list[str] | None = None,
 ) -> Facts:
     """사실을 모은다. 어떤 단계가 실패해도 나머지는 유지한다."""
     commits = collect_commits(repo_root)
@@ -148,9 +163,11 @@ def collect(
         module_count=module_count,
         quota_used=quota_used,
         recent_post_count=recent_post_count,
+        episodes=episodes or [],
     )
     log.info(
-        "사실 수집 — 커밋 %d건, 자산 %d개, 모듈 %d개",
-        len(facts.commits), facts.asset_count, facts.module_count,
+        "사실 수집 — 커밋 %d건, 회차 %d건, 자산 %d개, 모듈 %d개",
+        len(facts.commits), len(facts.episodes),
+        facts.asset_count, facts.module_count,
     )
     return facts

@@ -75,8 +75,13 @@ class TestEvidencePolicy:
     def test_build_has_evidence(self):
         assert ai_writer.PILLARS["BUILD"].evidence_available
 
-    def test_market_story_promo_have_none(self):
-        for key in ("MARKET", "STORY", "PROMO"):
+    def test_story_has_evidence_after_notion_wiring(self):
+        """STORY 는 Notion Tracker 연결로 근거 있는 기둥으로 승격되었다."""
+        assert ai_writer.PILLARS["STORY"].evidence_available
+
+    def test_market_promo_have_none(self):
+        """근거 소스가 없는 기둥은 구체 진술을 금지해야 한다."""
+        for key in ("MARKET", "PROMO"):
             assert not ai_writer.PILLARS[key].evidence_available, key
 
     def test_evidence_pillar_gets_facts(self):

@@ -115,6 +115,16 @@ TOKEN_WARN_DAYS = 20      # 이하면 경고
 TOKEN_URGENT_DAYS = 10    # 이하면 긴급
 TOKEN_CRITICAL_DAYS = 3   # 이하면 최우선
 
+# ---------------------------------------------------------------------------
+# Notion Tracker DB (STORY 기둥 근거)
+#   스키마를 모르는 상태에서 컬럼명을 추측하지 않는다.
+#   타입 기준으로 안전한 것(title/select/status/multi_select)만 기본 채택하고,
+#   그 외 컬럼은 NOTION_FIELD_ALLOWLIST 에 명시할 때만 쓴다.
+# ---------------------------------------------------------------------------
+NOTION_DB_ID = os.environ.get("NOTION_DB_ID", "").strip()
+NOTION_EPISODE_LIMIT = int(os.environ.get("NOTION_EPISODE_LIMIT", "6"))
+NOTION_FIELD_ALLOWLIST = os.environ.get("NOTION_FIELD_ALLOWLIST", "").strip()
+
 
 HTTP_TIMEOUT_SEC = 20
 HTTP_RETRY_COUNT = 3

@@ -190,6 +190,7 @@ def build_plan(
     claude_api_key: str = "",
     recent_texts: list[str] | None = None,
     facts_block: str = "",
+    episode_block: str = "",
 ) -> PostPlan:
     """오늘 발행할 게시물을 구성한다.
 
@@ -206,8 +207,14 @@ def build_plan(
 
     if config.AI_ENABLED and claude_api_key:
         try:
+            # 기둥마다 근거 종류가 다르다.
+            #   BUILD -> 커밋 로그 / STORY -> 회차 기록 / 나머지 -> 근거 없음
+            evidence = {
+                "BUILD": facts_block,
+                "STORY": episode_block,
+            }.get(pillar_key, "")
             text = _generate_with_ai(
-                claude_api_key, pillar_key, seed, recent_texts or [], facts_block
+                claude_api_key, pillar_key, seed, recent_texts or [], evidence
             )
             source = "ai"
         except ai_writer.AiWriterError as exc:

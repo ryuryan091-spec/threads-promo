@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from . import config
+
 
 class MissingEnvError(RuntimeError):
     """필수 환경변수 누락."""
@@ -73,11 +75,18 @@ class Settings:
     # 본문 생성용. 없으면 정적 텍스트 풀로 동작한다.
     claude_api_key: str
 
+    # STORY 기둥 근거용. 없으면 회차 기록 없이 동작한다.
+    notion_token: str
+
     dry_run: bool
 
     @property
     def can_persist_token(self) -> bool:
         return bool(self.gh_pat and self.gh_repo)
+
+    @property
+    def can_fetch_episodes(self) -> bool:
+        return bool(self.notion_token and config.NOTION_DB_ID)
 
     @property
     def can_generate(self) -> bool:
@@ -100,5 +109,6 @@ def load_settings() -> Settings:
         telegram_bot_token=_optional("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_optional("TELEGRAM_ALERT_CHAT_ID"),
         claude_api_key=_optional("CLAUDE_AI_KEY"),
+        notion_token=_optional("NOTION_TOKEN"),
         dry_run=dry_run_raw not in ("false", "0", "no"),
     )
