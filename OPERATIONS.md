@@ -351,6 +351,12 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | `EVENT_MIN_GAP_HOURS` | `4` | 직전 발행과 최소 간격 |
 | `NOTION_STATUS_PROPERTY` | `발행 상태` | 트래커 상태 컬럼명 |
 | `NOTION_STATUS_VALUE` | `완료` | 대상 상태값 |
+| `INSIGHTS_ENABLED` | `true` | 인사이트 수집 |
+| `INSIGHTS_LOOKBACK_DAYS` | `7` | 리포트 집계 기간 |
+| `INSIGHTS_POST_LIMIT` | `7` | 게시물별 조회 상한 |
+| `ADAPTIVE_WEIGHTS_ENABLED` | `false` | **비중 자동 조절. 30일 데이터 후 활성화** |
+| `PILLAR_ROTATION_OVERRIDE` | — | 수동 로테이션. 자동보다 우선 |
+| `LAST_WEIGHT_ADJUST` | — | 마지막 조정일 `YYYY-MM-DD` |
 | `REPLY_ENABLED` | `true` | 답글 스위치 |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |

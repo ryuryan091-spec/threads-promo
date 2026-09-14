@@ -140,6 +140,23 @@ PILLAR_ROTATION: tuple[str, ...] = (
 )
 
 
+def active_rotation() -> tuple[str, ...]:
+    """실제 적용할 로테이션.
+
+    자동 조절 또는 수동 지정이 있으면 그것을 쓴다.
+    순환 참조를 피하려 여기서 config 만 읽는다.
+    """
+    override = config.PILLAR_ROTATION_OVERRIDE
+    if not override:
+        return PILLAR_ROTATION
+
+    parsed = tuple(p.strip().upper() for p in override.split(",") if p.strip())
+    if not parsed or any(p not in PILLARS for p in parsed):
+        log.error("PILLAR_ROTATION_OVERRIDE 값이 잘못되어 기본값을 씁니다: %s", override)
+        return PILLAR_ROTATION
+    return parsed
+
+
 def uses_commit_evidence() -> bool:
     """커밋 로그를 근거로 쓰는 기둥이 로테이션에 있는지.
 
@@ -353,4 +370,5 @@ def pick_seed(pillar_key: str, day_index: int) -> str:
 
 
 def pick_pillar(day_index: int) -> str:
-    return PILLAR_ROTATION[day_index % len(PILLAR_ROTATION)]
+    rotation = active_rotation()
+    return rotation[day_index % len(rotation)]

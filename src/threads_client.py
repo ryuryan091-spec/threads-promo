@@ -240,6 +240,40 @@ class ThreadsClient:
         self._token = access_token
 
     # -- 조회 -------------------------------------------------------------
+    def get_media_insights(self, media_id: str, metrics: tuple[str, ...]) -> dict:
+        """게시물 인사이트. 읽기 전용."""
+        return _request(
+            "GET",
+            f"{config.THREADS_API_BASE}/{media_id}/insights",
+            params={"metric": ",".join(metrics), "access_token": self._token},
+        )
+
+    def get_user_insights(
+        self,
+        metrics: tuple[str, ...],
+        since: int | None = None,
+        until: int | None = None,
+    ) -> dict:
+        """사용자 인사이트. 읽기 전용.
+
+        since/until 은 Unix 타임스탬프이며 2024-04-13 이전은 거부된다.
+        생략하면 어제~오늘 2일 범위가 기본이다.
+        """
+        params: dict[str, object] = {
+            "metric": ",".join(metrics),
+            "access_token": self._token,
+        }
+        if since is not None:
+            params["since"] = max(since, config.INSIGHTS_EARLIEST_TIMESTAMP)
+        if until is not None:
+            params["until"] = until
+
+        return _request(
+            "GET",
+            f"{config.THREADS_API_BASE}/{self._user_id}/threads_insights",
+            params=params,
+        )
+
     def get_post_quota(self) -> Quota:
         """DB 없이 발행 쿼터를 확인한다. 상태를 API 쪽에 위임하는 것이 핵심."""
         data = _request(

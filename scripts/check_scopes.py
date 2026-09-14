@@ -130,6 +130,16 @@ def main() -> int:
             if not ok:
                 print(f"       {detail}")
 
+    # 5) threads_manage_insights
+    ok, detail = _get(
+        f"{user_id}/threads_insights",
+        {"metric": "views", "access_token": token},
+    )
+    results["threads_manage_insights"] = ok
+    print(f"[{OK if ok else NG}] threads_manage_insights")
+    if not ok:
+        print(f"       {detail}")
+
     # 판정
     print("\n===== 판정 =====")
     publish_ready = results.get("threads_basic") and results.get(
@@ -140,6 +150,8 @@ def main() -> int:
     )
 
     print(f"발행 엔진 : {'사용 가능' if publish_ready else '권한 부족'}")
+    insights_ready = results.get("threads_manage_insights", False)
+    print(f"인사이트  : {'사용 가능' if insights_ready else '권한 부족'}")
     print(f"답글 엔진 : {'사용 가능' if reply_ready else '권한 부족'}")
 
     if not reply_ready:

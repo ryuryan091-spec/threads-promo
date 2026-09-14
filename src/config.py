@@ -105,6 +105,48 @@ IMAGE_CANDIDATE_LIMIT = 3   # Tier 2 에서 시도할 대체 이미지 최대 �
 ASSET_COUNT_RECOMMENDED = 20
 
 # ---------------------------------------------------------------------------
+# 인사이트 수집 (읽기 전용)
+#   Threads 에 아무것도 쓰지 않는다. 발행과 완전히 독립된 경로다.
+# ---------------------------------------------------------------------------
+INSIGHTS_ENABLED = os.environ.get(
+    "INSIGHTS_ENABLED", "true"
+).strip().lower() not in ("false", "0", "no")
+INSIGHTS_LOOKBACK_DAYS = int(os.environ.get("INSIGHTS_LOOKBACK_DAYS", "7"))
+INSIGHTS_POST_LIMIT = int(os.environ.get("INSIGHTS_POST_LIMIT", "7"))
+
+# 팔로워 100명 미만이면 follower_demographics 를 가져올 수 없다(공식 제약).
+INSIGHTS_DEMOGRAPHICS_MIN_FOLLOWERS = 100
+
+# 공식 제약: 이 이전 타임스탬프는 거부된다 (2024-04-13).
+INSIGHTS_EARLIEST_TIMESTAMP = 1712991600
+
+# ---------------------------------------------------------------------------
+# 기둥 비중 자동 조절
+#   표본이 부족한 상태에서 켜면 노이즈를 따라 비중이 진동한다.
+#   기본 비활성. 최소 30일 데이터가 쌓인 뒤 수동 판단과 대조하고 켠다.
+# ---------------------------------------------------------------------------
+ADAPTIVE_WEIGHTS_ENABLED = os.environ.get(
+    "ADAPTIVE_WEIGHTS_ENABLED", "false"
+).strip().lower() in ("true", "1", "yes")
+
+# 수동 지정. 설정하면 자동 조절보다 우선한다.
+PILLAR_ROTATION_OVERRIDE = os.environ.get("PILLAR_ROTATION_OVERRIDE", "").strip()
+LAST_WEIGHT_ADJUST = os.environ.get("LAST_WEIGHT_ADJUST", "").strip()
+
+# 안전장치 7종
+WEIGHT_MIN_SAMPLE = 10          # S1 기둥당 최소 발행 건수
+WEIGHT_ADJUST_INTERVAL_DAYS = 30  # S2 조정 주기
+WEIGHT_ADJUST_STEP = 1          # S3 1회 조정 폭(칸)
+WEIGHT_MIN_SLOTS = 1            # S4 기둥 하한
+WEIGHT_PROMO_MAX_SLOTS = 2      # S5 PROMO 상한
+WEIGHT_SIGNIFICANCE_RATIO = 1.5  # S6 1위/2위 비율 임계
+WEIGHT_STORY_MIN_SLOTS = 2      # S7 근거 보유 기둥 하한
+
+# 점수 가중. 조회·좋아요는 행동으로 이어지지 않아 제외한다.
+WEIGHT_SCORE_CLICKS = 1.0
+WEIGHT_SCORE_REPLIES = 0.3
+
+# ---------------------------------------------------------------------------
 # 컨테이너 처리 대기
 #   Meta 는 컨테이너 생성 후 발행까지 평균 30초 대기를 권장한다.
 #   즉시 발행하면 code=24 (Media Not Found) 가 발생한다.
