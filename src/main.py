@@ -125,7 +125,10 @@ def _alert_expiry(settings: Settings, cause: str) -> None:
     발급일(TOKEN_ISSUED_AT)을 알면 남은 일수를 계산해 단계별로 알린다.
     """
     assessment = token_manager.assess_expiry(
-        dt.datetime.now(KST).date(), config.TOKEN_ISSUED_AT
+        dt.datetime.now(KST).date(),
+        token_manager.effective_issue_date(
+            config.TOKEN_ISSUED_AT, config.TOKEN_REFRESHED_AT
+        ),
     )
     prefix = LEVEL_PREFIX.get(assessment.level, "[Threads]")
     body = f"{prefix} 토큰 영속화 실패\n{cause}\n{assessment.message}"
@@ -140,7 +143,32 @@ def _alert_expiry(settings: Settings, cause: str) -> None:
 
 
 def _acquire_token(settings: Settings) -> str:
-    """갱신 실패는 치명적이지 않다. 기존 토큰이 아직 유효할 수 있으므로 폴백한다."""
+    """실행에 쓸 토큰을 돌려준다.
+
+    기본은 갱신하지 않고 Secret 값을 그대로 쓴다.
+    갱신은 token_refresh.yml 이 주 1회만 수행한다.
+
+    매 실행 갱신을 없앤 이유
+      60일짜리 토큰을 하루 수십 번 갱신하는 것은 Meta 문서의 갱신 조건
+      (발급 후 24시간 경과)에 어긋나고, 자동 보안 시스템에 이상 패턴으로
+      보인다. 실제로 개발자 계정 checkpoint 가 걸린 이력이 있다.
+
+    만료 안전성은 오히려 올라간다. 갱신 가능 구간이 24시간~60일이므로
+    주 1회로 충분하고, 실패해도 다음 주 재시도 여유가 있다.
+    """
+    if not config.REFRESH_ON_EVERY_RUN:
+        log.info("토큰 갱신 생략 — 주간 갱신 워크플로우가 담당합니다.")
+        return settings.threads_token
+
+    return refresh_and_persist(settings)
+
+
+def refresh_and_persist(settings: Settings) -> str:
+    """토큰을 갱신하고 Secret 에 영속화한다.
+
+    주간 갱신 워크플로우가 쓰는 경로다. 갱신 실패는 치명적이지 않다.
+    기존 토큰이 아직 유효할 수 있으므로 폴백한다.
+    """
     try:
         new_token = token_manager.refresh_long_lived_token(settings.threads_token)
     except token_manager.TokenRefreshError as exc:
@@ -162,6 +190,22 @@ def _acquire_token(settings: Settings) -> str:
         )
     except token_manager.SecretPersistError as exc:
         _alert_expiry(settings, f"토큰 Secret 영속화 실패.\n{exc}")
+        return new_token
+
+    # 갱신일을 기록해야 만료 경보가 정확해진다.
+    # 주 1회 갱신 체제에서는 발급일이 아니라 마지막 갱신일이 기준이다.
+    today = dt.datetime.now(KST).date().isoformat()
+    try:
+        token_manager.persist_token_to_secret(
+            settings.gh_repo,
+            settings.gh_pat,
+            today,
+            config.SECRET_REFRESHED_AT_NAME,
+        )
+        log.info("갱신일 기록 완료 — %s", today)
+    except token_manager.SecretPersistError as exc:
+        log.warning("갱신일 기록 실패 — 만료 경보가 부정확할 수 있습니다: %s", exc)
+
     return new_token
 
 
@@ -384,6 +428,22 @@ def main() -> int:
         _notify_safe(f"[Threads] 콘텐츠 정책 위반 — 발행 중단\n{exc}")
         return 3
     except ThreadsApiError as exc:
+        if exc.is_blocked:
+            # code 200 은 일시 오류가 아니다. 사람 조치 없이는 풀리지 않는다.
+            # 차단 상태에서 호출을 계속하면 판정이 강화되므로 즉시 멈춘다.
+            log.error(
+                "Threads API 접근이 차단되었습니다 (code=200).\n"
+                "개발자 계정 확인·앱 제한·권한 박탈을 점검하고, "
+                "해소 전까지 워크플로우를 비활성화하십시오.\n%s",
+                exc,
+            )
+            _notify_safe(
+                "[Threads][최우선] API 접근 차단 (code=200)\n"
+                "developers.facebook.com 에서 계정·앱 상태를 확인하십시오.\n"
+                "해소 전까지 모든 워크플로우를 Disable 하십시오.\n"
+                f"{exc}"
+            )
+            return 7
         hint = " (재인가 필요: authorize -> 단기 -> 장수명)" if exc.is_auth_error else ""
         log.error("Threads API 오류%s: %s", hint, exc)
         _notify_safe(f"[Threads] 발행 실패{hint}\n{exc}")

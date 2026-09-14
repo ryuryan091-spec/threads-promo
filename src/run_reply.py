@@ -207,6 +207,14 @@ def main() -> int:
         log.error("설정 오류: %s", exc)
         return 2
     except ThreadsApiError as exc:
+        if exc.is_blocked:
+            log.error("API 접근 차단 (code=200) — 워크플로우를 비활성화하십시오.\n%s", exc)
+            _notify_safe(
+                "[Threads][최우선] API 접근 차단 (code=200)\n"
+                "developers.facebook.com 에서 계정·앱 상태를 확인하십시오.\n"
+                f"{exc}"
+            )
+            return 7
         log.error("Threads API 오류: %s", exc)
         _notify_safe(f"[Threads Reply] API 오류\n{exc}")
         return 4

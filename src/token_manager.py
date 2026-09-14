@@ -49,6 +49,28 @@ class ExpiryAssessment:
         return self.level in ("warn", "urgent", "critical", "unknown")
 
 
+def effective_issue_date(issued_at_raw: str, refreshed_at_raw: str) -> str:
+    """만료 판정의 기준일을 정한다.
+
+    주 1회 갱신 체제에서는 마지막 갱신일이 실제 기준이다.
+    갱신 기록이 없으면 최초 발급일로 판정한다.
+    """
+    candidates = [
+        value.strip()
+        for value in (issued_at_raw, refreshed_at_raw)
+        if value and value.strip()
+    ]
+    valid: list[dt.date] = []
+    for value in candidates:
+        try:
+            valid.append(dt.date.fromisoformat(value))
+        except ValueError:
+            continue
+    if not valid:
+        return ""
+    return max(valid).isoformat()
+
+
 def assess_expiry(today: dt.date, issued_at_raw: str) -> ExpiryAssessment:
     """발급일 기준으로 기존 토큰의 잔여 수명을 판정한다.
 

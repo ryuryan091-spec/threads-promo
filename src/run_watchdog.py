@@ -14,7 +14,7 @@ import logging
 import sys
 from zoneinfo import ZoneInfo
 
-from . import config, notifier, watchdog
+from . import config, notifier, token_manager, watchdog
 from .env import load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
@@ -36,7 +36,9 @@ def _collect_owned_reply_stamps(
 ) -> list[dt.datetime]:
     """최근 글들의 대화에서 내 답글 시각을 모은다."""
     stamps: list[dt.datetime] = []
-    for post in posts[: watchdog.RECENT_POSTS_TO_SCAN]:
+    # 답글 활동은 최신 글 하나만 봐도 판정에 충분하다.
+    # 감시자가 호출을 많이 하면 그 자체가 부하이자 이상 신호가 된다.
+    for post in posts[: watchdog.CONVERSATION_SCAN_LIMIT]:
         post_id = str(post.get("id", ""))
         if not post_id:
             continue
@@ -64,7 +66,16 @@ def run() -> int:
     findings: list[watchdog.Finding] = []
 
     # 토큰 만료는 API 없이도 판정 가능하므로 먼저 본다.
-    findings.append(watchdog.check_token_expiry(today, config.TOKEN_ISSUED_AT))
+    # 만료 판정 기준은 발급일과 마지막 갱신일 중 늦은 쪽이다.
+    # 발급일만 보면 갱신을 계속 했는데도 오탐 경보가 울린다.
+    findings.append(
+        watchdog.check_token_expiry(
+            today,
+            token_manager.effective_issue_date(
+                config.TOKEN_ISSUED_AT, config.TOKEN_REFRESHED_AT
+            ),
+        )
+    )
 
     # 워치독은 토큰을 갱신하지 않는다. 발행 워크플로우와 중복되면
     # 갱신이 이중으로 일어나 오히려 혼란스럽다. 현재 토큰 그대로 읽기만 한다.
@@ -94,13 +105,21 @@ def run() -> int:
     except ThreadsApiError as exc:
         # API 자체가 안 되는 것도 감시 대상이다.
         severity = (
-            watchdog.Severity.CRITICAL if exc.is_auth_error else watchdog.Severity.WARN
+            watchdog.Severity.CRITICAL
+            if (exc.is_auth_error or exc.is_blocked)
+            else watchdog.Severity.WARN
         )
         findings.append(
             watchdog.Finding(
                 severity,
                 "Threads API 접근 실패",
-                f"{exc}\n토큰 무효 또는 API 장애 가능성이 있습니다.",
+                f"{exc}\n"
+                + (
+                    "code=200 접근 차단입니다. developers.facebook.com 에서 "
+                    "계정·앱 상태를 확인하고 모든 워크플로우를 Disable 하십시오."
+                    if exc.is_blocked
+                    else "토큰 무효 또는 API 장애 가능성이 있습니다."
+                ),
             )
         )
 

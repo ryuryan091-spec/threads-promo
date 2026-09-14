@@ -40,7 +40,8 @@ BASE_STALE_MARGIN_HOURS = 2.0      # 실행 지연·API 지연 흡수
 
 REPLY_STALE_HOURS = 72      # 답글은 대상이 없으면 안 나가므로 넉넉히
 QUOTA_ALARM_RATIO = 0.5     # 발행 쿼터를 절반 넘게 쓰면 이상 징후
-RECENT_POSTS_TO_SCAN = 3
+RECENT_POSTS_TO_SCAN = 3      # 발행 신선도 판정용 (1회 호출로 충분)
+CONVERSATION_SCAN_LIMIT = 1   # 답글 활동 확인용. 호출 수를 줄이려 최신 글만 본다.
 
 
 def stale_threshold_hours(rest_days_per_week: int = 0) -> float:

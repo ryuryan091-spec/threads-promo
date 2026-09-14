@@ -137,8 +137,14 @@ class TestTokenExpiry:
         assert got.severity == Severity.OK
 
     def test_near_expiry_warns(self):
-        got = watchdog.check_token_expiry(dt.date(2026, 9, 13), "2026-07-30")
+        """갱신 임계(D-10) 진입 시 경고. 그 전에는 무음이어야 한다."""
+        got = watchdog.check_token_expiry(dt.date(2026, 9, 13), "2026-07-25")
         assert got.severity == Severity.WARN
+
+    def test_silent_before_refresh_threshold(self):
+        """잔여 15일은 갱신 워크플로우가 아직 돌 시점이 아니다."""
+        got = watchdog.check_token_expiry(dt.date(2026, 9, 13), "2026-07-30")
+        assert got.severity == Severity.OK
 
     def test_critical(self):
         got = watchdog.check_token_expiry(dt.date(2026, 9, 13), "2026-07-17")

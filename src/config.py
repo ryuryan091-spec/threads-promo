@@ -129,10 +129,36 @@ CONTAINER_STATUS_PUBLISHED = "PUBLISHED"
 #   TOKEN_ISSUED_AT Variable 에 최초 발급일(YYYY-MM-DD)을 넣으면 경보가 동작한다.
 # ---------------------------------------------------------------------------
 TOKEN_ISSUED_AT = os.environ.get("TOKEN_ISSUED_AT", "").strip()
+
+# 마지막 갱신일. 주 1회 갱신 워크플로우가 Secret 에 기록한다.
+# 만료 판정은 발급일과 갱신일 중 더 늦은 쪽을 기준으로 한다.
+TOKEN_REFRESHED_AT = os.environ.get("TOKEN_REFRESHED_AT", "").strip()
+
+# 발행·답글 실행에서 토큰을 갱신할지 여부.
+#   기본 false. 매 실행 갱신은 60일 토큰을 하루 수십 번 갱신하는 셈이라
+#   Meta 문서의 갱신 조건(발급 후 24시간 경과)에도 어긋나고,
+#   자동 보안 시스템에 이상 패턴으로 보인다.
+#   갱신은 token_refresh.yml 이 주 1회만 수행한다.
+REFRESH_ON_EVERY_RUN = os.environ.get(
+    "REFRESH_ON_EVERY_RUN", "false"
+).strip().lower() in ("true", "1", "yes")
+
+SECRET_REFRESHED_AT_NAME = "TOKEN_REFRESHED_AT"
 TOKEN_LIFETIME_DAYS = 60
-TOKEN_WARN_DAYS = 20      # 이하면 경고
-TOKEN_URGENT_DAYS = 10    # 이하면 긴급
-TOKEN_CRITICAL_DAYS = 3   # 이하면 최우선
+
+# 갱신 임계. 잔여가 이 값 이하일 때만 갱신한다.
+#   판정은 날짜 계산이라 API 호출이 0회다. 매일 확인해도 비용이 없다.
+#   실제 갱신은 약 50일에 1회. 임계 이후 10회의 재시도 기회가 확보된다.
+TOKEN_REFRESH_THRESHOLD_DAYS = int(
+    os.environ.get("TOKEN_REFRESH_THRESHOLD_DAYS", "10")
+)
+
+# 경보 임계는 갱신 임계에 맞춘다.
+#   "갱신이 돌았어야 하는데 아직 안 됐다"는 신호여야 의미가 있다.
+#   갱신 임계보다 넓게 잡으면 정상 상태에서 매일 경보가 울린다.
+TOKEN_WARN_DAYS = TOKEN_REFRESH_THRESHOLD_DAYS   # 갱신 시도 구간 진입
+TOKEN_URGENT_DAYS = 5                            # 5회 실패
+TOKEN_CRITICAL_DAYS = 2                          # 재인가 임박
 
 # ---------------------------------------------------------------------------
 # Notion Tracker DB (STORY 기둥 근거)

@@ -6,6 +6,7 @@ E2E 로 닿지 않는 오류 경로를 개별 검증한다.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from unittest import mock
 
@@ -343,8 +344,8 @@ class TestExpiryAssessment:
         [
             ("2026-09-13", "ok", False),
             ("2026-08-09", "ok", False),
-            ("2026-07-30", "warn", True),
-            ("2026-07-23", "urgent", True),
+            ("2026-07-25", "warn", True),      # 잔여 10일 — 갱신 임계 진입
+            ("2026-07-20", "urgent", True),    # 잔여 5일 — 갱신 5회 실패
             ("2026-07-17", "critical", True),
             ("2026-07-13", "critical", True),
         ],
@@ -376,7 +377,11 @@ class TestExpiryAssessment:
 
 
 class TestExpiryAlertWiring:
-    """영속화 실패 시 경보가 실제로 나가는지."""
+    """영속화 실패 시 경보가 실제로 나가는지.
+
+    갱신은 주간 워크플로우가 담당하므로 refresh_and_persist 를 직접 검증한다.
+    _acquire_token 은 기본적으로 갱신하지 않는다(test_token_policy 참조).
+    """
 
     @staticmethod
     def _settings(**over):
@@ -399,14 +404,19 @@ class TestExpiryAlertWiring:
                               return_value="THAAnew"),
             mock.patch.object(main.token_manager, "persist_token_to_secret",
                               side_effect=token_manager.SecretPersistError("401")),
-            mock.patch.object(config, "TOKEN_ISSUED_AT", "2026-07-23"),
+            mock.patch.object(
+                config,
+                "TOKEN_ISSUED_AT",
+                (dt.date.today() - dt.timedelta(days=56)).isoformat(),
+            ),
+            mock.patch.object(config, "TOKEN_REFRESHED_AT", ""),
             mock.patch.object(main.notifier, "send") as send,
         ):
-            got = main._acquire_token(self._settings())
+            got = main.refresh_and_persist(self._settings())
 
         assert got == "THAAnew"
         assert send.called
-        assert "긴급" in send.call_args[0][2]
+        assert "긴급" in send.call_args[0][2]  # 잔여 4일
 
     def test_no_pat_sends_alert(self):
         from src import config, main
@@ -417,7 +427,7 @@ class TestExpiryAlertWiring:
             mock.patch.object(config, "TOKEN_ISSUED_AT", ""),
             mock.patch.object(main.notifier, "send") as send,
         ):
-            main._acquire_token(self._settings(can_persist_token=False))
+            main.refresh_and_persist(self._settings(can_persist_token=False))
 
         assert send.called
         assert "확인필요" in send.call_args[0][2]
@@ -431,7 +441,7 @@ class TestExpiryAlertWiring:
             mock.patch.object(main.token_manager, "persist_token_to_secret"),
             mock.patch.object(main.notifier, "send") as send,
         ):
-            got = main._acquire_token(self._settings())
+            got = main.refresh_and_persist(self._settings())
 
         assert got == "THAAnew"
         assert not send.called

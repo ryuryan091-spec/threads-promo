@@ -34,6 +34,16 @@ class ThreadsApiError(RuntimeError):
         """OAuthException 190 계열 여부. 재인가가 필요한 상황."""
         return self.code == 190 or self.status == 401
 
+    @property
+    def is_blocked(self) -> bool:
+        """code 200 — 접근 차단. 사람 조치 없이는 풀리지 않는다.
+
+        개발자 계정 checkpoint, 앱 제한, 권한 박탈 등이 여기 해당한다.
+        일시 오류가 아니므로 재시도하면 안 되고, 이후 호출도 멈춰야 한다.
+        차단 상태에서 계속 호출하면 판정이 강화된다.
+        """
+        return self.code == 200 or "access blocked" in self.payload.lower()
+
 
 @dataclass(frozen=True)
 class Quota:
