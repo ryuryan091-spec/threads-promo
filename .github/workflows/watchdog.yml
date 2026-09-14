@@ -44,5 +44,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           TOKEN_ISSUED_AT: ${{ vars.TOKEN_ISSUED_AT }}
+          TOKEN_REFRESHED_AT: ${{ secrets.TOKEN_REFRESHED_AT }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
         run: python -m src.run_watchdog
