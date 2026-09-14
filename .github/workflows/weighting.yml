@@ -1,0 +1,44 @@
+name: Threads Weighting
+
+# 기둥 비중 자동 조절 판정. 기본 비활성.
+# 활성화해도 안전장치 7종을 모두 통과해야 실제로 조정된다.
+# 조정하지 않은 경우에도 사유와 함께 리포트를 보낸다.
+
+"on":
+  schedule:
+    # 매주 일요일 KST 05:37 (판정만. 실제 조정은 30일 1회)
+    - cron: "37 20 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threads-weighting
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Evaluate weights
+        env:
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
+          X_URL: ${{ vars.X_URL }}
+          ADAPTIVE_WEIGHTS_ENABLED: ${{ vars.ADAPTIVE_WEIGHTS_ENABLED || 'false' }}
+          PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}
+          LAST_WEIGHT_ADJUST: ${{ vars.LAST_WEIGHT_ADJUST }}
+        run: python -m src.run_weighting

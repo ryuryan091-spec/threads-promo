@@ -62,6 +62,7 @@ jobs:
           NOTION_STATUS_VALUE: ${{ vars.NOTION_STATUS_VALUE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           TOKEN_ISSUED_AT: ${{ vars.TOKEN_ISSUED_AT }}
