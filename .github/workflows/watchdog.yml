@@ -46,4 +46,6 @@ jobs:
           TOKEN_ISSUED_AT: ${{ vars.TOKEN_ISSUED_AT }}
           TOKEN_REFRESHED_AT: ${{ secrets.TOKEN_REFRESHED_AT }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+          CHAT_ENABLED: ${{ vars.CHAT_ENABLED || 'false' }}
+          PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
         run: python -m src.run_watchdog

@@ -1,0 +1,95 @@
+name: Threads Chat
+
+# 오전 시장 잡담(CHAT) + 답글 스윕.
+# KST 09:00~12:05 창에 9개 트리거. 실행당 CHAT 최대 1건.
+# 하루 몇 건·어느 트리거에서 낼지는 src/chat_plan.py 가 날짜 시드로 정한다(무상태·멱등).
+# 트리거 시각은 src/config.py CHAT_TRIGGERS 와 1:1 대응해야 한다(verify_repo 6번 검사).
+# 정각·반각 회피. 정기 발행(08:23/12:47)·워치독(09:53, 읽기 전용)과 무관.
+
+"on":
+  schedule:
+    - cron: "4 0 * * *"    # T1 KST 09:04
+    - cron: "23 0 * * *"    # T2 KST 09:23
+    - cron: "44 0 * * *"    # T3 KST 09:44
+    - cron: "7 1 * * *"    # T4 KST 10:07
+    - cron: "26 1 * * *"    # T5 KST 10:26
+    - cron: "48 1 * * *"    # T6 KST 10:48
+    - cron: "9 2 * * *"    # T7 KST 11:09
+    - cron: "31 2 * * *"    # T8 KST 11:31
+    - cron: "52 2 * * *"    # T9 KST 11:52
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        options: [dry_run, live]
+        default: dry_run
+
+permissions:
+  contents: read
+
+# 답글 중복 경합을 막으려 reply.yml 과 같은 그룹을 쓴다.
+concurrency:
+  group: threads-reply
+  cancel-in-progress: false
+
+jobs:
+  chat:
+    runs-on: ubuntu-latest
+    # 간격 대기(≤10분) + 지터(≤4분) + 답글 스윕(≤8분) 을 덮는다.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Resolve slot
+        id: slot
+        run: |
+          case "${{ github.event.schedule }}" in
+            "4 0 * * *")   echo "slot=T1" >> "$GITHUB_OUTPUT" ;;
+            "23 0 * * *")  echo "slot=T2" >> "$GITHUB_OUTPUT" ;;
+            "44 0 * * *")  echo "slot=T3" >> "$GITHUB_OUTPUT" ;;
+            "7 1 * * *")   echo "slot=T4" >> "$GITHUB_OUTPUT" ;;
+            "26 1 * * *")  echo "slot=T5" >> "$GITHUB_OUTPUT" ;;
+            "48 1 * * *")  echo "slot=T6" >> "$GITHUB_OUTPUT" ;;
+            "9 2 * * *")   echo "slot=T7" >> "$GITHUB_OUTPUT" ;;
+            "31 2 * * *")  echo "slot=T8" >> "$GITHUB_OUTPUT" ;;
+            "52 2 * * *")  echo "slot=T9" >> "$GITHUB_OUTPUT" ;;
+            *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Chat
+        env:
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
+          TOKEN_ISSUED_AT: ${{ vars.TOKEN_ISSUED_AT }}
+          TOKEN_REFRESHED_AT: ${{ secrets.TOKEN_REFRESHED_AT }}
+          CLAUDE_AI_KEY: ${{ secrets.CLAUDE_AI_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+          AI_ENABLED: ${{ vars.AI_ENABLED || 'true' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
+          X_URL: ${{ vars.X_URL }}
+          CHAT_ENABLED: ${{ vars.CHAT_ENABLED || 'false' }}
+          CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '6' }}
+          CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '8' }}
+          CHAT_SOURCE_MODE: ${{ vars.CHAT_SOURCE_MODE || 'mix' }}
+          MOOD_RSS_URLS: ${{ vars.MOOD_RSS_URLS }}
+          MOOD_WEB_MAX_USES: ${{ vars.MOOD_WEB_MAX_USES || '2' }}
+          REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+          REPLY_PER_RUN_CAP: ${{ vars.REPLY_PER_RUN_CAP || '4' }}
+          PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGER: ${{ steps.slot.outputs.slot }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
+        run: python -m src.run_chat
