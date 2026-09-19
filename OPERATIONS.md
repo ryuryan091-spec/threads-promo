@@ -260,6 +260,9 @@ Secret 값과 일치하는 문자열이 자동 마스킹된 것입니다. `1`, `
 | `근거 소스 web 실패 ... 400` | Console 웹 검색 비활성 가능성 |
 | `근거 소스 rss 실패 ... 미설정` | `MOOD_RSS_URLS` 없음. 웹 검색으로 폴백 |
 
+### 운영자 조치 (v1.1.0 배포 시 1회)
+- Variables `PILLAR_ROTATION_OVERRIDE` 값이 `—` 로 들어가 있으면 **삭제**. 매 실행 `ERROR ... 값이 잘못되어 기본값을 씁니다` 로그를 남긴다(동작은 기본 로테이션).
+
 ### 즉시 중단
 Variables `CHAT_ENABLED=false` — 다음 트리거부터 발행 중단. 답글 스윕도 함께 멈춘다(reply.yml 은 계속).
 

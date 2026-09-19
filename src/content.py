@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import ai_writer, config
 
-VERSION = "1.1.0"   # v1.1.0: CHAT 도입
+VERSION = "1.1.1"   # v1.1.1: lint_chat 일반어 오차단 수정
 
 _log = logging.getLogger(__name__)
 
@@ -194,6 +194,18 @@ _DIGIT = re.compile(r"[0-9０-９]")
 _LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z&.\-]*")
 
 
+def _entity_suffix_re() -> re.Pattern[str]:
+    """앞 글자(한글·영문·숫자)에 붙은 접미만 잡는다. '삼성전자'는 잡고 '전자 쪽'은 통과."""
+    alt = "|".join(re.escape(s) for s in config.CHAT_ENTITY_SUFFIXES)
+    return re.compile(rf"[가-힣A-Za-z0-9]+(?:{alt})")
+
+
+def _entity_word_re() -> re.Pattern[str]:
+    """뒤에 한글 2자 이상이 이어지면 다른 단어로 본다. '메타가' 차단, '메타버스' 통과."""
+    alt = "|".join(re.escape(w) for w in config.CHAT_ENTITY_WORDS)
+    return re.compile(rf"(?:{alt})(?![가-힣]{{2}})")
+
+
 def lint_chat(text: str) -> None:
     """CHAT 전용 추가 검사. lint() 를 먼저 통과해야 한다.
 
@@ -215,6 +227,8 @@ def lint_chat(text: str) -> None:
         raise ContentPolicyError(f"시장 전망성 표현 검출: {hit_forecast}")
 
     hit_entity = [t for t in config.CHAT_ENTITY_TERMS if t in text]
+    hit_entity += [m.group(0) for m in _entity_suffix_re().finditer(text)]
+    hit_entity += [m.group(0) for m in _entity_word_re().finditer(text)]
     if hit_entity:
         raise ContentPolicyError(f"기업·인물명 검출 (REG-04): {hit_entity}")
 

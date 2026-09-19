@@ -266,3 +266,40 @@ class TestLintChat:
     def test_length(self):
         with pytest.raises(content.ContentPolicyError, match="CHAT 본문"):
             content.lint_chat("가" * (config.CHAT_TEXT_MAX_LEN + 1))
+
+
+class TestLintChatFalsePositives:
+    """v1.1.1: Actions dry_run 에서 확인된 일반어 오차단 수정 검증."""
+
+    @pytest.mark.parametrize("text", [
+        "제가 매일 만드는 건 전자 쪽입니다. 어느 쪽이세요?",   # 전자(前者) — 실측 문장
+        "스터디 그룹에서도 금리 얘기뿐이네요?",
+        "증권 앱 열기 전에 뭐부터 보세요?",
+        "어느 증권사가 아니라 흐름이 궁금해요?",
+        "자산운용 얘기가 많은 아침이네요?",
+        "메타버스 얘기는 요즘 조용하네요?",
+        "메타인지가 필요한 아침이네요?",
+        "알파벳 순서로 정리해 봤어요. 어떠세요?",
+        "애플리케이션 알림부터 끄셨나요?",
+    ])
+    def test_common_words_pass(self, text):
+        content.lint_chat(text)
+
+    @pytest.mark.parametrize("text", [
+        "삼성전자 얘기뿐이네요?",
+        "미래에셋증권 얘기네요?",
+        "금융그룹 발표가 있었네요?",
+        "메타가 또 화제네요?",
+        "애플이 발표했네요?",
+        "메타 얘기뿐이네요?",
+    ])
+    def test_entities_blocked(self, text):
+        with pytest.raises(content.ContentPolicyError, match="기업"):
+            content.lint_chat(text)
+
+    def test_real_dry_run_output_passes(self):
+        """2026-09-19 Actions dry_run 실제 생성문."""
+        content.lint_chat(
+            "반도체 얘기 나오니까 다들 눈빛이 바뀌는 게 느껴지네요. 저는 그럴 때일수록 일부러 "
+            "한 박자 늦게 반응하려고 합니다. 오늘 분위기, 경계하는 쪽이세요 아니면 그냥 지켜보는 쪽이세요"
+        )
