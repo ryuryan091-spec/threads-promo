@@ -277,6 +277,9 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
             mock.patch.object(antibot, "jitter_sleep", return_value=0),
+            # 실제 현재 시각이 CHAT 창(KST 09:00~12:05)이면 '방금 글'이 CHAT 으로
+            # 분류되어 게이트에서 제외된다. 시각 의존을 없애 정기 글로 고정한다.
+            mock.patch.object(run_story.chat_plan, "is_chat_time", return_value=False),
         ):
             assert run_story.run() == 0
 
@@ -308,6 +311,9 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
             mock.patch.object(antibot, "jitter_sleep", return_value=0),
+            # 실제 현재 시각이 CHAT 창(KST 09:00~12:05)이면 '방금 글'이 CHAT 으로
+            # 분류되어 게이트에서 제외된다. 시각 의존을 없애 정기 글로 고정한다.
+            mock.patch.object(run_story.chat_plan, "is_chat_time", return_value=False),
         ):
             assert run_story.run() == 0
 

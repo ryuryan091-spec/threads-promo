@@ -9,11 +9,14 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from . import ai_writer, config
+
+VERSION = "1.1.0"   # v1.1.0: CHAT 도입
 
 _log = logging.getLogger(__name__)
 
@@ -185,6 +188,41 @@ def lint(text: str) -> None:
     hit_bait = [t for t in config.FORBIDDEN_BAIT_TERMS if t in text]
     if hit_bait:
         raise ContentPolicyError(f"인게이지먼트 베이트 표현 검출: {hit_bait}")
+
+
+_DIGIT = re.compile(r"[0-9０-９]")
+_LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z&.\-]*")
+
+
+def lint_chat(text: str) -> None:
+    """CHAT 전용 추가 검사. lint() 를 먼저 통과해야 한다.
+
+    잡담은 '오늘 시장'을 말하므로 REG-03(수치·전망)·REG-04(기업·인물) 경계에
+    가장 가깝다. 모델 지시만으로는 보장되지 않으므로 발행 직전에 기계적으로 막는다.
+    """
+    lint(text)
+
+    if len(text) > config.CHAT_TEXT_MAX_LEN:
+        raise ContentPolicyError(
+            f"CHAT 본문 {len(text)}자 — 상한 {config.CHAT_TEXT_MAX_LEN}자 초과"
+        )
+
+    if _DIGIT.search(text):
+        raise ContentPolicyError("CHAT 본문에 숫자 포함 (REG-03)")
+
+    hit_forecast = [t for t in config.CHAT_FORECAST_TERMS if t in text]
+    if hit_forecast:
+        raise ContentPolicyError(f"시장 전망성 표현 검출: {hit_forecast}")
+
+    hit_entity = [t for t in config.CHAT_ENTITY_TERMS if t in text]
+    if hit_entity:
+        raise ContentPolicyError(f"기업·인물명 검출 (REG-04): {hit_entity}")
+
+    # 영문 단어는 허용목록(Fed, FOMC, CPI 등)만 통과. 티커·영문 기업명을 막는다.
+    allow = {a.upper() for a in config.CHAT_THEME_ALLOWLIST}
+    foreign = [w for w in _LATIN_WORD.findall(text) if w.upper() not in allow]
+    if foreign:
+        raise ContentPolicyError(f"허용목록 밖 영문 단어 검출: {foreign}")
 
 
 def _generate_with_ai(

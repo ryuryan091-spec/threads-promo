@@ -20,7 +20,7 @@ from . import config, insights, notifier
 from .env import MissingEnvError, load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -116,7 +116,8 @@ def run() -> int:
     )
 
     # 2) 최근 게시물
-    posts = client.get_my_posts(config.INSIGHTS_POST_LIMIT)
+    since = today - dt.timedelta(days=config.INSIGHTS_LOOKBACK_DAYS)
+    posts = client.get_my_posts(config.INSIGHTS_POST_LIMIT, since=since)
     stats, failed = collect_post_stats(client, posts, config.INSIGHTS_POST_LIMIT)
     log.info("게시물 인사이트 %d건 수집 (실패 %d건)", len(stats), failed)
 

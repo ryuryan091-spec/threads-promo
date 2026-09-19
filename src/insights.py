@@ -24,9 +24,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
-from . import ai_writer, config, content, watchdog
+from . import ai_writer, chat_plan, config, content, watchdog
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -45,6 +45,7 @@ PUBLISH_SLOTS = {"08:23": "A", "12:47": "B", "20:31": "C"}
 EVENT_SLOTS = ("03:11", "13:29", "17:41", "23:17")
 
 UNKNOWN = "판정불가"
+CHAT = "CHAT"   # 오전 잡담. 시간창으로 판정한다(chat_plan.is_chat_time).
 
 
 def parse_timestamp(raw: str) -> dt.datetime | None:
@@ -173,6 +174,8 @@ def discriminator_from_timestamp(posted_at: dt.datetime) -> int | None:
 
 def restore_pillar(posted_at: dt.datetime) -> str:
     """게시물 발행 시각에서 기둥을 복원한다. 불가하면 UNKNOWN."""
+    if chat_plan.is_chat_time(posted_at):
+        return CHAT
     disc = discriminator_from_timestamp(posted_at)
     if disc is None:
         return UNKNOWN
@@ -201,6 +204,7 @@ def aggregate(posts: list[PostStat]) -> list[PillarRow]:
     for key in order:
         if key not in seen:
             seen.append(key)
+    seen.append(CHAT)
     seen.append(UNKNOWN)
 
     return [rows[k] if k in rows else PillarRow(pillar=k) for k in seen]
@@ -241,7 +245,7 @@ def render_report(
     lines += ["", f"최근 {lookback_days}일 기둥별 (게시물 {total_posts}건)"]
     lines.append(f"  {'기둥':10s} {'발행':>4s} {'답글':>4s} {'좋아요':>5s} {'조회':>6s}")
     for row in rows:
-        if row.pillar == UNKNOWN and row.posts == 0:
+        if row.pillar in (UNKNOWN, CHAT) and row.posts == 0:
             continue
         lines.append(
             f"  {row.pillar:10s} {row.posts:4d} {row.replies:4d} "

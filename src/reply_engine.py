@@ -32,7 +32,7 @@ from enum import StrEnum
 
 from . import ai_writer, antibot, config
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ def decide(
     *,
     already_replied: bool,
     author_used: int,
+    thread_author_count: int = 0,
 ) -> ReplyDecision:
     """댓글 하나에 대한 처리 방침을 정한다."""
     if comment.owned_by_me:
@@ -138,6 +139,13 @@ def decide(
         return ReplyDecision(
             comment, ReplyStrategy.SKIP,
             f"저자 일일 캡 {author_used}/{config.REPLY_AUTHOR_DAILY_CAP}",
+        )
+
+    # 한 스레드에서 같은 사람과 계속 주고받으면 핑퐁 봇 패턴이 된다.
+    if thread_author_count >= config.REPLY_THREAD_AUTHOR_CAP:
+        return ReplyDecision(
+            comment, ReplyStrategy.SKIP,
+            f"스레드 저자 캡 {thread_author_count}/{config.REPLY_THREAD_AUTHOR_CAP}",
         )
 
     if not is_korean(text):
@@ -192,12 +200,22 @@ JSON 한 개만 출력합니다.
 {"text": "답글 본문"}"""
 
 
-def build_reply_prompt(post_text: str, comment_text: str) -> str:
-    return (
-        f"# 내가 쓴 원글\n{post_text[:300]}\n\n"
-        f"# 달린 댓글\n{comment_text[:300]}\n\n"
-        "이 댓글에 답글 한 개를 써서 JSON으로만 출력하세요."
-    )
+def build_reply_prompt(
+    post_text: str, comment_text: str, parent_reply_text: str = ""
+) -> str:
+    """답글 프롬프트.
+
+    대댓글(내 답글에 다시 달린 댓글)이면 내 직전 답글을 함께 준다.
+    원글만 주면 대화 흐름을 모른 채 엉뚱한 답을 단다.
+    """
+    parts = [f"# 내가 쓴 원글\n{post_text[:300]}"]
+    if parent_reply_text:
+        parts.append(f"# 내가 앞서 단 답글\n{parent_reply_text[:200]}")
+        parts.append(f"# 그 답글에 달린 댓글\n{comment_text[:300]}")
+    else:
+        parts.append(f"# 달린 댓글\n{comment_text[:300]}")
+    parts.append("이 댓글에 답글 한 개를 써서 JSON으로만 출력하세요.")
+    return "\n\n".join(parts)
 
 
 def pick_canned(pool: tuple[str, ...], seed_text: str) -> str:
@@ -213,6 +231,7 @@ def compose(
     post_text: str,
     api_key: str,
     lint_fn,
+    parent_reply_text: str = "",
 ) -> str | None:
     """방침에 따라 답글 본문을 만든다. 만들 수 없으면 None."""
     if decision.strategy is ReplyStrategy.SKIP:
@@ -232,7 +251,12 @@ def compose(
 
     for attempt in range(1, config.AI_MAX_RETRY + 1):
         try:
-            text = _generate_reply(api_key, post_text, decision.comment.text)
+            if parent_reply_text:
+                text = _generate_reply(
+                    api_key, post_text, decision.comment.text, parent_reply_text
+                )
+            else:
+                text = _generate_reply(api_key, post_text, decision.comment.text)
             lint_fn(text)
             if len(text) > config.REPLY_MAX_LEN:
                 raise ValueError(f"답글 {len(text)}자 — 상한 {config.REPLY_MAX_LEN}자 초과")
@@ -246,7 +270,9 @@ def compose(
     return None
 
 
-def _generate_reply(api_key: str, post_text: str, comment_text: str) -> str:
+def _generate_reply(
+    api_key: str, post_text: str, comment_text: str, parent_reply_text: str = ""
+) -> str:
     import requests
 
     payload = {
@@ -254,7 +280,10 @@ def _generate_reply(api_key: str, post_text: str, comment_text: str) -> str:
         "max_tokens": 1000,
         "system": REPLY_SYSTEM_PROMPT,
         "messages": [
-            {"role": "user", "content": build_reply_prompt(post_text, comment_text)}
+            {
+                "role": "user",
+                "content": build_reply_prompt(post_text, comment_text, parent_reply_text),
+            }
         ],
     }
     resp = requests.post(

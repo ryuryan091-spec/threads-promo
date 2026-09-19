@@ -116,6 +116,10 @@ def _run(fake: FakeApi) -> tuple[int, mock.Mock]:
         mock.patch("src.threads_client._request", side_effect=fake),
         mock.patch("src.threads_client.time.sleep"),
         mock.patch.object(run_watchdog.notifier, "send") as send,
+        # 이 파일의 가짜 게시물은 '정기 글' 시나리오다. 실제 현재 시각에 따라
+        # CHAT 창(KST 09:00~12:05)에 들어가면 신선도 판정에서 빠지므로 고정한다.
+        # CHAT 제외 동작은 test_chat_integration.py 가 따로 검증한다.
+        mock.patch.object(run_watchdog.chat_plan, "is_chat_time", return_value=False),
     ):
         code = run_watchdog.run()
     return code, send

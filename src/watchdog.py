@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from . import config
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +40,10 @@ BASE_STALE_MARGIN_HOURS = 2.0      # 실행 지연·API 지연 흡수
 
 REPLY_STALE_HOURS = 72      # 답글은 대상이 없으면 안 나가므로 넉넉히
 QUOTA_ALARM_RATIO = 0.5     # 발행 쿼터를 절반 넘게 쓰면 이상 징후
-RECENT_POSTS_TO_SCAN = 3      # 발행 신선도 판정용 (1회 호출로 충분)
+# 발행 신선도 판정용 (목록 1회 호출). CHAT 도입 후 하루 약 10건이라
+# 3건이면 정기 글이 CHAT 에 가려 보이지 않는다.
+RECENT_POSTS_TO_SCAN = 25
+CHAT_CHECK_AFTER = "12:30"    # KST. CHAT 창 종료 후에만 무발행을 판정한다
 CONVERSATION_SCAN_LIMIT = 1   # 답글 활동 확인용. 호출 수를 줄이려 최신 글만 본다.
 
 
@@ -222,6 +225,34 @@ def check_reply_activity(
             "댓글이 없었을 수도 있으나, 워크플로우 실행 여부를 확인하십시오.",
         )
     return Finding(Severity.OK, "답글 정상", f"마지막 답글 {elapsed:.1f}시간 전")
+
+
+def check_chat_activity(
+    chat_today: int, now: dt.datetime, *, enabled: bool
+) -> Finding:
+    """CHAT 이 켜져 있는데 오늘 한 건도 없으면 경고한다.
+
+    CHAT 은 목표가 soft(cron 누락 허용)라 건수 미달은 경보하지 않는다. 0건만 본다.
+    창이 끝나기 전에는 판정하지 않는다.
+    """
+    if not enabled:
+        return Finding(Severity.OK, "CHAT 비활성", "CHAT_ENABLED=false — 검사 생략")
+
+    from zoneinfo import ZoneInfo
+
+    local = now.astimezone(ZoneInfo("Asia/Seoul"))
+    hh, mm = (int(x) for x in CHAT_CHECK_AFTER.split(":"))
+    if (local.hour, local.minute) < (hh, mm):
+        return Finding(Severity.OK, "CHAT 판정 보류", f"{CHAT_CHECK_AFTER} 이전")
+
+    if chat_today == 0:
+        return Finding(
+            Severity.WARN,
+            "CHAT 무발행",
+            "오늘 CHAT 창에 발행된 글이 없습니다. chat.yml 실행 여부, "
+            "CLAUDE_AI_KEY, 린트 실패 로그를 확인하십시오.",
+        )
+    return Finding(Severity.OK, "CHAT 정상", f"오늘 {chat_today}건")
 
 
 def check_quota(used: int, total: int) -> Finding:

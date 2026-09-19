@@ -14,6 +14,8 @@
 # ---------------------------------------------------------------------------
 import os
 
+VERSION = "1.1.0"   # v1.1.0: CHAT·답글 확대 상수 추가
+
 YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "").strip()
 X_URL = os.environ.get("X_URL", "").strip()
 
@@ -54,8 +56,15 @@ REPLY_ENABLED = os.environ.get("REPLY_ENABLED", "true").strip().lower() not in (
 REPLY_MAX_LEN = 200                 # 답글 본문 상한
 REPLY_DAILY_CAP = 20                # 자체 일일 답글 상한 (API 한도 1000과 별개)
 REPLY_AUTHOR_DAILY_CAP = 2          # 같은 사람에게 하루 최대 답글 수
-REPLY_SCAN_POSTS = 5                # 최근 내 글 몇 개까지 훑을지
+# CHAT 도입으로 하루 게시물이 약 10건이 된다. 5개면 반나절치만 보므로
+# 최근 REPLY_SCAN_HOURS 시간 안의 글을 최대 REPLY_SCAN_POSTS 개까지 본다.
+REPLY_SCAN_POSTS = 20               # 최근 내 글 최대 몇 개까지 훑을지
+REPLY_SCAN_HOURS = 24               # 이 시간 안에 발행된 글만 스캔
 REPLY_SCAN_LIMIT = 25               # 글당 조회할 댓글 수
+# 실행 횟수가 하루 10회 이상으로 늘어나므로 실행당 상한을 따로 둔다(몰아 달기 방지).
+REPLY_PER_RUN_CAP = int(os.environ.get("REPLY_PER_RUN_CAP", "4"))
+# 한 원글 스레드에서 같은 사람과 주고받는 답글 누적 상한(핑퐁 방지, 기간 무관).
+REPLY_THREAD_AUTHOR_CAP = 3
 
 # ---------------------------------------------------------------------------
 # 안티봇
@@ -112,7 +121,8 @@ INSIGHTS_ENABLED = os.environ.get(
     "INSIGHTS_ENABLED", "true"
 ).strip().lower() not in ("false", "0", "no")
 INSIGHTS_LOOKBACK_DAYS = int(os.environ.get("INSIGHTS_LOOKBACK_DAYS", "7"))
-INSIGHTS_POST_LIMIT = int(os.environ.get("INSIGHTS_POST_LIMIT", "7"))
+# CHAT 도입 후 하루 게시물 약 10건. 7일 룩백을 덮으려면 70건이 필요하다.
+INSIGHTS_POST_LIMIT = int(os.environ.get("INSIGHTS_POST_LIMIT", "70"))
 
 # 팔로워 100명 미만이면 follower_demographics 를 가져올 수 없다(공식 제약).
 INSIGHTS_DEMOGRAPHICS_MIN_FOLLOWERS = 100
@@ -230,6 +240,79 @@ EVENT_DAILY_CAP = int(os.environ.get("EVENT_DAILY_CAP", "2"))
 EVENT_MIN_GAP_HOURS = float(os.environ.get("EVENT_MIN_GAP_HOURS", "4"))
 ANTIBOT_EVENT_JITTER = (600, 3000)   # 10~50분
 
+
+# ---------------------------------------------------------------------------
+# CHAT (오전 시장 잡담)
+#   KST 09:00~12:05 창에서 텍스트 잡담을 하루 CHAT_DAILY_MIN~MAX 건 발행한다.
+#   본문에 표식을 넣지 않는다. "창 안에서 발행된 글 = CHAT" 으로 정의한다.
+#   정기 슬롯(08:23/12:47)·이벤트 슬롯(03:11/13:29/17:41/23:17)과 겹치지 않는다.
+#   기본 비활성. Variables CHAT_ENABLED=true 로 켠다.
+# ---------------------------------------------------------------------------
+CHAT_ENABLED = os.environ.get(
+    "CHAT_ENABLED", "false"
+).strip().lower() in ("true", "1", "yes")
+CHAT_WINDOW_START = "09:00"   # KST
+CHAT_WINDOW_END = "12:05"     # KST. 이 시각 이후 시작한 실행은 즉시 종료
+
+# chat.yml cron 과 1:1 대응. 순서가 곧 트리거 번호(T1~T9).
+CHAT_TRIGGERS: tuple[str, ...] = (
+    "09:04", "09:23", "09:44", "10:07", "10:26",
+    "10:48", "11:09", "11:31", "11:52",
+)
+CHAT_DAILY_MIN = int(os.environ.get("CHAT_DAILY_MIN", "6"))
+CHAT_DAILY_MAX = int(os.environ.get("CHAT_DAILY_MAX", "8"))
+CHAT_MIN_GAP_MIN = 15          # 직전 게시물(종류 무관)과 최소 간격(분)
+# 간격이 모자라면 버리지 않고 이 한도 안에서 기다렸다 발행한다.
+# 트리거 간격(19~23분)이 cron 지연·지터와 겹치면 간격 미달이 자주 난다.
+# 버리면 일일 목표를 못 채운다(전수 테스트 시뮬레이션에서 확인, 2026-09-19).
+CHAT_MAX_GAP_WAIT_SEC = 600
+CHAT_JITTER = (30, 240)        # 발행 전 랜덤 지연(초)
+CHAT_TEXT_MAX_LEN = 200
+CHAT_RECENT_FOR_DEDUP = 12
+CHAT_SALT = "chat"
+
+# 근거 소스: mix(RSS·웹검색 랜덤) | rss | web | none
+CHAT_SOURCE_MODE = os.environ.get("CHAT_SOURCE_MODE", "mix").strip().lower()
+
+# 본문에 쓸 수 있는 기관·거시 이벤트 일반명사 (마스터 결정 2026-09-19: 기관명 허용)
+# 기업명·인물명은 허용하지 않는다(REG-04). 숫자는 일체 금지(REG-03).
+CHAT_THEME_ALLOWLIST: tuple[str, ...] = (
+    "연준", "Fed", "FOMC", "한국은행", "한은", "금통위", "ECB", "일본은행", "BOJ",
+    "재무부", "백악관", "의회", "OPEC",
+    "금리", "물가", "인플레이션", "CPI", "PCE", "고용", "실업", "GDP", "경기",
+    "유가", "원유", "환율", "달러", "엔화", "위안화", "국채", "채권", "금값", "비트코인",
+    "관세", "무역", "실적", "실적 시즌", "반도체", "빅테크", "AI", "에너지", "은행",
+    "부동산", "소비", "제조업", "변동성", "위험자산", "안전자산",
+)
+# 방향 예측 표현. 시장 전망 금지(REG-03).
+CHAT_FORECAST_TERMS: tuple[str, ...] = (
+    "오를 것", "오를 겁", "오르겠", "떨어질 것", "떨어질 겁", "떨어지겠",
+    "빠질 것", "빠지겠", "반등할", "반등하겠", "폭락할", "폭등할",
+    "상승할 것", "하락할 것", "갈 것 같", "간다고 봅", "바닥", "고점",
+)
+# 기업명·인물명 차단 목록(휴리스틱). 영문 고유명은 lint_chat 이 허용목록 대조로 따로 잡는다.
+CHAT_ENTITY_TERMS: tuple[str, ...] = (
+    "삼성", "하이닉스", "엔비디아", "테슬라", "애플", "마이크로소프트", "구글", "알파벳",
+    "아마존", "메타", "넷플릭스", "브로드컴", "TSMC", "인텔", "현대차", "카카오", "네이버",
+    "파월", "트럼프", "바이든", "옐런", "베선트", "머스크", "버핏", "이창용",
+    "전자", "그룹", "홀딩스", "증권", "자산운용",
+)
+
+# 뉴스 RSS. URL 은 Variables 로 주입한다(제공처 교체에 코드 수정 불필요).
+# 여러 개는 | 로 구분. 비어 있으면 RSS 소스는 '실패'로 처리되어 폴백한다.
+MOOD_RSS_URLS: tuple[str, ...] = tuple(
+    u.strip() for u in os.environ.get("MOOD_RSS_URLS", "").split("|") if u.strip()
+)
+MOOD_RSS_MAX_ITEMS = 10
+MOOD_RSS_MAX_AGE_HOURS = 24
+
+# Claude 웹 검색(서버 도구). 마스터 결정 2026-09-19: Supabase 대신 CLAUDE_AI_KEY 로 조회.
+#   web_search_20250305 를 쓴다. 20260209 이후 버전은 allowed_callers 기본값이
+#   code_execution 이라 별도 도구 구성이 필요하다(공식 문서 확인).
+#   과금: 검색 1,000회당 $10 + 토큰. 호출당 검색 횟수를 max_uses 로 제한한다.
+#   조직 관리자가 Console 에서 웹 검색을 켜야 한다. 꺼져 있으면 400.
+MOOD_WEB_TOOL_TYPE = "web_search_20250305"
+MOOD_WEB_MAX_USES = int(os.environ.get("MOOD_WEB_MAX_USES", "2"))
 
 HTTP_TIMEOUT_SEC = 20
 HTTP_RETRY_COUNT = 3

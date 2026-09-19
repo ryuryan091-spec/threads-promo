@@ -14,11 +14,11 @@ import logging
 import sys
 from zoneinfo import ZoneInfo
 
-from . import config, notifier, token_manager, watchdog
+from . import antibot, chat_plan, config, notifier, token_manager, watchdog
 from .env import load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -29,6 +29,11 @@ log = logging.getLogger("threads-watchdog")
 
 for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def _is_chat_post(post: dict) -> bool:
+    parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
+    return bool(parsed and chat_plan.is_chat_time(parsed))
 
 
 def _collect_owned_reply_stamps(
@@ -90,7 +95,22 @@ def run() -> int:
         client = ThreadsClient(user_id, token)
 
         posts = client.get_my_posts(watchdog.RECENT_POSTS_TO_SCAN)
-        findings.append(watchdog.check_publish_freshness(posts, now))
+
+        # 정기·이벤트 발행 신선도는 CHAT 을 빼고 본다.
+        # 섞으면 정기 파이프라인이 멈춰도 CHAT 이 가려 경보가 울리지 않는다.
+        regular_posts = [p for p in posts if not _is_chat_post(p)]
+        findings.append(watchdog.check_publish_freshness(regular_posts, now))
+
+        chat_today = chat_plan.count_posts(
+            posts, now, watchdog.parse_threads_timestamp
+        ).chat_today
+        findings.append(
+            watchdog.check_chat_activity(
+                chat_today, now,
+                enabled=config.CHAT_ENABLED
+                and not antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS),
+            )
+        )
 
         quota = client.get_post_quota()
         findings.append(watchdog.check_quota(quota.used, quota.total))

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 from dataclasses import dataclass
@@ -17,7 +18,14 @@ import requests
 
 from . import config
 
+VERSION = "1.1.0"   # v1.1.0: CHAT 도입
+
 log = logging.getLogger(__name__)
+
+
+# 게시물 목록 페이지 크기. 기존 코드에서 실사용 검증된 최대값(25)을 넘기지 않는다.
+POSTS_PAGE_SIZE = 25
+POSTS_MAX_PAGES = 12
 
 
 class ThreadsApiError(RuntimeError):
@@ -331,18 +339,39 @@ class ThreadsClient:
             total=int(cfg.get("quota_total", config.DAILY_REPLY_QUOTA)),
         )
 
-    def get_my_posts(self, limit: int = 5) -> list[dict]:
-        """최근 내 글 목록. id 와 text 를 함께 받는다."""
-        data = _request(
-            "GET",
-            f"{config.THREADS_API_BASE}/{self._user_id}/threads",
-            params={
-                "fields": "id,text,timestamp",
-                "limit": limit,
-                "access_token": self._token,
-            },
-        )
-        return list(data.get("data") or [])
+    def get_my_posts(
+        self, limit: int = 5, *, since: dt.date | None = None
+    ) -> list[dict]:
+        """최근 내 글 목록. id 와 text 를 함께 받는다.
+
+        limit 이 한 페이지(POSTS_PAGE_SIZE)를 넘으면 after 커서로 이어 받는다.
+        since 는 공식 문서 예시 형식(YYYY-MM-DD)으로 서버 필터에 넘긴다.
+        서버 필터의 경계 해석(시간대 등)은 문서에 명시되어 있지 않으므로,
+        정확한 시간 판정은 항상 호출자가 timestamp 로 다시 한다.
+        """
+        page_size = min(limit, POSTS_PAGE_SIZE)
+        params: dict[str, Any] = {
+            "fields": "id,text,timestamp",
+            "limit": page_size,
+            "access_token": self._token,
+        }
+        if since is not None:
+            params["since"] = since.isoformat()
+
+        posts: list[dict] = []
+        for _ in range(POSTS_MAX_PAGES):
+            data = _request(
+                "GET",
+                f"{config.THREADS_API_BASE}/{self._user_id}/threads",
+                params=params,
+            )
+            batch = list(data.get("data") or [])
+            posts += batch
+            after = ((data.get("paging") or {}).get("cursors") or {}).get("after")
+            if len(posts) >= limit or not batch or not after:
+                break
+            params = {**params, "after": after}
+        return posts[:limit]
 
     def get_conversation(self, post_id: str, limit: int = 25) -> list[dict]:
         """글 하나의 전체 대화(최상위+중첩 평탄화)를 가져온다.

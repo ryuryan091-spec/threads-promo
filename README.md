@@ -62,6 +62,12 @@ python scripts/bootstrap_token.py --code <CODE> --redirect-uri <URI>
 | `TELEGRAM_ALERT_CHAT_ID` | Secret | 권장 | 공개 채널 ID 사용 금지 |
 | `ASSET_RAW_BASE_URL` | Variable | 선택 | 미설정 시 레포 raw URL 자동 조립 |
 | `DRY_RUN` | Variable | 선택 | 기본 `true`. 실발행은 `false` |
+| `CHAT_ENABLED` | Variable | 선택 | 오전 잡담. 기본 `false` |
+| `CHAT_DAILY_MIN` / `CHAT_DAILY_MAX` | Variable | 선택 | 기본 6 / 8 (트리거 9개 이하로 자동 보정) |
+| `CHAT_SOURCE_MODE` | Variable | 선택 | `mix`(기본) / `rss` / `web` / `none` |
+| `MOOD_RSS_URLS` | Variable | 선택 | 뉴스 RSS URL, 여러 개는 `\|` 구분. 비면 웹 검색만 사용 |
+| `MOOD_WEB_MAX_USES` | Variable | 선택 | CHAT 1건당 웹 검색 최대 횟수. 기본 2 |
+| `REPLY_PER_RUN_CAP` | Variable | 선택 | 답글 실행당 상한. 기본 4 |
 
 > 기본 `GITHUB_TOKEN`으로는 Secret 쓰기가 **불가**하다. PAT가 반드시 별도로 필요하다.
 
@@ -77,7 +83,10 @@ DRY_RUN=true python -m src.main
 # Actions → Threads Publish → Run workflow → mode: live
 ```
 
-스케줄: 매일 KST 09:30 (`cron: 30 0 * * *`).
+스케줄(KST)
+- 정기 발행: 08:23 / 12:47 / 20:31 중 1개
+- 오전 잡담(CHAT): 09:04 ~ 11:52 트리거 9개, 하루 6~8건 (`chat.yml`)
+- 답글: 12:19 / 16:53 / 22:07 전부 + CHAT 실행마다 스윕
 
 ---
 

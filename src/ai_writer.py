@@ -22,6 +22,8 @@ import requests
 
 from . import config
 
+VERSION = "1.1.0"   # v1.1.0: CHAT 도입
+
 log = logging.getLogger(__name__)
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -43,6 +45,8 @@ class Pillar:
     # 이 기둥에 실제 근거(커밋 로그 등)를 붙일 수 있는지.
     # False 인 기둥에서 구체적 경험담을 요구하면 모델은 지어낼 수밖에 없다.
     evidence_available: bool = False
+    # 근거가 있을 때 붙일 지시문. 비우면 기본(회차 기록용) 지시문을 쓴다.
+    evidence_note: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +120,51 @@ PILLARS: dict[str, Pillar] = {
         ),
     ),
 }
+
+# ---------------------------------------------------------------------------
+# 로테이션 밖 기둥
+#   CHAT 은 오전 잡담 전용이다(run_chat 만 사용). PILLARS 에 넣지 않는다.
+#   PILLARS 는 정기 로테이션·weighting·insights 의 기둥 집합이므로,
+#   여기에 넣으면 CHAT 이 정기 로테이션 슬롯을 배정받는 사고가 난다.
+# ---------------------------------------------------------------------------
+CHAT_PILLAR = Pillar(
+    key="CHAT",
+    label="오전 시장 잡담",
+    evidence_available=True,
+    brief=(
+        "오늘 아침 시장 분위기에 대해 옆자리 동료에게 건네는 한두 마디를 쓴다. "
+        "1~3문장, 전체 200자 이내. 이 기둥에서는 형식의 문장 수·길이 지시보다 이 조건이 우선한다. "
+        "숫자(아라비아 숫자 포함)를 한 글자도 쓰지 않는다. 기업명·인물명을 쓰지 않는다. "
+        "연준·FOMC·한국은행 같은 기관명과 금리·유가·환율 같은 일반명사는 쓸 수 있다. "
+        "오를지 내릴지 예측하지 않는다. 느낀 분위기와 본인의 태도만 쓴다. "
+        "가볍게 끝내되 대답하기 쉬운 짧은 질문으로 닫는다."
+    ),
+    seeds=(
+        "출근길에 본 첫 화면",
+        "밤사이 바뀐 공기",
+        "오늘 아침 가장 많이 들린 단어",
+        "다들 같은 얘기를 하는 아침",
+        "조용한 아침의 불편함",
+        "뉴스 제목만 보고 판단하지 않기",
+        "커피 마시며 확인하는 것 하나",
+        "분위기에 휩쓸리지 않는 방법",
+        "점심 전에 한 번 더 보는 것",
+        "오늘은 안 보기로 한 것",
+    ),
+    evidence_note=(
+        "위 근거에 있는 테마만 언급할 수 있습니다. 근거에 없는 사건·수치·기관을"
+        " 추가하지 마세요. 테마를 전부 쓰지 말고 하나만 골라 가볍게 말한 뒤"
+        " 질문으로 닫습니다."
+    ),
+)
+
+EXTRA_PILLARS: dict[str, Pillar] = {"CHAT": CHAT_PILLAR}
+
+
+def get_pillar(key: str) -> Pillar | None:
+    """로테이션 기둥과 로테이션 밖 기둥을 함께 조회한다."""
+    return PILLARS.get(key) or EXTRA_PILLARS.get(key)
+
 
 # ---------------------------------------------------------------------------
 # 8일 주기 기둥 배치
@@ -222,14 +271,12 @@ def _build_user_prompt(
     ]
 
     if pillar.evidence_available and facts_block:
-        parts += [
-            "",
-            facts_block,
-            "",
+        note = pillar.evidence_note or (
             "위 기록에 있는 일만 소재로 씁니다. 여기 없는 작업·수치·결과를"
             " 추가하지 마세요. 기록 한 줄을 골라 그때의 판단이나 막힘을 쓰고"
-            " 질문으로 닫습니다.",
-        ]
+            " 질문으로 닫습니다."
+        )
+        parts += ["", facts_block, "", note]
     else:
         parts += [
             "",
@@ -311,7 +358,7 @@ def generate(
     facts_block: str = "",
 ) -> str:
     """Claude 로 게시글 본문을 생성한다. 실패 시 AiWriterError."""
-    pillar = PILLARS.get(pillar_key)
+    pillar = get_pillar(pillar_key)
     if pillar is None:
         raise AiWriterError(f"알 수 없는 기둥: {pillar_key}")
 
@@ -364,7 +411,9 @@ def generate(
 
 def pick_seed(pillar_key: str, day_index: int) -> str:
     """날짜 기반으로 소재를 고른다. 같은 날 재실행 시 동일 결과(멱등)."""
-    pillar = PILLARS[pillar_key]
+    pillar = get_pillar(pillar_key)
+    if pillar is None:
+        raise KeyError(pillar_key)
     rng = random.Random(f"{pillar_key}-{day_index}")
     return rng.choice(pillar.seeds)
 

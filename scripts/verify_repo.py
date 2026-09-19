@@ -13,6 +13,7 @@
   3. 모든 워크플로우 YAML 파싱 가능 여부
   4. 워크플로우가 참조하는 모듈이 실제로 있는지
   5. cron 과 slot 매핑 일치 여부
+  6. chat.yml cron 과 config.CHAT_TRIGGERS(KST) 일치 여부
 """
 
 from __future__ import annotations
@@ -26,12 +27,12 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 REQUIRED_MODULES = [
-    "config", "env", "ai_writer", "antibot", "content", "facts",
-    "main", "notifier", "notion_source", "reply_engine",
-    "insights", "run_insights", "run_refresh", "run_reply", "run_story",
+    "config", "env", "ai_writer", "antibot", "chat_plan", "content", "facts",
+    "main", "mood_source", "notifier", "notion_source", "reply_engine",
+    "insights", "run_chat", "run_insights", "run_refresh", "run_reply", "run_story",
     "run_watchdog", "run_weighting", "threads_client", "weighting",
     "token_manager", "watchdog",
 ]
@@ -41,6 +42,7 @@ REQUIRED_FILES = [
     "pyproject.toml",
     ".github/workflows/publish.yml",
     ".github/workflows/reply.yml",
+    ".github/workflows/chat.yml",
     ".github/workflows/watchdog.yml",
     ".github/workflows/story.yml",
     ".github/workflows/token_refresh.yml",
@@ -53,6 +55,7 @@ REQUIRED_FILES = [
 WORKFLOW_ENTRYPOINTS = {
     ".github/workflows/publish.yml": "src.main",
     ".github/workflows/reply.yml": "src.run_reply",
+    ".github/workflows/chat.yml": "src.run_chat",
     ".github/workflows/watchdog.yml": "src.run_watchdog",
     ".github/workflows/story.yml": "src.run_story",
     ".github/workflows/token_refresh.yml": "src.run_refresh",
@@ -183,6 +186,42 @@ def check_slot_mapping() -> int:
     return failed
 
 
+def kst_to_utc_cron(hhmm: str) -> str:
+    """'09:04' (KST) -> '4 0 * * *' (UTC). 하루를 넘기는 시각도 처리한다."""
+    hour, minute = int(hhmm[:2]), int(hhmm[3:])
+    return f"{minute} {(hour - 9) % 24} * * *"
+
+
+def check_chat_triggers() -> int:
+    print("\n6. chat.yml cron 과 CHAT_TRIGGERS")
+    try:
+        import yaml
+    except ImportError:
+        print("  [SKIP] pyyaml 미설치")
+        return 0
+
+    from src import config
+
+    path = REPO_ROOT / ".github" / "workflows" / "chat.yml"
+    if not path.exists():
+        _fail("chat.yml 없음")
+        return 1
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    on = data.get(True) or data.get("on") or {}
+    crons = [c["cron"] for c in (on.get("schedule") or [])]
+    expected = [kst_to_utc_cron(t) for t in config.CHAT_TRIGGERS]
+
+    if crons != expected:
+        _fail(
+            f"chat.yml cron {crons} 이 CHAT_TRIGGERS 환산값 {expected} 과 다릅니다. "
+            "트리거 번호(T1~)가 어긋나면 발행 계획이 틀어집니다."
+        )
+        return 1
+    _ok(f"chat.yml — 트리거 {len(crons)}개 순서까지 일치")
+    return 0
+
+
 def main() -> int:
     print(f"[VerifyRepo] v{VERSION}")
     print(f"경로: {REPO_ROOT}")
@@ -193,6 +232,7 @@ def main() -> int:
     total += check_workflows()
     total += check_entrypoints()
     total += check_slot_mapping()
+    total += check_chat_triggers()
 
     print("\n" + "=" * 52)
     if total:

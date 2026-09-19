@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from . import (
     ai_writer,
     antibot,
+    chat_plan,
     config,
     content,
     notion_source,
@@ -49,9 +50,11 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 KST = ZoneInfo("Asia/Seoul")
 ASSETS_DIR = REPO_ROOT / "assets"
+# CHAT 도입 후 하루 게시물이 약 10건이다. 5건이면 정기 글이 보이지 않는다.
+POSTS_TO_SCAN = 25
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,13 +66,23 @@ for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def _non_chat_stamps(posts: list[dict]) -> list[dt.datetime]:
+    """CHAT 창 게시물을 뺀 발행 시각.
+
+    CHAT 은 오전 잡담이라 정기·이벤트 발행과 간격·상한을 공유하지 않는다.
+    섞어 세면 CHAT 만으로 이벤트 상한·최소 간격이 매일 막힌다.
+    """
+    stamps: list[dt.datetime] = []
+    for post in posts:
+        parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
+        if parsed and not chat_plan.is_chat_time(parsed):
+            stamps.append(parsed)
+    return stamps
+
+
 def _hours_since_last_post(posts: list[dict], now: dt.datetime) -> float | None:
-    """마지막 발행 이후 경과 시간. 판정 불가면 None."""
-    stamps = [
-        parsed
-        for post in posts
-        if (parsed := watchdog.parse_threads_timestamp(str(post.get("timestamp", ""))))
-    ]
+    """마지막 발행(CHAT 제외) 이후 경과 시간. 판정 불가면 None."""
+    stamps = _non_chat_stamps(posts)
     if not stamps:
         return None
     return watchdog.hours_since(max(stamps), now)
@@ -78,16 +91,11 @@ def _hours_since_last_post(posts: list[dict], now: dt.datetime) -> float | None:
 def _events_published_today(posts: list[dict], now: dt.datetime) -> int:
     """오늘 발행된 글 수. 이벤트 상한 판정에 쓴다.
 
-    정기와 이벤트를 구분할 표식이 본문에 없으므로, 오늘 발행 총량으로 본다.
+    정기와 이벤트를 구분할 표식이 본문에 없으므로, 오늘 발행 총량(CHAT 제외)으로 본다.
     보수적으로 잡는 편이 안전하다.
     """
     today = now.astimezone(KST).date()
-    count = 0
-    for post in posts:
-        parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
-        if parsed and parsed.astimezone(KST).date() == today:
-            count += 1
-    return count
+    return sum(1 for s in _non_chat_stamps(posts) if s.astimezone(KST).date() == today)
 
 
 def _regular_pillar_today(today: dt.date) -> str:
@@ -168,7 +176,7 @@ def run() -> int:
 
     client = ThreadsClient(user_id, token)
     quota = client.get_post_quota()
-    posts = client.get_my_posts(5)
+    posts = client.get_my_posts(POSTS_TO_SCAN, since=today - dt.timedelta(days=1))
 
     blocked = _gate(posts, now, today, quota.remaining)
     if blocked:
@@ -215,7 +223,7 @@ def run() -> int:
     # 게이트는 '아직 발행되지 않은' 글을 볼 수 없으므로 사전 판정만으로는
     # 부족하다. 실제 발행 직전에 최신 상태로 재확인한다.
     recheck_now = dt.datetime.now(dt.UTC)
-    fresh_posts = client.get_my_posts(5)
+    fresh_posts = client.get_my_posts(POSTS_TO_SCAN, since=today - dt.timedelta(days=1))
     blocked_again = _gate(
         fresh_posts, recheck_now, today, client.get_post_quota().remaining
     )

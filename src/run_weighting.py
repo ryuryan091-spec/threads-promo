@@ -13,12 +13,12 @@ import logging
 import sys
 from zoneinfo import ZoneInfo
 
-from . import config, insights, notifier, weighting
+from . import chat_plan, config, insights, notifier, weighting
 from .env import MissingEnvError, load_settings
 from .run_insights import collect_post_stats
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -29,6 +29,15 @@ log = logging.getLogger("threads-weighting")
 
 for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+WEIGHT_POSTS_LIST_LIMIT = 300   # 25 x 12페이지
+WEIGHT_POSTS_STATS_LIMIT = 60
+
+
+def _is_chat_post(post: dict) -> bool:
+    parsed = insights.parse_timestamp(str(post.get("timestamp", "")))
+    return bool(parsed and chat_plan.is_chat_time(parsed))
 
 
 def _scores(
@@ -45,7 +54,8 @@ def _scores(
     posts: dict[str, int] = defaultdict(int)
     replies: dict[str, int] = defaultdict(int)
     for stat in stats:
-        if stat.pillar == insights.UNKNOWN:
+        # CHAT 은 로테이션 기둥이 아니고 링크도 없다. 클릭 배분에서 제외한다.
+        if stat.pillar in (insights.UNKNOWN, insights.CHAT):
             continue
         posts[stat.pillar] += 1
         replies[stat.pillar] += stat.replies
@@ -90,8 +100,13 @@ def run() -> int:
     clicks_total = sum(user.clicks.values())
     log.info("%d일 클릭 합계 %d", window, clicks_total)
 
-    posts = client.get_my_posts(min(window, 25))
-    stats, failed = collect_post_stats(client, posts, min(window, 25))
+    # CHAT 도입 후 하루 게시물이 약 10건이다. 목록은 넉넉히 받고,
+    # 인사이트 호출은 CHAT 을 뺀 정기·이벤트 글에만 한다(호출 수 절약).
+    listed = client.get_my_posts(
+        WEIGHT_POSTS_LIST_LIMIT, since=today - dt.timedelta(days=window)
+    )
+    posts = [p for p in listed if not _is_chat_post(p)]
+    stats, failed = collect_post_stats(client, posts, WEIGHT_POSTS_STATS_LIMIT)
     log.info("게시물 %d건 수집 (실패 %d건)", len(stats), failed)
 
     result = weighting.decide(_scores(stats, clicks_total), today, config.LAST_WEIGHT_ADJUST)
