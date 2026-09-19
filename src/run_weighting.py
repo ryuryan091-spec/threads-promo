@@ -18,7 +18,7 @@ from .env import MissingEnvError, load_settings
 from .run_insights import collect_post_stats
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -36,8 +36,7 @@ WEIGHT_POSTS_STATS_LIMIT = 60
 
 
 def _is_chat_post(post: dict) -> bool:
-    parsed = insights.parse_timestamp(str(post.get("timestamp", "")))
-    return bool(parsed and chat_plan.is_chat_time(parsed))
+    return chat_plan.is_chat_post_dict(post, insights.parse_timestamp)
 
 
 def _scores(

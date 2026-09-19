@@ -18,7 +18,7 @@ from . import antibot, chat_plan, config, notifier, token_manager, watchdog
 from .env import load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -32,8 +32,7 @@ for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
 
 
 def _is_chat_post(post: dict) -> bool:
-    parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
-    return bool(parsed and chat_plan.is_chat_time(parsed))
+    return chat_plan.is_chat_post_dict(post, watchdog.parse_threads_timestamp)
 
 
 def _collect_owned_reply_stamps(

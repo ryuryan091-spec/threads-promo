@@ -50,7 +50,7 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 KST = ZoneInfo("Asia/Seoul")
 ASSETS_DIR = REPO_ROOT / "assets"
 # CHAT 도입 후 하루 게시물이 약 10건이다. 5건이면 정기 글이 보이지 않는다.
@@ -75,7 +75,7 @@ def _non_chat_stamps(posts: list[dict]) -> list[dt.datetime]:
     stamps: list[dt.datetime] = []
     for post in posts:
         parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
-        if parsed and not chat_plan.is_chat_time(parsed):
+        if parsed and not chat_plan.is_chat_post(parsed, str(post.get("media_type") or "")):
             stamps.append(parsed)
     return stamps
 

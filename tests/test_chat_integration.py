@@ -138,3 +138,84 @@ class TestWatchdogChat:
 
     def test_scan_covers_a_day(self):
         assert watchdog.RECENT_POSTS_TO_SCAN >= len(config.CHAT_TRIGGERS) + 3
+
+
+# ---------------------------------------------------------------------------
+# v1.0.2 (P1) — media_type 으로 정기 글 오분류 방지
+# ---------------------------------------------------------------------------
+
+
+def _typed(when: dt.datetime, media_type: str, pid: str = "p") -> dict:
+    return {**_post(when, pid), "media_type": media_type}
+
+
+class TestMediaTypeClassification:
+    def test_text_post_in_window_is_chat(self):
+        from src import chat_plan
+
+        assert chat_plan.is_chat_post(_kst(10, 0), "TEXT_POST")
+
+    def test_delayed_regular_image_in_window_is_not_chat(self):
+        """슬롯 A 가 09:10 으로 밀려도 이미지 글이면 CHAT 이 아니다."""
+        from src import chat_plan
+
+        assert not chat_plan.is_chat_post(_kst(9, 10), "IMAGE")
+
+    def test_missing_media_type_falls_back_to_window(self):
+        from src import chat_plan
+
+        assert chat_plan.is_chat_post(_kst(10, 0), "")
+        assert not chat_plan.is_chat_post(_kst(13, 0), "")
+
+    def test_text_outside_window_is_not_chat(self):
+        from src import chat_plan
+
+        assert not chat_plan.is_chat_post(_kst(13, 0), "TEXT_POST")
+
+    def test_count_posts_ignores_delayed_regular(self):
+        from src import chat_plan
+
+        now = _kst(10, 30)
+        posts = [_typed(_kst(9, 12), "IMAGE", "reg"), _typed(_kst(9, 40), "TEXT_POST", "c1")]
+        counts = chat_plan.count_posts(posts, now, watchdog.parse_threads_timestamp)
+        assert counts.chat_today == 1
+        # 최소 간격 판정에는 정기 글도 포함된다(종류 무관).
+        assert counts.last_post_at == watchdog.parse_threads_timestamp(posts[1]["timestamp"])
+
+    def test_insights_restore_uses_media_type(self):
+        assert insights.restore_pillar(_kst(9, 12), "IMAGE") != insights.CHAT
+        assert insights.restore_pillar(_kst(9, 12), "TEXT_POST") == insights.CHAT
+
+    def test_watchdog_keeps_delayed_regular_for_freshness(self):
+        from src import run_watchdog
+
+        assert not run_watchdog._is_chat_post(_typed(_kst(9, 12), "IMAGE"))
+        assert run_watchdog._is_chat_post(_typed(_kst(9, 12), "TEXT_POST"))
+
+    def test_story_gate_counts_delayed_regular(self):
+        from src import run_story
+
+        stamps = run_story._non_chat_stamps([_typed(_kst(9, 12), "IMAGE"),
+                                             _typed(_kst(9, 40), "TEXT_POST")])
+        assert len(stamps) == 1
+
+    def test_list_requests_media_type(self):
+        from src.threads_client import ThreadsClient
+
+        with mock.patch("src.threads_client._request", return_value={"data": []}) as req:
+            ThreadsClient("1", "t").get_my_posts(5)
+        assert "media_type" in req.call_args.kwargs["params"]["fields"].split(",")
+
+
+class TestChatBriefNoFabricatedObservation:
+    def test_brief_forbids_observing_others(self):
+        from src import ai_writer
+
+        brief = ai_writer.CHAT_PILLAR.brief
+        assert "직접 본 것처럼 쓰지 않는다" in brief
+
+    def test_prompt_carries_rule(self):
+        from src import ai_writer
+
+        prompt = ai_writer._build_user_prompt(ai_writer.CHAT_PILLAR, "소재", [], "# 근거\n- 화제 테마: 금리")
+        assert "직접 본 것처럼 쓰지 않는다" in prompt

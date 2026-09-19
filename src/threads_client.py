@@ -18,7 +18,7 @@ import requests
 
 from . import config
 
-VERSION = "1.1.0"   # v1.1.0: CHAT 도입
+VERSION = "1.1.1"   # v1.1.1: 게시물 목록에 media_type 추가
 
 log = logging.getLogger(__name__)
 
@@ -351,7 +351,8 @@ class ThreadsClient:
         """
         page_size = min(limit, POSTS_PAGE_SIZE)
         params: dict[str, Any] = {
-            "fields": "id,text,timestamp",
+            # media_type: CHAT(TEXT_POST) 과 정기 글(이미지) 구분용 (chat_plan.is_chat_post)
+            "fields": "id,text,timestamp,media_type",
             "limit": page_size,
             "access_token": self._token,
         }

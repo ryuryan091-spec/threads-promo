@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -50,6 +50,29 @@ def is_chat_time(when: dt.datetime) -> bool:
     local = when.astimezone(KST)
     minute = local.hour * 60 + local.minute
     return _minutes(config.CHAT_WINDOW_START) <= minute < _minutes(config.CHAT_WINDOW_END)
+
+
+# 공식 문서(Threads Media)에서 확인된 텍스트 게시물 media_type 값.
+CHAT_MEDIA_TYPE = "TEXT_POST"
+
+
+def is_chat_post(posted_at: dt.datetime, media_type: str = "") -> bool:
+    """게시물이 CHAT 인지. 시간창 + 형식(텍스트)으로 판정한다.
+
+    v1.0.2: 정기 발행(이미지)이 cron 지연으로 창 안에 들어와도 CHAT 으로
+    오분류하지 않도록 media_type 을 함께 본다. media_type 이 비어 있으면
+    (조회 필드 누락 등) 기존처럼 시간창만으로 판정한다.
+    남는 한계: 이미지 실패로 텍스트 폴백된 정기 글이 창 안이면 여전히 CHAT 으로 본다.
+    """
+    if not is_chat_time(posted_at):
+        return False
+    return not media_type or media_type == CHAT_MEDIA_TYPE
+
+
+def is_chat_post_dict(post: dict, parse) -> bool:
+    """API 게시물 dict 판정. parse 는 watchdog.parse_threads_timestamp."""
+    parsed = parse(str(post.get("timestamp", "")))
+    return bool(parsed) and is_chat_post(parsed, str(post.get("media_type") or ""))
 
 
 def daily_bounds() -> tuple[int, int]:
@@ -104,7 +127,8 @@ def count_posts(posts: list[dict], now: dt.datetime, parse) -> PostCounts:
         if parsed is None:
             continue
         stamps.append(parsed)
-        if parsed.astimezone(KST).date() == today and is_chat_time(parsed):
+        media_type = str(post.get("media_type") or "")
+        if parsed.astimezone(KST).date() == today and is_chat_post(parsed, media_type):
             chat_today += 1
     return PostCounts(chat_today, max(stamps) if stamps else None)
 

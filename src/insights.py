@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from . import ai_writer, chat_plan, config, content, watchdog
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -45,7 +45,7 @@ PUBLISH_SLOTS = {"08:23": "A", "12:47": "B", "20:31": "C"}
 EVENT_SLOTS = ("03:11", "13:29", "17:41", "23:17")
 
 UNKNOWN = "판정불가"
-CHAT = "CHAT"   # 오전 잡담. 시간창으로 판정한다(chat_plan.is_chat_time).
+CHAT = "CHAT"   # 오전 잡담. 시간창 + 형식으로 판정한다(chat_plan.is_chat_post).
 
 
 def parse_timestamp(raw: str) -> dt.datetime | None:
@@ -172,9 +172,9 @@ def discriminator_from_timestamp(posted_at: dt.datetime) -> int | None:
     return None
 
 
-def restore_pillar(posted_at: dt.datetime) -> str:
-    """게시물 발행 시각에서 기둥을 복원한다. 불가하면 UNKNOWN."""
-    if chat_plan.is_chat_time(posted_at):
+def restore_pillar(posted_at: dt.datetime, media_type: str = "") -> str:
+    """게시물 발행 시각(+형식)에서 기둥을 복원한다. 불가하면 UNKNOWN."""
+    if chat_plan.is_chat_post(posted_at, media_type):
         return CHAT
     disc = discriminator_from_timestamp(posted_at)
     if disc is None:

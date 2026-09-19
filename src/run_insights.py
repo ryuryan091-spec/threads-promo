@@ -20,7 +20,7 @@ from . import config, insights, notifier
 from .env import MissingEnvError, load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -76,7 +76,7 @@ def collect_post_stats(
             insights.PostStat(
                 post_id=post_id,
                 posted_at=posted_at,
-                pillar=insights.restore_pillar(posted_at),
+                pillar=insights.restore_pillar(posted_at, str(post.get("media_type") or "")),
                 views=metrics.get("views", 0),
                 likes=metrics.get("likes", 0),
                 replies=metrics.get("replies", 0),
