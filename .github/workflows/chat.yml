@@ -23,7 +23,7 @@ name: Threads Chat
         description: "실행 모드"
         type: choice
         options: [dry_run, live]
-        default: dry_run
+        default: live
 
 permissions:
   contents: read
