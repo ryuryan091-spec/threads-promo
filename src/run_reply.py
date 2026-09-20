@@ -34,7 +34,7 @@ from .main import _acquire_token  # 토큰 확보 로직 재사용
 from .reply_engine import Comment, ReplyStrategy
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -227,7 +227,7 @@ def sweep(
             break
 
         text = reply_engine.compose(
-            decision, post_text, settings.claude_api_key, content.lint,
+            decision, post_text, settings.claude_api_key, content.lint_reply,
             parent_reply_text=parent_text,
         )
         if not text:

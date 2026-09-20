@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.1.1"   # v1.1.1: CHAT 기업명 차단 규칙 분리(일반어 오차단 수정)
+VERSION = "1.1.2"   # v1.1.2: Variables 자리표시자 해석, 답글 링크 차단 상수
 
 YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "").strip()
 X_URL = os.environ.get("X_URL", "").strip()
@@ -140,8 +140,19 @@ ADAPTIVE_WEIGHTS_ENABLED = os.environ.get(
 ).strip().lower() in ("true", "1", "yes")
 
 # 수동 지정. 설정하면 자동 조절보다 우선한다.
-PILLAR_ROTATION_OVERRIDE = os.environ.get("PILLAR_ROTATION_OVERRIDE", "").strip()
-LAST_WEIGHT_ADJUST = os.environ.get("LAST_WEIGHT_ADJUST", "").strip()
+# GitHub Variables 는 빈 값을 저장할 수 없어 '—' 같은 자리표시자가 들어가는 경우가 있다.
+# (2026-09-19 Actions 로그에서 PILLAR_ROTATION_OVERRIDE='—' 확인)
+# 자리표시자를 '미설정'으로 해석하지 않으면 weighting 이 수동 지정으로 오인해 자동 조절을 막는다.
+_UNSET_PLACEHOLDERS = frozenset({"-", "—", "–", "none", "null", "없음", "off"})
+
+
+def _var(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    return "" if value.lower() in _UNSET_PLACEHOLDERS else value
+
+
+PILLAR_ROTATION_OVERRIDE = _var("PILLAR_ROTATION_OVERRIDE")
+LAST_WEIGHT_ADJUST = _var("LAST_WEIGHT_ADJUST")
 
 # 안전장치 7종
 WEIGHT_MIN_SAMPLE = 10          # S1 기둥당 최소 발행 건수

@@ -17,8 +17,9 @@ from urllib.parse import urlparse
 import requests
 
 from . import config
+from .redact import redact
 
-VERSION = "1.1.1"   # v1.1.1: 게시물 목록에 media_type 추가
+VERSION = "1.1.2"   # v1.1.2: 오류 문자열 자격증명 마스킹
 
 log = logging.getLogger(__name__)
 
@@ -33,9 +34,10 @@ class ThreadsApiError(RuntimeError):
 
     def __init__(self, status: int, payload: str, *, code: int | None = None):
         self.status = status
-        self.payload = payload
+        # 네트워크 예외 문자열에는 access_token 이 든 URL 이 포함된다. 저장 전에 가린다.
+        self.payload = redact(payload)
         self.code = code
-        super().__init__(f"Threads API {status} (code={code}): {payload[:300]}")
+        super().__init__(f"Threads API {status} (code={code}): {self.payload[:300]}")
 
     @property
     def is_auth_error(self) -> bool:

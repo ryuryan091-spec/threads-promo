@@ -260,8 +260,16 @@ Secret 값과 일치하는 문자열이 자동 마스킹된 것입니다. `1`, `
 | `근거 소스 web 실패 ... 400` | Console 웹 검색 비활성 가능성 |
 | `근거 소스 rss 실패 ... 미설정` | `MOOD_RSS_URLS` 없음. 웹 검색으로 폴백 |
 
+### Live 전환 절차 (v1.1.0)
+1. ZIP 반영 → `python scripts/verify_repo.py` 이상 없음
+2. **Actions → Threads Go-Live Check → Run** (`web_search` 체크 시 검색 1회 과금). 요약 표에서 FAIL 0 확인
+   - C6 `media_type 반환` 이 WARN 이면 CHAT 판정이 시간창만으로 동작한다(동작은 함)
+3. Threads Chat `dry_run` 수동 실행 → 본문·테마 확인
+4. Variables: `DRY_RUN=false`, `CHAT_ENABLED=true`, 1주차 `CHAT_DAILY_MIN=3`·`CHAT_DAILY_MAX=4`
+5. 다음 날 로그·Threads 앱 육안 확인 후 단계 증량
+
 ### 운영자 조치 (v1.1.0 배포 시 1회)
-- Variables `PILLAR_ROTATION_OVERRIDE` 값이 `—` 로 들어가 있으면 **삭제**. 매 실행 `ERROR ... 값이 잘못되어 기본값을 씁니다` 로그를 남긴다(동작은 기본 로테이션).
+- Variables `PILLAR_ROTATION_OVERRIDE` 값이 `—` 로 들어가 있으면 **삭제** 권장. v1.1.0 부터 `—`·`-`·`none` 등은 미설정으로 해석하므로 동작 문제는 없다.
 
 ### 즉시 중단
 Variables `CHAT_ENABLED=false` — 다음 트리거부터 발행 중단. 답글 스윕도 함께 멈춘다(reply.yml 은 계속).

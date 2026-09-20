@@ -27,11 +27,11 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 REQUIRED_MODULES = [
     "config", "env", "ai_writer", "antibot", "chat_plan", "content", "facts",
-    "main", "mood_source", "notifier", "notion_source", "reply_engine",
+    "main", "mood_source", "notifier", "notion_source", "redact", "reply_engine",
     "insights", "run_chat", "run_insights", "run_refresh", "run_reply", "run_story",
     "run_watchdog", "run_weighting", "threads_client", "weighting",
     "token_manager", "watchdog",
@@ -43,6 +43,7 @@ REQUIRED_FILES = [
     ".github/workflows/publish.yml",
     ".github/workflows/reply.yml",
     ".github/workflows/chat.yml",
+    ".github/workflows/golive_check.yml",
     ".github/workflows/watchdog.yml",
     ".github/workflows/story.yml",
     ".github/workflows/token_refresh.yml",

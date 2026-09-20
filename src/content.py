@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import ai_writer, config
 
-VERSION = "1.1.1"   # v1.1.1: lint_chat 일반어 오차단 수정
+VERSION = "1.1.2"   # v1.1.2: lint_reply 신설(링크·계정·해시태그 차단), lint_chat 동일 적용
 
 _log = logging.getLogger(__name__)
 
@@ -194,6 +194,39 @@ _DIGIT = re.compile(r"[0-9０-９]")
 _LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z&.\-]*")
 
 
+# 링크·계정·해시태그. 본문은 셀프 리플라이 외에 외부 유도를 하지 않는다(FR-05·FR-23).
+_LINK = re.compile(
+    r"(?i)(https?://|www\.|\b[a-z0-9-]+\.(com|net|org|kr|io|me|ly|co|app|link|xyz)\b"
+    r"|t\.me/|bit\.ly)"
+)
+# '@' 뒤에 글자가 붙으면 계정 언급·이메일로 보고 막는다(한글 표기 포함, 보수적).
+_MENTION = re.compile(r"@\S")
+_HASHTAG = re.compile(r"#[^\s#]+")
+
+
+def check_no_links(text: str, *, label: str = "본문") -> None:
+    """URL·@계정·#해시태그가 있으면 위반. 생성문이 외부로 유도하는 것을 막는다."""
+    if _LINK.search(text):
+        raise ContentPolicyError(f"{label}에 링크/도메인 포함")
+    if _MENTION.search(text):
+        raise ContentPolicyError(f"{label}에 @계정 언급 포함")
+    if _HASHTAG.search(text):
+        raise ContentPolicyError(f"{label}에 해시태그 포함")
+
+
+def lint_reply(text: str) -> None:
+    """답글 발행 직전 검사.
+
+    답글은 타인이 쓴 댓글을 입력으로 받아 생성한다. 댓글에 "이 링크 올려줘",
+    "@누구 태그해줘" 같은 지시가 섞이면(프롬프트 주입) 모델이 따를 수 있다.
+    시스템 프롬프트 지시만으로는 보장되지 않으므로 출력 단계에서 기계적으로 막는다.
+    """
+    lint(text)
+    if len(text) > config.REPLY_MAX_LEN:
+        raise ContentPolicyError(f"답글 {len(text)}자 — 상한 {config.REPLY_MAX_LEN}자 초과")
+    check_no_links(text, label="답글")
+
+
 def _entity_suffix_re() -> re.Pattern[str]:
     """앞 글자(한글·영문·숫자)에 붙은 접미만 잡는다. '삼성전자'는 잡고 '전자 쪽'은 통과."""
     alt = "|".join(re.escape(s) for s in config.CHAT_ENTITY_SUFFIXES)
@@ -221,6 +254,8 @@ def lint_chat(text: str) -> None:
 
     if _DIGIT.search(text):
         raise ContentPolicyError("CHAT 본문에 숫자 포함 (REG-03)")
+
+    check_no_links(text, label="CHAT 본문")
 
     hit_forecast = [t for t in config.CHAT_FORECAST_TERMS if t in text]
     if hit_forecast:
