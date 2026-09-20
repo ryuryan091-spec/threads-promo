@@ -135,8 +135,7 @@ def run() -> int:
     manual = _is_manual()
 
     if not config.CHAT_ENABLED and not (manual and settings.dry_run):
-        log.info("CHAT_ENABLED=false — 종료 (수동 dry_run 만 허용)")
-        return 0
+    log.info("CHAT_ENABLED=false — 종료 (수동 dry_run 만 허용)")
 
     today = dt.datetime.now(KST).date()
     if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
