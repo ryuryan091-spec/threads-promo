@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import ai_writer, config
 
-VERSION = "1.1.2"   # v1.1.2: lint_reply 신설(링크·계정·해시태그 차단), lint_chat 동일 적용
+VERSION = "1.2.0"   # v1.2.0: 기둥 강제 인자, 마무리 패턴, 링크 리플 문구 회전
 
 _log = logging.getLogger(__name__)
 
@@ -165,13 +165,24 @@ def build_image_url(raw_base_url: str, asset_name: str) -> str:
     return f"{raw_base_url.rstrip('/')}/{asset_name}"
 
 
-def build_reply_text() -> str:
-    """링크는 본문이 아니라 셀프 리플라이에 배치한다."""
+def build_reply_text(idx: int = 0) -> str:
+    """링크는 본문이 아니라 셀프 리플라이에 배치한다.
+
+    v1.2.0: 첫 줄을 REPLY_LEADS 에서 idx 로 회전한다(동일 문구 반복 방지).
+    링크 줄 형식은 고정.
+    """
+    lead = config.REPLY_LEADS[idx % len(config.REPLY_LEADS)]
     return (
-        "매일 올리는 곳입니다.\n"
+        f"{lead}\n"
         f"YouTube: {config.YOUTUBE_URL}\n"
         f"X: {config.X_URL}"
     )
+
+
+def closing_for(idx: int) -> str:
+    """정기·이벤트 글 마무리. CLOSING_PATTERN 을 run_index 로 순환한다."""
+    mark = config.CLOSING_PATTERN[idx % len(config.CLOSING_PATTERN)]
+    return ai_writer.CLOSING_STATEMENT if mark == "S" else ai_writer.CLOSING_QUESTION
 
 
 def lint(text: str) -> None:
@@ -280,6 +291,7 @@ def _generate_with_ai(
     seed: str,
     recent_texts: list[str],
     facts_block: str = "",
+    closing: str = ai_writer.CLOSING_QUESTION,
 ) -> str:
     """AI 생성 + 린트. 린트 실패 시 재시도. 모두 실패하면 예외."""
     last_error: Exception | None = None
@@ -287,7 +299,8 @@ def _generate_with_ai(
     for attempt in range(1, config.AI_MAX_RETRY + 1):
         try:
             text = ai_writer.generate(
-                api_key, pillar_key, seed, recent_texts, facts_block=facts_block
+                api_key, pillar_key, seed, recent_texts,
+                facts_block=facts_block, closing=closing,
             )
             lint(text)
             return text
@@ -313,6 +326,7 @@ def build_plan(
     facts_block: str = "",
     episode_block: str = "",
     discriminator: int | None = None,
+    pillar: str | None = None,
 ) -> PostPlan:
     """오늘 발행할 게시물을 구성한다.
 
@@ -323,7 +337,8 @@ def build_plan(
         discriminator = discriminator_from_env()
 
     idx = run_index(today, discriminator)
-    pillar_key = ai_writer.pick_pillar(idx)
+    # v1.2.0: 이벤트 STORY 처럼 기둥이 정해진 경로는 pillar 로 강제한다.
+    pillar_key = pillar or ai_writer.pick_pillar(idx)
     seed = ai_writer.pick_seed(pillar_key, idx)
     kind = PostKind.PROMO if pillar_key == "PROMO" else PostKind.OBSERVATION
 
@@ -339,7 +354,8 @@ def build_plan(
             #   (BUILD 기둥 제거로 커밋 근거 경로는 현재 미사용)
             evidence = {"STORY": episode_block}.get(pillar_key, "")
             text = _generate_with_ai(
-                claude_api_key, pillar_key, seed, recent_texts or [], evidence
+                claude_api_key, pillar_key, seed, recent_texts or [], evidence,
+                closing_for(idx),
             )
             source = "ai"
         except ai_writer.AiWriterError as exc:
@@ -351,7 +367,7 @@ def build_plan(
 
     assets = list_asset_names(assets_dir)
     asset = assets[idx % len(assets)]
-    reply_text = build_reply_text()
+    reply_text = build_reply_text(idx)
     lint(reply_text)
 
     return PostPlan(

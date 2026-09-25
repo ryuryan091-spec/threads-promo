@@ -22,7 +22,7 @@ import requests
 
 from . import config
 
-VERSION = "1.1.1"   # v1.1.1: CHAT 관찰 날조 금지 지시 추가
+VERSION = "1.2.0"   # v1.2.0: 마무리(질문/비질문) 지시 분리, AUTO 로테이션 우선순위
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ PILLARS: dict[str, Pillar] = {
             "구체적 종목, 가격, 수치, 전망은 절대 쓰지 않는다. "
             "이 기둥에는 확인 가능한 근거가 없다. 따라서 '어제 이런 일이 있었다' 같은 "
             "구체적 사건을 만들어내지 말고, 오래 지켜보며 갖게 된 태도나 습관을 "
-            "일반화된 형태로 쓴 뒤 질문으로 닫는다."
+            "일반화된 형태로 쓴다."
         ),
         seeds=(
             "모두가 같은 방향을 볼 때의 불안",
@@ -88,7 +88,7 @@ PILLARS: dict[str, Pillar] = {
             "회차 기록이 제공되면 그 안에 있는 내용만 소재로 쓴다. "
             "캐릭터 고유명은 쓰지 않고 '빌런', '히어로' 로만 지칭한다. "
             "구체적 시장 수치·종목·가격은 절대 쓰지 않는다. "
-            "기록이 없으면 특정 회차 사건을 지어내지 말고 창작 고민을 질문으로 던진다."
+            "기록이 없으면 특정 회차 사건을 지어내지 말고 창작 고민을 꺼낸다."
         ),
         seeds=(
             "캐릭터에 성격을 붙이는 기준",
@@ -107,7 +107,7 @@ PILLARS: dict[str, Pillar] = {
         brief=(
             "매일 만화와 쇼츠를 올리고 있다는 사실을 자연스럽게 알린다. "
             "'구독해주세요' 같은 직접 요청은 절대 쓰지 않는다. "
-            "왜 이걸 만들게 됐는지, 어떤 사람에게 맞는지를 담담하게 쓰고 질문으로 닫는다. "
+            "왜 이걸 만들게 됐는지, 어떤 사람에게 맞는지를 담담하게 쓴다. "
             "링크는 본문에 넣지 않는다. 자동으로 답글에 붙는다."
         ),
         seeds=(
@@ -139,7 +139,7 @@ CHAT_PILLAR = Pillar(
         "오를지 내릴지 예측하지 않는다. 느낀 분위기와 본인의 태도만 쓴다. "
         "다른 사람의 반응·표정·분위기를 직접 본 것처럼 쓰지 않는다"
         "(예: '다들 눈빛이 바뀌었다', '주변이 술렁인다'). 확인할 수 없는 관찰이다. "
-        "가볍게 끝내되 대답하기 쉬운 짧은 질문으로 닫는다."
+        "가볍게 끝낸다."
     ),
     seeds=(
         "출근길에 본 첫 화면",
@@ -155,8 +155,7 @@ CHAT_PILLAR = Pillar(
     ),
     evidence_note=(
         "위 근거에 있는 테마만 언급할 수 있습니다. 근거에 없는 사건·수치·기관을"
-        " 추가하지 마세요. 테마를 전부 쓰지 말고 하나만 골라 가볍게 말한 뒤"
-        " 질문으로 닫습니다."
+        " 추가하지 마세요. 테마를 전부 쓰지 말고 하나만 골라 가볍게 말합니다."
     ),
 )
 
@@ -191,21 +190,60 @@ PILLAR_ROTATION: tuple[str, ...] = (
 )
 
 
+def _parse_rotation(raw: str) -> tuple[str, ...]:
+    """'STORY,MARKET,...' -> 튜플. 알 수 없는 기둥이 있으면 빈 튜플."""
+    parsed = tuple(p.strip().upper() for p in raw.split(",") if p.strip())
+    if not parsed or any(p not in PILLARS for p in parsed):
+        return ()
+    return parsed
+
+
+def rotation_violations(rotation: tuple[str, ...]) -> list[str]:
+    """로테이션 불변식(S4 S5 S7 + 연속 중복) 위반 항목.
+
+    weighting.validate_rotation 이 위임한다. ai_writer 가 weighting 을
+    import 하면 순환이 되므로 불변식 본체를 여기 둔다.
+    """
+    counts = {p: rotation.count(p) for p in set(rotation)}
+    violations: list[str] = []
+    for pillar in PILLARS:
+        if counts.get(pillar, 0) < config.WEIGHT_MIN_SLOTS:
+            violations.append(f"S4 {pillar} 하한 미달")
+    if counts.get("PROMO", 0) > config.WEIGHT_PROMO_MAX_SLOTS:
+        violations.append("S5 PROMO 상한 초과")
+    if counts.get("STORY", 0) < config.WEIGHT_STORY_MIN_SLOTS:
+        violations.append("S7 STORY 하한 미달 — 근거 보유 기둥 보호")
+    size = len(rotation)
+    for i in range(size):
+        if rotation[i] == rotation[(i + 1) % size]:
+            violations.append(f"연속 중복 {rotation[i]} (위치 {i})")
+            break
+    return violations
+
+
 def active_rotation() -> tuple[str, ...]:
     """실제 적용할 로테이션.
 
-    자동 조절 또는 수동 지정이 있으면 그것을 쓴다.
+    우선순위: PILLAR_ROTATION_OVERRIDE(수동) > PILLAR_ROTATION_AUTO(자동 조절 결과)
+    > PILLAR_ROTATION(기본). 잘못된 값은 경고 후 한 단계 아래로 내려간다.
     순환 참조를 피하려 여기서 config 만 읽는다.
     """
     override = config.PILLAR_ROTATION_OVERRIDE
-    if not override:
-        return PILLAR_ROTATION
+    if override:
+        parsed = _parse_rotation(override)
+        if parsed:
+            return parsed
+        log.error("PILLAR_ROTATION_OVERRIDE 값이 잘못되어 무시합니다: %s", override)
 
-    parsed = tuple(p.strip().upper() for p in override.split(",") if p.strip())
-    if not parsed or any(p not in PILLARS for p in parsed):
-        log.error("PILLAR_ROTATION_OVERRIDE 값이 잘못되어 기본값을 씁니다: %s", override)
-        return PILLAR_ROTATION
-    return parsed
+    auto = config.PILLAR_ROTATION_AUTO
+    if auto:
+        parsed = _parse_rotation(auto)
+        violations = rotation_violations(parsed) if parsed else ["알 수 없는 기둥"]
+        if not violations:
+            return parsed
+        log.error("PILLAR_ROTATION_AUTO 값이 잘못되어 무시합니다: %s (%s)", auto, violations)
+
+    return PILLAR_ROTATION
 
 
 def uses_commit_evidence() -> bool:
@@ -233,7 +271,7 @@ SYSTEM_PROMPT = """당신은 한국어로 Threads(스레드)에 글을 쓰는 �
 - 한국어. 존댓말(~습니다/~요 혼용 가능).
 - 2~4문장. 전체 300자 이내. 짧을수록 좋습니다.
 - 줄바꿈으로 호흡을 나눕니다.
-- 마지막은 질문으로 닫습니다. 단, 매번 같은 형태의 질문은 금지.
+- 마지막 문장은 요청문의 '# 마무리' 지시를 따릅니다. 매번 같은 형태의 끝맺음은 금지.
 - 해시태그, 이모지, 링크, URL을 절대 쓰지 않습니다.
 
 # 사실 제약 (가장 중요. 다른 모든 지시보다 우선한다)
@@ -242,8 +280,8 @@ SYSTEM_PROMPT = """당신은 한국어로 Threads(스레드)에 글을 쓰는 �
   근거로 제시된 사실에 있을 때만 씁니다.
 - 근거가 제시되면 그 범위 안에서만 구체적으로 씁니다. 근거를 넘어서 확장하지 않습니다.
 - 근거가 제시되지 않으면 특정 사건을 지어내지 말고, 반복적으로 겪는 종류의 고민을
-  단정하지 않는 형태로 쓴 뒤 질문으로 닫습니다.
-- 확신이 서지 않으면 단정하는 대신 되묻는 문장을 씁니다.
+  단정하지 않는 형태로 씁니다.
+- 확신이 서지 않으면 단정하지 않는 표현을 씁니다.
 
 # 절대 금지
 - 투자 조언성 표현: 매수, 매도, 목표가, 추천주, 종목추천, 손절, 익절, 수익보장, 리딩
@@ -257,11 +295,33 @@ JSON 한 개만 출력합니다. 다른 말은 붙이지 마세요.
 {"text": "본문"}"""
 
 
+CLOSING_QUESTION = "question"
+CLOSING_STATEMENT = "statement"
+
+_CLOSING_TEXT = {
+    CLOSING_QUESTION: (
+        "# 마무리\n"
+        "대답하기 쉬운 짧은 질문 한 문장으로 닫습니다."
+    ),
+    CLOSING_STATEMENT: (
+        "# 마무리\n"
+        "질문 없이 닫습니다. 물음표를 쓰지 않습니다. "
+        "담담한 관찰이나 본인의 태도 한 문장으로 끝냅니다."
+    ),
+}
+
+
+def closing_block(closing: str) -> str:
+    """마무리 지시문. 알 수 없는 값은 질문(기존 동작)으로 본다."""
+    return _CLOSING_TEXT.get(closing, _CLOSING_TEXT[CLOSING_QUESTION])
+
+
 def _build_user_prompt(
     pillar: Pillar,
     seed: str,
     recent_texts: list[str],
     facts_block: str = "",
+    closing: str = CLOSING_QUESTION,
 ) -> str:
     parts = [
         f"# 오늘의 주제 영역: {pillar.label}",
@@ -275,8 +335,7 @@ def _build_user_prompt(
     if pillar.evidence_available and facts_block:
         note = pillar.evidence_note or (
             "위 기록에 있는 일만 소재로 씁니다. 여기 없는 작업·수치·결과를"
-            " 추가하지 마세요. 기록 한 줄을 골라 그때의 판단이나 막힘을 쓰고"
-            " 질문으로 닫습니다."
+            " 추가하지 마세요. 기록 한 줄을 골라 그때의 판단이나 막힘을 씁니다."
         )
         parts += ["", facts_block, "", note]
     else:
@@ -285,7 +344,7 @@ def _build_user_prompt(
             "# 근거 없음",
             "확인 가능한 기록이 제공되지 않았습니다. 특정 사건이나 수치를"
             " 지어내지 말고, 반복해서 겪는 종류의 고민을 단정하지 않는 형태로"
-            " 쓴 뒤 질문으로 닫으세요.",
+            " 쓰세요.",
         ]
 
     if recent_texts:
@@ -296,6 +355,7 @@ def _build_user_prompt(
             joined,
         ]
 
+    parts += ["", closing_block(closing)]
     parts += ["", "위 조건으로 글 한 개를 써서 JSON으로만 출력하세요."]
     return "\n".join(parts)
 
@@ -358,8 +418,12 @@ def generate(
     recent_texts: list[str] | None = None,
     model: str | None = None,
     facts_block: str = "",
+    closing: str = CLOSING_QUESTION,
 ) -> str:
-    """Claude 로 게시글 본문을 생성한다. 실패 시 AiWriterError."""
+    """Claude 로 게시글 본문을 생성한다. 실패 시 AiWriterError.
+
+    closing: CLOSING_QUESTION(질문으로 닫기) | CLOSING_STATEMENT(질문 없이 닫기)
+    """
     pillar = get_pillar(pillar_key)
     if pillar is None:
         raise AiWriterError(f"알 수 없는 기둥: {pillar_key}")
@@ -372,7 +436,7 @@ def generate(
             {
                 "role": "user",
                 "content": _build_user_prompt(
-                    pillar, seed, recent_texts or [], facts_block
+                    pillar, seed, recent_texts or [], facts_block, closing
                 ),
             }
         ],

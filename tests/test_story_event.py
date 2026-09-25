@@ -152,7 +152,7 @@ class TestGates:
     def _gate(posts, quota=200, regular="OTHER"):
         from src import run_story
 
-        with mock.patch.object(run_story, "_regular_pillar_today", return_value=regular):
+        with mock.patch.object(run_story, "_predicted_regular_pillar", return_value=regular):
             return run_story._gate(posts, NOW, NOW.date(), quota)
 
     def test_passes_when_clear(self):
@@ -160,7 +160,7 @@ class TestGates:
 
     def test_blocks_when_regular_is_story(self):
         got = self._gate([_post(10)], regular="STORY")
-        assert got and "정기 발행이 STORY" in got
+        assert got and "기둥이 STORY" in got
 
     def test_blocks_when_too_soon(self):
         got = self._gate([_post(1)])
@@ -181,17 +181,34 @@ class TestGates:
 
 
 class TestRegularPillarDetection:
-    def test_detects_story_day(self):
-        from src import ai_writer, content, run_story
+    def test_predicts_winning_slot_pillar(self):
+        """v1.2.0: 정기 발행과 같은 결정론(choose_slot)으로 당첨 슬롯 기둥을 본다."""
+        from src import ai_writer, antibot, content, run_story
 
-        # 슬롯 중 하나라도 STORY 인 날을 찾는다
-        for offset in range(16):
+        for offset in range(60):
             day = dt.date(2026, 9, 14) + dt.timedelta(days=offset)
-            has_story = any(
-                ai_writer.pick_pillar(content.run_index(day, d)) == "STORY"
-                for d in config.DISCRIMINATOR_BY_SLOT.values()
+            slot = antibot.choose_slot(
+                day, list(config.PUBLISH_SLOTS), config.ANTIBOT_SLOT_SALT_PUBLISH
             )
-            assert (run_story._regular_pillar_today(day) == "STORY") is has_story
+            expected = ai_writer.pick_pillar(
+                content.run_index(day, config.DISCRIMINATOR_BY_SLOT[slot])
+            )
+            assert run_story._predicted_regular_pillar(day) == expected
+
+    def test_rest_day_has_no_regular(self):
+        from src import run_story
+
+        day = dt.date(2026, 9, 14)
+        with mock.patch.object(run_story.antibot, "is_rest_day", return_value=True):
+            assert run_story._predicted_regular_pillar(day) is None
+
+    def test_event_story_is_possible(self):
+        """v1.1.1 결함: 120일 중 이벤트 가능일 0. 이제 STORY 가 아닌 날은 통과한다."""
+        from src import run_story
+
+        days = [dt.date(2026, 9, 26) + dt.timedelta(days=i) for i in range(120)]
+        eligible = [d for d in days if run_story._predicted_regular_pillar(d) != "STORY"]
+        assert len(eligible) >= 60
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +289,7 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "_acquire_token", return_value="tok"),
             mock.patch.object(run_story, "fetch_user_id", return_value=("1", "u")),
             mock.patch.object(run_story, "ThreadsClient", return_value=client),
-            mock.patch.object(run_story, "_regular_pillar_today", return_value="OTHER"),
+            mock.patch.object(run_story, "_predicted_regular_pillar", return_value="OTHER"),
             mock.patch.object(content, "build_plan", return_value=plan),
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
@@ -280,6 +297,9 @@ class TestPostJitterRecheck:
             # 실제 현재 시각이 CHAT 창(KST 09:00~12:05)이면 '방금 글'이 CHAT 으로
             # 분류되어 게이트에서 제외된다. 시각 의존을 없애 정기 글로 고정한다.
             mock.patch.object(run_story.chat_plan, "is_chat_time", return_value=False),
+            # v1.2.0: _post_now(20) 은 실행 시각에 따라 이벤트 판정 창(03:11·23:17 +90분)에
+            # 들어가 'STORY 발행됨'으로 차단될 수 있다(시각 행렬 T7 에서 발견). 재검증 동작만 본다.
+            mock.patch.object(run_story, "_story_published_today", return_value=False),
         ):
             assert run_story.run() == 0
 
@@ -306,7 +326,7 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "_acquire_token", return_value="tok"),
             mock.patch.object(run_story, "fetch_user_id", return_value=("1", "u")),
             mock.patch.object(run_story, "ThreadsClient", return_value=client),
-            mock.patch.object(run_story, "_regular_pillar_today", return_value="OTHER"),
+            mock.patch.object(run_story, "_predicted_regular_pillar", return_value="OTHER"),
             mock.patch.object(content, "build_plan", return_value=plan),
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
@@ -314,6 +334,9 @@ class TestPostJitterRecheck:
             # 실제 현재 시각이 CHAT 창(KST 09:00~12:05)이면 '방금 글'이 CHAT 으로
             # 분류되어 게이트에서 제외된다. 시각 의존을 없애 정기 글로 고정한다.
             mock.patch.object(run_story.chat_plan, "is_chat_time", return_value=False),
+            # v1.2.0: _post_now(20) 은 실행 시각에 따라 이벤트 판정 창(03:11·23:17 +90분)에
+            # 들어가 'STORY 발행됨'으로 차단될 수 있다(시각 행렬 T7 에서 발견). 재검증 동작만 본다.
+            mock.patch.object(run_story, "_story_published_today", return_value=False),
         ):
             assert run_story.run() == 0
 

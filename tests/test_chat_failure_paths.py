@@ -306,7 +306,7 @@ class TestReplyFailurePaths:
 
         os.environ.update({"REPLY_SLOTS": "A,B,C", "SLOT": "MANUAL"})
         with mock.patch.object(run_reply, "sweep") as sweep:
-            assert run_reply.run() == 0
+            assert run_reply.run() == 1   # v1.2.0: 설정 오류는 실패 코드
         assert not sweep.called
 
     def test_all_slots_run_now(self):
@@ -323,7 +323,8 @@ class TestReplyFailurePaths:
             ):
                 assert run_reply.run() == 0
             assert sweep.called, slot
-            assert sweep.call_args.kwargs["per_run_cap"] == config.REPLY_DAILY_CAP
+            # v1.2.0: 예약 실행 전용 상한(timeout 안에 들어오게)
+            assert sweep.call_args.kwargs["per_run_cap"] == config.REPLY_SCHEDULED_RUN_CAP
 
     def test_main_blocked_returns_7(self):
         from src import run_reply

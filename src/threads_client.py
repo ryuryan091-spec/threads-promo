@@ -19,7 +19,7 @@ import requests
 from . import config
 from .redact import redact
 
-VERSION = "1.1.2"   # v1.1.2: 오류 문자열 자격증명 마스킹
+VERSION = "1.2.0"   # v1.2.0: 대화 조회 페이지네이션
 
 log = logging.getLogger(__name__)
 
@@ -382,21 +382,38 @@ class ThreadsClient:
         공식 필드 목록에서 필요한 것만 요청한다:
           id, text, username, timestamp, replied_to, is_reply,
           is_reply_owned_by_me, hide_status
+
+        v1.2.0: limit 이 한 페이지(CONVERSATION_PAGE_SIZE)를 넘으면 after 커서로
+        이어 받는다(최대 CONVERSATION_MAX_PAGES). 한 페이지에서 끊으면 내 답글이
+        조회 범위 밖으로 밀려 '이미 답글함' 판정이 빠지고 중복 답글이 난다.
         """
-        data = _request(
-            "GET",
-            f"{config.THREADS_API_BASE}/{post_id}/conversation",
-            params={
-                "fields": (
-                    "id,text,username,timestamp,replied_to,"
-                    "is_reply,is_reply_owned_by_me,hide_status"
-                ),
-                "limit": limit,
-                "reverse": "false",
-                "access_token": self._token,
-            },
-        )
-        return list(data.get("data") or [])
+        page_size = min(limit, config.CONVERSATION_PAGE_SIZE)
+        params: dict[str, Any] = {
+            "fields": (
+                "id,text,username,timestamp,replied_to,"
+                "is_reply,is_reply_owned_by_me,hide_status"
+            ),
+            "limit": page_size,
+            "reverse": "false",
+            "access_token": self._token,
+        }
+        items: list[dict] = []
+        for _ in range(config.CONVERSATION_MAX_PAGES):
+            data = _request(
+                "GET",
+                f"{config.THREADS_API_BASE}/{post_id}/conversation",
+                params=params,
+            )
+            batch = list(data.get("data") or [])
+            items += batch
+            after = ((data.get("paging") or {}).get("cursors") or {}).get("after")
+            if len(items) >= limit or not batch or not after:
+                break
+            params = {**params, "after": after}
+        else:
+            # 페이지 상한까지 받았는데 다음 커서가 남았다 = 대화가 더 있다.
+            log.warning("대화 페이지 상한 도달 post=%s (%d건에서 중단)", post_id, len(items))
+        return items[:limit]
 
     # -- 발행 -------------------------------------------------------------
     def create_image_container(self, image_url: str, text: str) -> str:

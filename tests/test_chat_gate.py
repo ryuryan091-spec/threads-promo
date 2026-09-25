@@ -79,9 +79,10 @@ class TestWindow:
 
 class TestDailyPlan:
     def test_target_within_bounds_over_year(self):
-        low, high = chat_plan.daily_bounds()
         for offset in range(365):
-            n = chat_plan.daily_target(DAY + dt.timedelta(days=offset))
+            day = DAY + dt.timedelta(days=offset)
+            low, high = chat_plan.daily_bounds(day)   # v1.1.0: 주말은 별도 범위
+            n = chat_plan.daily_target(day)
             assert low <= n <= high
 
     def test_deterministic(self):

@@ -22,6 +22,7 @@ import datetime as dt
 import logging
 import os
 import sys
+import time
 from zoneinfo import ZoneInfo
 
 from . import (
@@ -36,9 +37,14 @@ from . import (
 )
 from .env import MissingEnvError, Settings, load_settings
 from .main import _acquire_token, _notify_safe
-from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
+from .threads_client import (
+    ContainerNotReadyError,
+    ThreadsApiError,
+    ThreadsClient,
+    fetch_user_id,
+)
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"   # v1.1.0: 비활성 종료 복원, 예약 DRY_RUN 비용 차단, 소재·마무리 배정
 KST = ZoneInfo("Asia/Seoul")
 PILLAR_KEY = "CHAT"
 POSTS_TO_SCAN = 25   # 오늘 게시물(정기 1 + 셀프리플 제외 + CHAT ≤9 + 이벤트) 을 덮는 크기
@@ -94,14 +100,18 @@ def _check_gate(
 
 
 def generate_chat(
-    api_key: str, seed: str, recent_texts: list[str], mood: mood_source.Mood
+    api_key: str,
+    seed: str,
+    recent_texts: list[str],
+    mood: mood_source.Mood,
+    closing: str = ai_writer.CLOSING_QUESTION,
 ) -> str:
     """생성 + lint_chat. 재시도 소진 시 빈 문자열."""
     for attempt in range(1, config.AI_MAX_RETRY + 1):
         try:
             text = ai_writer.generate(
                 api_key, PILLAR_KEY, seed, recent_texts,
-                facts_block=mood.to_prompt_block(),
+                facts_block=mood.to_prompt_block(), closing=closing,
             )
             content.lint_chat(text)
             return text
@@ -112,30 +122,41 @@ def generate_chat(
     return ""
 
 
+_RUN_STARTED = time.monotonic()
+
+
 def _safe_sweep(client: ThreadsClient, settings: Settings) -> None:
-    """답글 스윕. 실패가 CHAT 결과를 뒤집지 않게 격리한다(차단 신호만 전파)."""
+    """답글 스윕. 실패가 CHAT 결과를 뒤집지 않게 격리한다(차단 신호만 전파).
+
+    v1.2.0: chat.yml timeout 안에서 남은 시간만 스윕에 준다(CHAT_JOB_BUDGET_SEC).
+    """
     if not config.REPLY_ENABLED:
         log.info("REPLY_ENABLED=false — 답글 스윕 생략")
         return
+    remaining = config.CHAT_JOB_BUDGET_SEC - (time.monotonic() - _RUN_STARTED)
     try:
         run_reply.sweep(
             client, settings,
             per_run_cap=config.REPLY_PER_RUN_CAP, dry_run=settings.dry_run,
+            budget_sec=max(0.0, remaining),
         )
-    except ThreadsApiError as exc:
-        if exc.is_blocked:
+    except (ThreadsApiError, ContainerNotReadyError) as exc:
+        if isinstance(exc, ThreadsApiError) and exc.is_blocked:
             raise
         log.warning("답글 스윕 실패 — CHAT 결과에는 영향 없음: %s", exc)
 
 
 def run() -> int:
+    global _RUN_STARTED
+    _RUN_STARTED = time.monotonic()
     log.info("[ChatRun] v%s 시작", VERSION)
 
     settings = load_settings()
     manual = _is_manual()
 
     if not config.CHAT_ENABLED and not (manual and settings.dry_run):
-      log.info("CHAT_ENABLED=false — 종료 (수동 dry_run 만 허용)")
+        log.info("CHAT_ENABLED=false — 종료 (수동 dry_run 만 허용)")
+        return 0
 
     today = dt.datetime.now(KST).date()
     if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
@@ -160,12 +181,14 @@ def run() -> int:
     if quota.remaining < 1:
         blocked = blocked or f"발행 쿼터 잔여 {quota.remaining}건"
 
-    if blocked and not settings.dry_run:
+    # v1.1.0: 미리보기는 수동 dry_run 에서만 한다. 예약 실행이 DRY_RUN 이면
+    # 게이트에 막혀도 근거 수집·생성을 해서 결과물 없이 Claude 호출이 나갔다.
+    if blocked and not (manual and settings.dry_run):
         log.info("CHAT 보류 — %s", blocked)
         _safe_sweep(client, settings)
         return 0
     if blocked:
-        log.info("CHAT 게이트 보류 사유(DRY_RUN 이라 미리보기는 계속): %s", blocked)
+        log.info("CHAT 게이트 보류 사유(수동 DRY_RUN 이라 미리보기는 계속): %s", blocked)
 
     if not settings.can_generate or not config.AI_ENABLED:
         log.warning("AI 생성 불가(CLAUDE_AI_KEY/AI_ENABLED) — CHAT 은 정적 폴백이 없어 생략")
@@ -179,13 +202,13 @@ def run() -> int:
     )
 
     recent_texts = client.get_recent_texts(config.CHAT_RECENT_FOR_DEDUP)
-    seed_index = today.timetuple().tm_yday * 10 + (trigger or 0)
-    seed = ai_writer.pick_seed(PILLAR_KEY, seed_index)
+    seed = chat_plan.seed_for(today, trigger, ai_writer.CHAT_PILLAR.seeds)
+    closing = chat_plan.closing_for(today, trigger)
 
-    text = generate_chat(settings.claude_api_key, seed, recent_texts, mood)
+    text = generate_chat(settings.claude_api_key, seed, recent_texts, mood, closing)
     log.info(
-        "기둥=CHAT 소스=%s(우선=%s) 테마=%s 소재=%s 생성=%s",
-        mood.source, first, ",".join(mood.themes) or "-", seed,
+        "기둥=CHAT 소스=%s(우선=%s) 테마=%s 소재=%s 마무리=%s 생성=%s",
+        mood.source, first, ",".join(mood.themes) or "-", seed, closing,
         "성공" if text else "실패",
     )
 

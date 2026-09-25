@@ -32,7 +32,7 @@ from enum import StrEnum
 
 from . import ai_writer, antibot, config
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"   # v1.2.0: 제3자 간 대화 스킵
 
 log = logging.getLogger(__name__)
 
@@ -113,10 +113,21 @@ def decide(
     already_replied: bool,
     author_used: int,
     thread_author_count: int = 0,
+    reply_target_ids: set[str] | frozenset[str] | None = None,
 ) -> ReplyDecision:
-    """댓글 하나에 대한 처리 방침을 정한다."""
+    """댓글 하나에 대한 처리 방침을 정한다.
+
+    reply_target_ids: 응답해도 되는 부모 id(내 원글 + 내 답글). None 이면 검사 생략.
+    replied_to_id 가 비어 있으면 판정 근거가 없으므로 기존처럼 허용한다.
+    """
     if comment.owned_by_me:
         return ReplyDecision(comment, ReplyStrategy.SKIP, "내가 쓴 댓글")
+    if (
+        reply_target_ids is not None
+        and comment.replied_to_id
+        and comment.replied_to_id not in reply_target_ids
+    ):
+        return ReplyDecision(comment, ReplyStrategy.SKIP, "제3자 간 대화")
 
     if already_replied:
         return ReplyDecision(comment, ReplyStrategy.SKIP, "이미 답글함")

@@ -50,7 +50,7 @@ from src import (  # noqa: E402
 from src.redact import redact  # noqa: E402
 from src.threads_client import ThreadsApiError, ThreadsClient, fetch_user_id  # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.1.0: AUTO 로테이션 점검
 KST = ZoneInfo("Asia/Seoul")
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
@@ -140,6 +140,16 @@ def check_variables(r: Report) -> None:
               f"알 수 없는 기둥 {bad}" if bad else f"수동 로테이션 {parsed}")
     else:
         r.add("C2", "PILLAR_ROTATION_OVERRIDE", OK, "미설정 — 기본 로테이션")
+
+    if config.PILLAR_ROTATION_AUTO:
+        parsed_auto = tuple(
+            p.strip().upper() for p in config.PILLAR_ROTATION_AUTO.split(",") if p.strip()
+        )
+        bad_auto = [p for p in parsed_auto if p not in ai_writer.PILLARS]
+        issues = bad_auto or ai_writer.rotation_violations(parsed_auto)
+        r.add("C2", "PILLAR_ROTATION_AUTO", FAIL if issues else OK,
+              f"무시됨 — {issues}" if issues else f"자동 조절 로테이션 {list(parsed_auto)}")
+    r.add("C2", "적용 로테이션", OK, ",".join(ai_writer.active_rotation()))
 
 
 def check_token_expiry(r: Report) -> None:

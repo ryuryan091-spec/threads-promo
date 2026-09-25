@@ -27,7 +27,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"   # v1.3.0: DRY_RUN 식·슬롯 목록·정기/이벤트 cron 대조 검사
 
 REQUIRED_MODULES = [
     "config", "env", "ai_writer", "antibot", "chat_plan", "content", "facts",
@@ -223,6 +223,145 @@ def check_chat_triggers() -> int:
     return 0
 
 
+# 수동 실행은 mode 로만, 예약 실행은 vars.DRY_RUN 으로 결정한다.
+# 이전 식(… && 'false' || vars.DRY_RUN || 'true')은 수동 dry_run 이 vars.DRY_RUN=false 로 떨어져
+# 실제 발행되었다(2026-09-26 검토).
+CANON_DRY_RUN = (
+    "${{ github.event_name == 'workflow_dispatch' && "
+    "(inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}"
+)
+DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml")
+
+
+def _load_yaml(name: str) -> dict:
+    import yaml
+
+    path = REPO_ROOT / ".github" / "workflows" / name
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _step_envs(data: dict) -> list[dict]:
+    envs: list[dict] = []
+    for job in (data.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            envs.append(step.get("env") or {})
+    return envs
+
+
+def check_dry_run_expr() -> int:
+    print("\n7. DRY_RUN 식 (수동 dry_run 이 실제 발행으로 새지 않는지)")
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("  [SKIP] pyyaml 미설치")
+        return 0
+
+    failed = 0
+    for name in DRY_RUN_WORKFLOWS:
+        data = _load_yaml(name)
+        on = data.get(True) or data.get("on") or {}
+        mode = ((on.get("workflow_dispatch") or {}).get("inputs") or {}).get("mode") or {}
+        if set(mode.get("options") or []) != {"dry_run", "live"}:
+            _fail(f"{name} — inputs.mode 선택지가 dry_run/live 가 아닙니다")
+            failed += 1
+            continue
+        values = [e["DRY_RUN"] for e in _step_envs(data) if "DRY_RUN" in e]
+        if not values or any(str(v).strip() != CANON_DRY_RUN for v in values):
+            _fail(f"{name} — DRY_RUN 식이 표준과 다릅니다: {values}")
+            failed += 1
+            continue
+        _ok(f"{name} — 표준 식 (수동 기본값 {mode.get('default')})")
+    return failed
+
+
+def _utc_cron_to_kst(cron: str) -> str:
+    minute, hour = cron.split()[:2]
+    return f"{(int(hour) + 9) % 24:02d}:{int(minute):02d}"
+
+
+def check_slot_constants() -> int:
+    print("\n8. 정기·이벤트 cron 과 코드 상수")
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("  [SKIP] pyyaml 미설치")
+        return 0
+
+    from src import config, insights
+
+    failed = 0
+    publish = _load_yaml("publish.yml")
+    story = _load_yaml("story.yml")
+
+    for name, data in (("publish.yml", publish), ("story.yml", story)):
+        slots = [e.get("PUBLISH_SLOTS") for e in _step_envs(data) if "PUBLISH_SLOTS" in e]
+        expected = ",".join(config.PUBLISH_SLOTS)
+        if slots != [expected]:
+            _fail(f"{name} — PUBLISH_SLOTS {slots} 이 config {expected!r} 와 다릅니다")
+            failed += 1
+        else:
+            _ok(f"{name} — PUBLISH_SLOTS {expected}")
+
+    def _crons(data: dict) -> list[str]:
+        on = data.get(True) or data.get("on") or {}
+        return [c["cron"] for c in (on.get("schedule") or [])]
+
+    pub_kst = sorted(_utc_cron_to_kst(c) for c in _crons(publish))
+    if pub_kst != sorted(insights.PUBLISH_SLOTS):
+        _fail(f"publish.yml cron(KST) {pub_kst} ≠ insights.PUBLISH_SLOTS {sorted(insights.PUBLISH_SLOTS)}"
+              " — 기둥 복원이 조용히 틀어집니다")
+        failed += 1
+    else:
+        _ok(f"publish.yml cron ↔ insights.PUBLISH_SLOTS 일치 {pub_kst}")
+
+    ev_kst = sorted(_utc_cron_to_kst(c) for c in _crons(story))
+    if ev_kst != sorted(insights.EVENT_SLOTS):
+        _fail(f"story.yml cron(KST) {ev_kst} ≠ insights.EVENT_SLOTS {sorted(insights.EVENT_SLOTS)}")
+        failed += 1
+    else:
+        _ok(f"story.yml cron ↔ insights.EVENT_SLOTS 일치 {ev_kst}")
+    return failed
+
+
+CHAT_PLAN_KEYS = (
+    "CHAT_ENABLED", "CHAT_DAILY_MIN", "CHAT_DAILY_MAX", "CHAT_WEEKEND_MIN", "CHAT_WEEKEND_MAX",
+)
+CHAT_PLAN_WORKFLOWS = ("chat.yml", "watchdog.yml", "golive_check.yml")
+
+
+def check_chat_env_consistency() -> int:
+    """CHAT 계획 변수는 발행(chat)·감시(watchdog)·점검(golive) 이 같은 값을 봐야 한다.
+
+    watchdog 에 주말 목표가 빠지면 '주말 0건' 설정에서 매주 무발행 오탐이 난다.
+    """
+    print("\n9. CHAT 계획 변수 일치 (chat / watchdog / golive_check)")
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("  [SKIP] pyyaml 미설치")
+        return 0
+
+    failed = 0
+    reference: dict[str, str] | None = None
+    for name in CHAT_PLAN_WORKFLOWS:
+        merged: dict[str, str] = {}
+        for env in _step_envs(_load_yaml(name)):
+            merged.update({k: str(v) for k, v in env.items() if k in CHAT_PLAN_KEYS})
+        missing = [k for k in CHAT_PLAN_KEYS if k not in merged]
+        if missing:
+            _fail(f"{name} — 누락 {missing}")
+            failed += 1
+            continue
+        if reference is None:
+            reference = merged
+        elif merged != reference:
+            _fail(f"{name} — chat.yml 과 값이 다릅니다 {merged}")
+            failed += 1
+            continue
+        _ok(f"{name} — CHAT 계획 변수 {len(CHAT_PLAN_KEYS)}개 일치")
+    return failed
+
+
 def main() -> int:
     print(f"[VerifyRepo] v{VERSION}")
     print(f"경로: {REPO_ROOT}")
@@ -234,6 +373,9 @@ def main() -> int:
     total += check_entrypoints()
     total += check_slot_mapping()
     total += check_chat_triggers()
+    total += check_dry_run_expr()
+    total += check_slot_constants()
+    total += check_chat_env_consistency()
 
     print("\n" + "=" * 52)
     if total:

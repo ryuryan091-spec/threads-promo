@@ -18,7 +18,7 @@ from . import antibot, chat_plan, config, notifier, token_manager, watchdog
 from .env import load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"   # v1.2.0: 링크 셀프 리플라이 제외 답글 감시, 대화 조회 한도 설정화
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -47,12 +47,17 @@ def _collect_owned_reply_stamps(
         if not post_id:
             continue
         try:
-            items = client.get_conversation(post_id, 25)
+            items = client.get_conversation(post_id, config.REPLY_SCAN_LIMIT)
         except ThreadsApiError as exc:
             log.warning("대화 조회 실패 post=%s: %s", post_id, exc)
             continue
         for item in items:
             if not item.get("is_reply_owned_by_me"):
+                continue
+            # v1.2.0: 원글에 직접 단 내 답글 = 정기 발행의 링크 셀프 리플라이.
+            # 답글 엔진 활동이 아니므로 제외한다(섞으면 엔진이 멈춰도 '정상'으로 보인다).
+            replied_to = item.get("replied_to") or {}
+            if isinstance(replied_to, dict) and str(replied_to.get("id", "")) == post_id:
                 continue
             parsed = watchdog.parse_threads_timestamp(str(item.get("timestamp", "")))
             if parsed:
@@ -107,7 +112,8 @@ def run() -> int:
             watchdog.check_chat_activity(
                 chat_today, now,
                 enabled=config.CHAT_ENABLED
-                and not antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS),
+                and not antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS)
+                and chat_plan.daily_target(today) > 0,
             )
         )
 

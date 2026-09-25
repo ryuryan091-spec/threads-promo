@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"   # v1.1.0: 주말 목표, 트리거별 소재 비복원 배정, 마무리 비율
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -75,16 +75,28 @@ def is_chat_post_dict(post: dict, parse) -> bool:
     return bool(parsed) and is_chat_post(parsed, str(post.get("media_type") or ""))
 
 
-def daily_bounds() -> tuple[int, int]:
-    """설정값을 트리거 수 범위로 보정한다. 잘못된 설정이 폭주로 이어지지 않게 한다."""
+def is_weekend(today: dt.date) -> bool:
+    """토·일(KST 날짜 기준)."""
+    return today.weekday() >= 5
+
+
+def daily_bounds(today: dt.date | None = None) -> tuple[int, int]:
+    """설정값을 트리거 수 범위로 보정한다. 잘못된 설정이 폭주로 이어지지 않게 한다.
+
+    v1.1.0: today 가 주말이면 CHAT_WEEKEND_MIN/MAX 를 쓴다. None 이면 평일 값.
+    """
     total = len(config.CHAT_TRIGGERS)
-    low = max(0, min(config.CHAT_DAILY_MIN, total))
-    high = max(low, min(config.CHAT_DAILY_MAX, total))
+    if today is not None and is_weekend(today):
+        raw_low, raw_high = config.CHAT_WEEKEND_MIN, config.CHAT_WEEKEND_MAX
+    else:
+        raw_low, raw_high = config.CHAT_DAILY_MIN, config.CHAT_DAILY_MAX
+    low = max(0, min(raw_low, total))
+    high = max(low, min(raw_high, total))
     return low, high
 
 
 def daily_target(today: dt.date) -> int:
-    low, high = daily_bounds()
+    low, high = daily_bounds(today)
     return random.Random(_seed(today, "n")).randint(low, high)
 
 
@@ -201,3 +213,23 @@ def source_for(today: dt.date, trigger: int | None, mode: str) -> str:
         return mode
     key = f"{trigger or 0}"
     return "rss" if _seed(today, f"src-{key}") % 2 == 0 else "web"
+
+
+def seed_for(today: dt.date, trigger: int | None, seeds: tuple[str, ...]) -> str:
+    """이 트리거의 소재. 날짜 시드로 소재 순서를 섞고 트리거 번호로 꺼낸다.
+
+    v1.1.0: 트리거마다 독립 추첨하면 같은 날 소재가 겹친다(10개 중 6건 추첨 시
+    중복 확률 84.9%). 비복원 배정으로 소재 수 이하의 발행에서는 중복이 없다.
+    수동 실행(trigger=None)은 트리거 다음 칸을 쓴다.
+    """
+    if not seeds:
+        raise ValueError("소재 목록이 비어 있습니다.")
+    order = random.Random(_seed(today, "seed")).sample(range(len(seeds)), len(seeds))
+    pos = (trigger - 1) if trigger else len(config.CHAT_TRIGGERS)
+    return seeds[order[pos % len(seeds)]]
+
+
+def closing_for(today: dt.date, trigger: int | None) -> str:
+    """이 트리거 글의 마무리 방식. 'question' | 'statement' (날짜·트리거 결정론)."""
+    key = f"close-{trigger or 0}"
+    return "question" if _seed(today, key) % 100 < config.CHAT_QUESTION_PCT else "statement"

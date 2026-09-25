@@ -379,20 +379,23 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | `AI_ENABLED` | `true` | AI 생성 스위치 |
 | `IMAGE_FALLBACK_TO_TEXT` | `true` | 이미지 실패 시 텍스트 전용 발행 |
 | `EVENT_STORY_ENABLED` | `false` | 이벤트 STORY 발행. 관찰 종료 후 `true` |
-| `EVENT_WINDOW_HOURS` | `7.2` | 신규 판정 시간창 (cron 주기의 1.2배) |
+| `EVENT_WINDOW_HOURS` | `7.2` | 신규 판정 시간창 **하한**. v1.2.0 부터 실제 창 = 직전 이벤트 cron 과의 간격 × 1.2 (13:29 실행은 약 12.4시간) |
 | `EVENT_DAILY_CAP` | `2` | 하루 이벤트 발행 상한 |
 | `EVENT_MIN_GAP_HOURS` | `4` | 직전 발행과 최소 간격 |
 | `NOTION_STATUS_PROPERTY` | `발행 상태` | 트래커 상태 컬럼명 |
 | `NOTION_STATUS_VALUE` | `완료` | 대상 상태값 |
 | `INSIGHTS_ENABLED` | `true` | 인사이트 수집 |
 | `INSIGHTS_LOOKBACK_DAYS` | `7` | 리포트 집계 기간 |
-| `INSIGHTS_POST_LIMIT` | `7` | 게시물별 조회 상한 |
+| `INSIGHTS_POST_LIMIT` | `70` | 게시물별 조회 상한 (v1.2.0: yml 기본값 7 → 70, 코드 기본값과 일치) |
 | `ADAPTIVE_WEIGHTS_ENABLED` | `false` | **비중 자동 조절. 30일 데이터 후 활성화** |
-| `PILLAR_ROTATION_OVERRIDE` | — | 수동 로테이션. 자동보다 우선 |
+| `PILLAR_ROTATION_OVERRIDE` | — | 수동 로테이션. 최우선. **설정 시 자동 조절 정지** |
+| `PILLAR_ROTATION_AUTO` | — | v1.2.0 자동 조절 결과 전용. weighting 리포트가 안내한 값을 여기에 넣는다(OVERRIDE 아님). 불변식 위반 값은 무시. **이관**: 과거 자동 결과를 OVERRIDE 에 넣어 두었다면 그 값을 AUTO 로 옮기고 OVERRIDE 는 삭제 |
 | `LAST_WEIGHT_ADJUST` | — | 마지막 조정일 `YYYY-MM-DD` |
 | `REPLY_ENABLED` | `true` | 답글 스위치 |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |
+| `CHAT_WEEKEND_MIN` / `CHAT_WEEKEND_MAX` | `2` / `3` | v1.2.0 토·일 CHAT 목표 건수. `0`/`0` 이면 주말 CHAT 미발행 |
+| `REPLY_SCHEDULED_RUN_CAP` | `6` | v1.2.0 reply.yml(예약) 실행당 답글 상한. timeout 20분 안에 들어오는 값 |
 | `TOKEN_ISSUED_AT` | — | 토큰 최초 발급일 `YYYY-MM-DD` |
 | `TOKEN_REFRESHED_AT` (Secret) | — | 마지막 갱신일. 주간 워크플로우가 자동 기록 |
 | `REFRESH_ON_EVERY_RUN` | `false` | **매 실행 갱신 금지.** 갱신 워크플로우만 `true` |

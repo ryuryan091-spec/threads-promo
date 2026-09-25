@@ -17,7 +17,8 @@
   S7 STORY 하한    2칸 (근거 보유 기둥 보호)
 
 점수 산식
-  score = 일평균클릭 × 1.0 + 일평균답글 × 0.3
+  score = 일평균클릭 × WEIGHT_SCORE_CLICKS(현재 0.0) + 일평균답글 × 0.3
+  클릭은 계정 합계만 제공되어 기둥 귀속이 불가능하다(config 주석 참고).
   조회·좋아요는 제외한다. 행동으로 이어지지 않기 때문이다.
 """
 
@@ -30,7 +31,7 @@ from dataclasses import dataclass, field
 
 from . import ai_writer, config
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.1.0: 로테이션 판정 ai_writer 위임, AUTO 분리
 
 log = logging.getLogger(__name__)
 
@@ -76,25 +77,11 @@ class AdjustResult:
 
 
 def current_rotation() -> tuple[str, ...]:
-    """현재 적용 중인 로테이션.
+    """현재 적용 중인 로테이션. 판정은 ai_writer.active_rotation 단일 진입점에 위임한다.
 
-    수동 지정(PILLAR_ROTATION_OVERRIDE)이 자동 조절보다 우선한다.
+    v1.1.0: OVERRIDE > AUTO > 기본. 자체 파싱을 두면 발행 경로와 판정이 어긋난다.
     """
-    override = config.PILLAR_ROTATION_OVERRIDE
-    if not override:
-        return ai_writer.PILLAR_ROTATION
-
-    parsed = tuple(p.strip().upper() for p in override.split(",") if p.strip())
-    if not parsed:
-        log.warning("PILLAR_ROTATION_OVERRIDE 가 비어 있어 기본값을 씁니다.")
-        return ai_writer.PILLAR_ROTATION
-
-    unknown = [p for p in parsed if p not in ai_writer.PILLARS]
-    if unknown:
-        log.error("알 수 없는 기둥 %s — 기본 로테이션을 씁니다.", unknown)
-        return ai_writer.PILLAR_ROTATION
-
-    return parsed
+    return ai_writer.active_rotation()
 
 
 # ---------------------------------------------------------------------------
@@ -103,27 +90,8 @@ def current_rotation() -> tuple[str, ...]:
 
 
 def validate_rotation(rotation: tuple[str, ...]) -> list[str]:
-    """로테이션이 지켜야 할 조건. 위반 항목명을 돌려준다."""
-    counts = Counter(rotation)
-    violations: list[str] = []
-
-    for pillar in ai_writer.PILLARS:
-        if counts.get(pillar, 0) < config.WEIGHT_MIN_SLOTS:
-            violations.append(f"S4 {pillar} 하한 미달")
-
-    if counts.get("PROMO", 0) > config.WEIGHT_PROMO_MAX_SLOTS:
-        violations.append("S5 PROMO 상한 초과")
-
-    if counts.get("STORY", 0) < config.WEIGHT_STORY_MIN_SLOTS:
-        violations.append("S7 STORY 하한 미달 — 근거 보유 기둥 보호")
-
-    size = len(rotation)
-    for i in range(size):
-        if rotation[i] == rotation[(i + 1) % size]:
-            violations.append(f"연속 중복 {rotation[i]} (위치 {i})")
-            break
-
-    return violations
+    """로테이션이 지켜야 할 조건. 위반 항목명을 돌려준다(ai_writer 에 위임)."""
+    return ai_writer.rotation_violations(rotation)
 
 
 # ---------------------------------------------------------------------------

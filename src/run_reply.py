@@ -24,6 +24,7 @@ import datetime as dt
 import logging
 import os
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
@@ -32,9 +33,14 @@ from . import antibot, config, content, notifier, reply_engine, watchdog
 from .env import MissingEnvError, Settings, load_settings
 from .main import _acquire_token  # 토큰 확보 로직 재사용
 from .reply_engine import Comment, ReplyStrategy
-from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
+from .threads_client import (
+    ContainerNotReadyError,
+    ThreadsApiError,
+    ThreadsClient,
+    fetch_user_id,
+)
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"   # v1.2.0: 제3자 간 대화 제외, 컨테이너 대기 실패 건별 처리, 예약 실행 캡
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -142,8 +148,14 @@ def sweep(
     per_run_cap: int,
     dry_run: bool,
     now: dt.datetime | None = None,
+    budget_sec: float | None = None,
 ) -> int:
-    """최근 글의 댓글에 답글한다. 발행(또는 DRY_RUN 계획) 건수를 돌려준다."""
+    """최근 글의 댓글에 답글한다. 발행(또는 DRY_RUN 계획) 건수를 돌려준다.
+
+    budget_sec: 이 스윕에 쓸 수 있는 시간(초). 다음 답글의 최악 소요가 남은 시간을
+    넘으면 새 답글을 시작하지 않는다(v1.2.0, job timeout 방지). None 이면 제한 없음.
+    """
+    started = time.monotonic()
     now = now or dt.datetime.now(dt.UTC)
     today = now.astimezone(KST).date()
 
@@ -196,6 +208,9 @@ def sweep(
     for post_id, comments in conversations.items():
         replied = _already_replied_ids(comments)
         by_id = {c.id: c for c in comments}
+        # v1.2.0: 응답 대상은 내 원글에 단 댓글, 또는 내 답글에 단 댓글뿐이다.
+        # 제3자끼리 주고받는 대화에 끼어들지 않는다.
+        reply_targets = my_post_ids | {c.id for c in comments if c.owned_by_me}
 
         for comment in comments:
             key = (post_id, comment.username)
@@ -205,6 +220,7 @@ def sweep(
                 author_used=ledger.author_today[comment.username]
                 + planned_author[comment.username],
                 thread_author_count=ledger.thread_author[key] + planned_thread[key],
+                reply_target_ids=reply_targets,
             )
             if decision.strategy is ReplyStrategy.SKIP:
                 log.debug("스킵 %s — %s", comment.id, decision.reason)
@@ -222,9 +238,24 @@ def sweep(
         return 0
 
     sent = 0
+    attempted = 0
     for post_text, decision, parent_text in antibot.shuffled(plans):
         if not antibot.within_daily_cap(sent, cap, label="답글"):
             break
+        if budget_sec is not None and not dry_run:
+            worst = (
+                (config.ANTIBOT_REPLY_JITTER[1] if attempted else 0)
+                + config.CONTAINER_POLL_MAX_SEC + config.CONTAINER_WAIT_TEXT_SEC
+                + config.REPLY_ITEM_MARGIN_SEC
+            )
+            elapsed = time.monotonic() - started
+            if elapsed + worst > budget_sec:
+                log.warning(
+                    "스윕 시간 예산 소진 — 경과 %.0f초 + 최악 %d초 > 예산 %.0f초. 나머지는 다음 실행",
+                    elapsed, worst, budget_sec,
+                )
+                break
+        attempted += 1
 
         text = reply_engine.compose(
             decision, post_text, settings.claude_api_key, content.lint_reply,
@@ -244,16 +275,18 @@ def sweep(
             sent += 1
             continue
 
-        # 안티봇 — 답글 사이 랜덤 지연
-        if sent > 0:
+        # 안티봇 — 답글 사이 랜덤 지연 (v1.2.0: 실패 건 다음에도 지연)
+        if attempted > 1:
             antibot.jitter_sleep(*config.ANTIBOT_REPLY_JITTER, label="답글 간격")
 
         try:
             reply_id = client.publish_self_reply(decision.comment.id, text)
             log.info("답글 발행 완료 %s -> %s", decision.comment.id, reply_id)
             sent += 1
-        except ThreadsApiError as exc:
-            if exc.is_blocked:
+        except (ThreadsApiError, ContainerNotReadyError) as exc:
+            # v1.2.0: 컨테이너 대기 실패(ContainerNotReadyError)는 ThreadsApiError 계열이
+            # 아니라 스윕 전체가 중단됐다. 건별 실패로 처리하고 다음 건을 계속한다.
+            if isinstance(exc, ThreadsApiError) and exc.is_blocked:
                 raise
             log.error("답글 발행 실패 %s: %s", decision.comment.id, exc)
             notifier.send(
@@ -286,7 +319,7 @@ def run() -> int:
             "cron 문자열과 Resolve slot case 분기를 확인하십시오.",
             current_slot, slots,
         )
-        return 0
+        return 1   # v1.2.0: 설정 오류를 Actions 실패로 드러낸다(이전 0 은 녹색으로 가려짐)
     else:
         log.info("슬롯 %s 실행 (v1.1.0 부터 전 슬롯 실행)", current_slot or "-")
 
@@ -299,7 +332,13 @@ def run() -> int:
         log.info("사용자 ID 조회 완료 — @%s", username)
 
     client = ThreadsClient(user_id, token)
-    sweep(client, settings, per_run_cap=config.REPLY_DAILY_CAP, dry_run=settings.dry_run)
+    # v1.2.0: 일일 캡(20)을 실행당 상한으로 쓰면 답글 사이 지연(최대 150초 × 19)이
+    # reply.yml timeout(20분)을 넘는다. 예약 실행 전용 상한을 둔다.
+    sweep(
+        client, settings,
+        per_run_cap=config.REPLY_SCHEDULED_RUN_CAP, dry_run=settings.dry_run,
+        budget_sec=config.REPLY_SWEEP_BUDGET_SEC,
+    )
     return 0
 
 

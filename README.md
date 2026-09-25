@@ -67,7 +67,10 @@ python scripts/bootstrap_token.py --code <CODE> --redirect-uri <URI>
 | `CHAT_SOURCE_MODE` | Variable | 선택 | `mix`(기본) / `rss` / `web` / `none` |
 | `MOOD_RSS_URLS` | Variable | 선택 | 뉴스 RSS URL, 여러 개는 `\|` 구분. 비면 웹 검색만 사용 |
 | `MOOD_WEB_MAX_USES` | Variable | 선택 | CHAT 1건당 웹 검색 최대 횟수. 기본 2 |
-| `REPLY_PER_RUN_CAP` | Variable | 선택 | 답글 실행당 상한. 기본 4 |
+| `REPLY_PER_RUN_CAP` | Variable | 선택 | CHAT 실행 중 답글 스윕 상한. 기본 4 |
+| `REPLY_SCHEDULED_RUN_CAP` | Variable | 선택 | reply.yml 실행당 답글 상한. 기본 6 (v1.2.0) |
+| `CHAT_WEEKEND_MIN` / `CHAT_WEEKEND_MAX` | Variable | 선택 | 토·일 CHAT 목표. 기본 2 / 3, 0/0 이면 주말 미발행 (v1.2.0) |
+| `PILLAR_ROTATION_AUTO` | Variable | 선택 | 자동 조절 결과 전용 (v1.2.0). 수동 지정은 `PILLAR_ROTATION_OVERRIDE` |
 
 > 기본 `GITHUB_TOKEN`으로는 Secret 쓰기가 **불가**하다. PAT가 반드시 별도로 필요하다.
 

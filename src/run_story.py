@@ -8,11 +8,12 @@ EDT 회차가 트래커에 올라오면 그 회차를 근거로 Threads 에 STOR
 
 무상태 신규 판정
   마지막 처리 회차를 저장하지 않는다. created_time 시간창으로 판정한다.
-  cron 주기 6시간에 창 7.2시간(20% 여유)을 두어 경계 누락을 막는다.
-  그 대가인 경계 중복은 아래 안전장치가 흡수한다.
+  v1.2.0: 창 = 직전 cron 과의 간격 × 1.2 (최소 EVENT_WINDOW_HOURS).
+  cron 간격이 3.9~10.3시간으로 불균등해 고정 7.2시간 창은 03:11→13:29 사이
+  회차를 놓쳤다. 그 대가인 경계 중복은 아래 안전장치가 흡수한다.
 
 안전장치
-  1. 오늘 정기 발행이 이미 STORY 였는가 -> 스킵
+  1. 오늘 정기 발행 기둥이 STORY 인가(당첨 슬롯 예측) / 오늘 STORY 가 이미 나갔는가 -> 스킵
   2. 직전 발행과 최소 간격이 확보되었는가
   3. 오늘 이벤트 발행 상한을 넘지 않았는가
   4. 발행 쿼터 잔여가 있는가
@@ -31,6 +32,7 @@ from . import (
     chat_plan,
     config,
     content,
+    insights,
     notion_source,
     watchdog,
 )
@@ -50,7 +52,7 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"   # v1.2.0: 이벤트 기둥 STORY 강제, 당첨 슬롯 기반 차단, 가변 감지 창
 KST = ZoneInfo("Asia/Seoul")
 ASSETS_DIR = REPO_ROOT / "assets"
 # CHAT 도입 후 하루 게시물이 약 10건이다. 5건이면 정기 글이 보이지 않는다.
@@ -98,25 +100,72 @@ def _events_published_today(posts: list[dict], now: dt.datetime) -> int:
     return sum(1 for s in _non_chat_stamps(posts) if s.astimezone(KST).date() == today)
 
 
-def _regular_pillar_today(today: dt.date) -> str:
-    """오늘 정기 발행이 어느 기둥이었는지.
+def _predicted_regular_pillar(today: dt.date) -> str | None:
+    """오늘 정기 발행(당첨 슬롯)의 기둥. 휴식일이면 None.
 
-    슬롯 A~C 중 어느 것이 당첨됐는지 모르므로, 세 슬롯 중 하나라도
-    STORY 면 STORY 로 본다. 보수적 판정이다.
+    v1.2.0: 이전에는 슬롯 A~C 중 하나라도 STORY 면 막았다. 로테이션(길이 8, STORY 3칸)과
+    run_index = 날짜 + 구분자 구조상 연속 3칸에는 항상 STORY 가 있어, 이벤트가
+    STORY 인 날이 한 번도 없었다(120일 시뮬레이션 0일). 정기 발행과 같은 함수·솔트로
+    당첨 슬롯을 계산해 그 슬롯의 기둥만 본다(main._slot_gate 와 동일 결정론).
     """
-    for slot_disc in config.DISCRIMINATOR_BY_SLOT.values():
-        idx = content.run_index(today, slot_disc)
-        if ai_writer.pick_pillar(idx) == "STORY":
-            return "STORY"
-    return "OTHER"
+    if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
+        return None
+    slots = list(config.PUBLISH_SLOTS)
+    if not slots:
+        return None
+    slot = antibot.choose_slot(today, slots, config.ANTIBOT_SLOT_SALT_PUBLISH)
+    disc = config.DISCRIMINATOR_BY_SLOT.get(slot)
+    if disc is None:
+        return None
+    return ai_writer.pick_pillar(content.run_index(today, disc))
+
+
+def _story_published_today(posts: list[dict], now: dt.datetime) -> bool:
+    """오늘(KST) 이미 STORY 로 복원되는 글이 나갔는지(수동·이벤트 포함, CHAT 제외)."""
+    today = now.astimezone(KST).date()
+    for post in posts:
+        parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
+        if parsed is None or parsed.astimezone(KST).date() != today:
+            continue
+        pillar = insights.restore_pillar(parsed, str(post.get("media_type") or ""))
+        if pillar == "STORY":
+            return True
+    return False
+
+
+def event_window_hours(now: dt.datetime) -> float:
+    """이번 실행의 신규 회차 감지 창(시간).
+
+    직전 이벤트 cron 과 현재 cron 사이 간격에 20% 여유를 더한다(cron 지연분 포함).
+    EVENT_WINDOW_HOURS 보다 작아지지 않는다. 수동 실행도 같은 규칙을 쓴다.
+    """
+    local = now.astimezone(KST)
+    minute_now = local.hour * 60 + local.minute
+    marks = sorted(int(t[:2]) * 60 + int(t[3:]) for t in insights.EVENT_SLOTS)
+    if not marks:
+        return config.EVENT_WINDOW_HOURS
+    # 현재 시각 이하 가장 늦은 cron(자정 넘김 포함)과 그 직전 cron
+    past = [m for m in marks if m <= minute_now]
+    current = past[-1] if past else marks[-1] - 24 * 60
+    idx = marks.index(current % (24 * 60)) if current >= 0 else len(marks) - 1
+    previous = marks[idx - 1] if idx > 0 else marks[-1] - 24 * 60
+    if current < 0:
+        previous -= 24 * 60
+    gap_min = current - previous
+    since_current = minute_now - current
+    hours = (gap_min * 1.2 + since_current) / 60
+    return max(config.EVENT_WINDOW_HOURS, round(hours, 2))
 
 
 def _gate(
     posts: list[dict], now: dt.datetime, today: dt.date, quota_remaining: int
 ) -> str | None:
     """발행을 막아야 하는 사유. 없으면 None."""
-    if _regular_pillar_today(today) == "STORY":
-        return "오늘 정기 발행이 STORY 입니다. 중복을 피해 건너뜁니다."
+    predicted = _predicted_regular_pillar(today)
+    if predicted == "STORY":
+        return "오늘 정기 발행(당첨 슬롯) 기둥이 STORY 입니다. 중복을 피해 건너뜁니다."
+    if _story_published_today(posts, now):
+        return "오늘 STORY 글이 이미 발행되었습니다."
 
     elapsed = _hours_since_last_post(posts, now)
     if elapsed is not None and elapsed < config.EVENT_MIN_GAP_HOURS:
@@ -148,11 +197,18 @@ def run() -> int:
     now = dt.datetime.now(dt.UTC)
     today = dt.datetime.now(KST).date()
 
+    # v1.2.0: 휴식일에는 정기·CHAT 과 같이 이벤트도 쉰다(휴식일 취지 유지).
+    if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
+        log.info("휴식일 — 이벤트 발행도 쉽니다. 종료")
+        return 0
+
     if not settings.can_fetch_episodes:
         log.info("Notion 설정 없음 — 이벤트 발행은 근거 없이 하지 않습니다. 종료")
         return 0
 
-    since = now - dt.timedelta(hours=config.EVENT_WINDOW_HOURS)
+    window_hours = event_window_hours(now)
+    log.info("신규 회차 감지 창 %.2f시간", window_hours)
+    since = now - dt.timedelta(hours=window_hours)
     episodes = notion_source.fetch_new_episodes(
         settings.notion_token,
         config.NOTION_DB_ID,
@@ -196,15 +252,17 @@ def run() -> int:
         recent_texts=recent_texts,
         episode_block=episode_block,
         discriminator=config.DISCRIMINATOR_EVENT,
+        pillar="STORY",
     )
     log.info(
         "기둥=%s 소재=%s 생성=%s 근거=회차%d건",
         plan.pillar, plan.seed, plan.source, len(episodes),
     )
 
-    if plan.pillar != "STORY":
-        # 이벤트 발행은 STORY 여야 의미가 있다. 로테이션이 다른 기둥을 뽑으면 보류.
-        log.info("이벤트 슬롯이 STORY 가 아님(%s) — 보류", plan.pillar)
+    if plan.source != "ai":
+        # v1.2.0: 기둥은 STORY 로 강제된다. 정적 폴백 문구는 회차 근거가 없으므로
+        # '새 회차 이야기'가 아니다. 이벤트로 낼 의미가 없어 보류한다.
+        log.info("회차 근거 생성 실패(생성=%s) — 이벤트 발행 보류", plan.source)
         return 0
 
     image_url, degrade_reasons = _select_usable_image(plan, settings)
@@ -223,9 +281,13 @@ def run() -> int:
     # 게이트는 '아직 발행되지 않은' 글을 볼 수 없으므로 사전 판정만으로는
     # 부족하다. 실제 발행 직전에 최신 상태로 재확인한다.
     recheck_now = dt.datetime.now(dt.UTC)
-    fresh_posts = client.get_my_posts(POSTS_TO_SCAN, since=today - dt.timedelta(days=1))
+    # v1.2.0: 지터(최대 50분) 동안 KST 자정을 넘길 수 있다. 날짜를 다시 계산한다.
+    recheck_today = recheck_now.astimezone(KST).date()
+    fresh_posts = client.get_my_posts(
+        POSTS_TO_SCAN, since=recheck_today - dt.timedelta(days=1)
+    )
     blocked_again = _gate(
-        fresh_posts, recheck_now, today, client.get_post_quota().remaining
+        fresh_posts, recheck_now, recheck_today, client.get_post_quota().remaining
     )
     if blocked_again:
         log.info("지연 후 재검증에서 보류 — %s", blocked_again)

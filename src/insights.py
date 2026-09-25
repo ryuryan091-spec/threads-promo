@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from . import ai_writer, chat_plan, config, content, watchdog
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"   # v1.2.0: 이벤트 창 게시물 = STORY
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -36,10 +36,13 @@ USER_METRICS = ("views", "likes", "replies", "reposts", "quotes",
                 "clicks", "followers_count")
 
 # 슬롯 판정 허용 창(분).
-#   정기 발행 지터는 최대 8분이므로 12분이면 충분하다.
-#   이벤트 발행 지터는 최대 50분이라 창이 넓다.
-PUBLISH_WINDOW_MIN = 12
-EVENT_WINDOW_MIN = 55
+#   v1.2.0: cron 지연을 반영해 넓힌다(12→35, 55→90). 좁으면 지연된 글이 판정불가로 빠져
+#   weighting 표본이 줄고, 이벤트 STORY 가 'STORY 발행됨'으로 인식되지 않아 같은 회차가
+#   두 번 나갈 수 있다(독립 리뷰 2026-09-26).
+#   경계: 정기 A 08:23+35=08:58 < CHAT 09:00, 정기 B 12:47+35=13:22 < 이벤트 13:29.
+#   이벤트 = 지터 최대 50분 + cron 지연 여유 40분. 23:17 창은 자정을 넘긴다(분 계산 % 1440).
+PUBLISH_WINDOW_MIN = 35
+EVENT_WINDOW_MIN = 90
 
 PUBLISH_SLOTS = {"08:23": "A", "12:47": "B", "20:31": "C"}
 EVENT_SLOTS = ("03:11", "13:29", "17:41", "23:17")
@@ -160,13 +163,11 @@ def discriminator_from_timestamp(posted_at: dt.datetime) -> int | None:
     minute_of_day = local.hour * 60 + local.minute
 
     for hhmm, slot in PUBLISH_SLOTS.items():
-        start = _minutes(hhmm)
-        if start <= minute_of_day <= start + PUBLISH_WINDOW_MIN:
+        if (minute_of_day - _minutes(hhmm)) % 1440 <= PUBLISH_WINDOW_MIN:
             return config.DISCRIMINATOR_BY_SLOT[slot]
 
     for hhmm in EVENT_SLOTS:
-        start = _minutes(hhmm)
-        if start <= minute_of_day <= start + EVENT_WINDOW_MIN:
+        if (minute_of_day - _minutes(hhmm)) % 1440 <= EVENT_WINDOW_MIN:
             return config.DISCRIMINATOR_EVENT
 
     return None
@@ -179,6 +180,9 @@ def restore_pillar(posted_at: dt.datetime, media_type: str = "") -> str:
     disc = discriminator_from_timestamp(posted_at)
     if disc is None:
         return UNKNOWN
+    if disc == config.DISCRIMINATOR_EVENT:
+        # v1.2.0: 이벤트 경로는 기둥을 STORY 로 강제한다(run_story).
+        return "STORY"
     idx = content.run_index(posted_at.astimezone(KST).date(), disc)
     return ai_writer.pick_pillar(idx)
 

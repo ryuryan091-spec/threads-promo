@@ -85,7 +85,8 @@ class TestInsightsChat:
                  insights.PostStat("q", _kst(8, 25), "STORY", replies=1)]
         scores = run_weighting._scores(stats, clicks_total=10)
         assert [s.pillar for s in scores] == ["STORY"]
-        assert scores[0].clicks == 10
+        # v1.2.0: 계정 클릭은 기둥으로 배분하지 않는다(판별력 0)
+        assert scores[0].clicks == 0
 
 
 class TestStoryGateExcludesChat:
@@ -94,7 +95,11 @@ class TestStoryGateExcludesChat:
     def _gate(self, posts):
         from src import run_story
 
-        with mock.patch.object(run_story, "_regular_pillar_today", return_value="OTHER"):
+        # 이 클래스는 CHAT 제외만 본다. 기둥 판정은 test_story_event 에서 검증한다.
+        with (
+            mock.patch.object(run_story, "_predicted_regular_pillar", return_value="OTHER"),
+            mock.patch.object(run_story, "_story_published_today", return_value=False),
+        ):
             return run_story._gate(posts, self.NOW, DAY, 200)
 
     def test_chat_posts_do_not_block_event(self):

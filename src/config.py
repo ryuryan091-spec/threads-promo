@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.1.2"   # v1.1.2: Variables 자리표시자 해석, 답글 링크 차단 상수
+VERSION = "1.2.0"   # v1.2.0: 대화 페이지네이션·AUTO 로테이션·주말 CHAT·마무리 다양화·링크 리플 문구 풀
 
 YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "").strip()
 X_URL = os.environ.get("X_URL", "").strip()
@@ -60,9 +60,24 @@ REPLY_AUTHOR_DAILY_CAP = 2          # 같은 사람에게 하루 최대 답글 �
 # 최근 REPLY_SCAN_HOURS 시간 안의 글을 최대 REPLY_SCAN_POSTS 개까지 본다.
 REPLY_SCAN_POSTS = 20               # 최근 내 글 최대 몇 개까지 훑을지
 REPLY_SCAN_HOURS = 24               # 이 시간 안에 발행된 글만 스캔
-REPLY_SCAN_LIMIT = 25               # 글당 조회할 댓글 수
+REPLY_SCAN_LIMIT = 100              # 글당 조회할 댓글 수 (v1.2.0: 25→100, 페이지네이션)
+# 대화 조회 페이지 상한. 페이지당 25건 × 4 = 100건.
+# 내 답글이 조회 범위 밖으로 밀리면 "이미 답글함" 판정이 빠져 중복 답글이 난다.
+CONVERSATION_PAGE_SIZE = 25
+CONVERSATION_MAX_PAGES = 4
 # 실행 횟수가 하루 10회 이상으로 늘어나므로 실행당 상한을 따로 둔다(몰아 달기 방지).
 REPLY_PER_RUN_CAP = int(os.environ.get("REPLY_PER_RUN_CAP", "4"))
+# v1.2.0: reply.yml(예약 3슬롯) 실행당 상한. 답글 사이 지연 최대 150초 × (6-1) = 12.5분 +
+# 생성 시간이 timeout-minutes(20) 안에 들어오게 잡는다. 이전에는 일일 캡 20을 그대로 써서
+# 최악 47.5분으로 timeout 을 넘었다.
+REPLY_SCHEDULED_RUN_CAP = int(os.environ.get("REPLY_SCHEDULED_RUN_CAP", "6"))
+# v1.2.0: 스윕 시간 예산(초). 다음 답글의 최악 소요(지연 최대 + 컨테이너 대기 최대 + 생성 여유)가
+# 예산을 넘기면 새 답글을 시작하지 않는다. 컨테이너 IN_PROGRESS 대기(최대 300초)가 겹쳐도
+# job timeout 을 넘지 않게 하는 장치. reply.yml timeout 30분 - 준비·여유 5분 = 25분.
+REPLY_SWEEP_BUDGET_SEC = 25 * 60
+REPLY_ITEM_MARGIN_SEC = 40          # 생성·조회 여유
+# chat.yml(timeout 25분) 에서 run_chat 시작부터 쓸 수 있는 시간. 준비·여유 5분 제외.
+CHAT_JOB_BUDGET_SEC = 20 * 60
 # 한 원글 스레드에서 같은 사람과 주고받는 답글 누적 상한(핑퐁 방지, 기간 무관).
 REPLY_THREAD_AUTHOR_CAP = 3
 
@@ -77,6 +92,12 @@ ANTIBOT_REPLY_JITTER = (20, 150)     # 답글 사이 20초~2.5분
 # 매일 100% 빠짐없이 발행하는 것 자체가 기계적 패턴이라는 판단에 따른 옵션.
 # 주 3~4회가 지속 가능 하한이므로 주 6회는 여전히 안전 구간.
 PUBLISH_WEEKLY_REST_DAYS = int(os.environ.get("PUBLISH_WEEKLY_REST_DAYS", "0"))
+
+# 정기 발행 슬롯 목록. publish.yml 의 PUBLISH_SLOTS 와 같아야 한다(verify_repo 검사).
+# run_story 가 오늘 당첨 슬롯의 기둥을 예측할 때 쓴다.
+PUBLISH_SLOTS: tuple[str, ...] = tuple(
+    s.strip() for s in os.environ.get("PUBLISH_SLOTS", "A,B,C").split(",") if s.strip()
+)
 
 # ---------------------------------------------------------------------------
 # 인덱스 축
@@ -152,6 +173,10 @@ def _var(name: str) -> str:
 
 
 PILLAR_ROTATION_OVERRIDE = _var("PILLAR_ROTATION_OVERRIDE")
+# v1.2.0: 자동 조절 결과 전용. 수동 지정(OVERRIDE)과 분리한다.
+# 둘을 한 변수로 쓰면 자동 결과를 한 번 반영한 뒤 weighting 이 이를 수동 지정으로 보고
+# 자동 조절을 영구히 멈춘다. 우선순위: OVERRIDE(수동) > AUTO > 기본 로테이션.
+PILLAR_ROTATION_AUTO = _var("PILLAR_ROTATION_AUTO")
 LAST_WEIGHT_ADJUST = _var("LAST_WEIGHT_ADJUST")
 
 # 안전장치 7종
@@ -164,7 +189,10 @@ WEIGHT_SIGNIFICANCE_RATIO = 1.5  # S6 1위/2위 비율 임계
 WEIGHT_STORY_MIN_SLOTS = 2      # S7 근거 보유 기둥 하한
 
 # 점수 가중. 조회·좋아요는 행동으로 이어지지 않아 제외한다.
-WEIGHT_SCORE_CLICKS = 1.0
+# v1.2.0: 1.0 → 0.0. clicks 는 계정 단위 합계만 제공되어(insights.fetch_account_clicks)
+# 기둥별 배분이 게시물 수 비례가 된다. 그러면 기둥별 클릭 평균이 모두 같아져 판별력이 0이다.
+# 기둥별 귀속 수단이 검증되기 전까지 점수에서 제외하고 리포트에는 계정 합계만 표시한다.
+WEIGHT_SCORE_CLICKS = 0.0
 WEIGHT_SCORE_REPLIES = 0.3
 
 # ---------------------------------------------------------------------------
@@ -272,6 +300,13 @@ CHAT_TRIGGERS: tuple[str, ...] = (
 )
 CHAT_DAILY_MIN = int(os.environ.get("CHAT_DAILY_MIN", "6"))
 CHAT_DAILY_MAX = int(os.environ.get("CHAT_DAILY_MAX", "8"))
+# v1.2.0: 토·일(KST) 목표 건수. 휴장일에 평일과 같은 창·같은 건수로 나가는 것은
+# 기계적 패턴이다. 0/0 이면 주말 CHAT 미발행.
+CHAT_WEEKEND_MIN = int(os.environ.get("CHAT_WEEKEND_MIN", "2"))
+CHAT_WEEKEND_MAX = int(os.environ.get("CHAT_WEEKEND_MAX", "3"))
+# v1.2.0: 질문으로 닫는 비율(%). 나머지는 질문 없이 닫는다.
+# 3시간에 6~8건이 전부 질문으로 끝나면 같은 구조가 반복된다.
+CHAT_QUESTION_PCT = 55
 CHAT_MIN_GAP_MIN = 15          # 직전 게시물(종류 무관)과 최소 간격(분)
 # 간격이 모자라면 버리지 않고 이 한도 안에서 기다렸다 발행한다.
 # 트리거 간격(19~23분)이 cron 지연·지터와 겹치면 간격 미달이 자주 난다.
@@ -340,6 +375,22 @@ HTTP_RETRY_BACKOFF_SEC = 3
 # ---------------------------------------------------------------------------
 # 링크는 본문이 아니라 셀프 리플라이에 배치한다.
 LINK_PLACEMENT_SELF_REPLY = True
+
+# v1.2.0: 링크 셀프 리플라이 첫 줄 문구 풀. 매일 같은 문장은 동일 문구 금지 원칙 위반.
+# run_index 로 회전한다. 링크 줄 형식은 고정.
+REPLY_LEADS: tuple[str, ...] = (
+    "매일 올리는 곳입니다.",
+    "만화랑 쇼츠는 여기 올리고 있어요.",
+    "매일 연재 중인 곳입니다.",
+    "궁금하시면 여기서 보실 수 있어요.",
+    "작업물은 여기 모아두고 있습니다.",
+    "매일 조금씩 쌓아가는 곳입니다.",
+)
+# 길이 6: CLOSING_PATTERN(5) 과 서로소 — 첫 문구와 마무리 방식이 고정 짝이 되지 않는다.
+
+# v1.2.0: 정기·이벤트 글 마무리 패턴(Q=질문, S=질문 없이). run_index % 길이로 고른다.
+# 길이 5 는 로테이션 길이 8 과 서로소라 기둥과 마무리가 고르게 섞인다. 질문 60%.
+CLOSING_PATTERN: tuple[str, ...] = ("Q", "S", "Q", "Q", "S")
 
 # 홍보형 1 : 관찰형 3 비율. day_of_year % PROMO_CYCLE == 0 이면 홍보형.
 PROMO_CYCLE = 4

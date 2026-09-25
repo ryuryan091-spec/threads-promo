@@ -18,7 +18,7 @@ from .env import MissingEnvError, load_settings
 from .run_insights import collect_post_stats
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"   # v1.2.0: 클릭 기둥 배분 제거, 자동 결과는 PILLAR_ROTATION_AUTO
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -44,10 +44,12 @@ def _scores(
 ) -> list[weighting.PillarScore]:
     """기둥별 점수를 만든다.
 
-    클릭은 사용자 단위 집계라 게시물별로 쪼갤 수 없다.
-    발행 비중에 비례해 배분한다. 근사치이며, 이 한계 때문에
-    최소 표본(S1)과 유의 임계(S6)를 두었다.
+    v1.2.0: 클릭은 사용자 단위 합계라 기둥으로 쪼갤 수 없다. 이전에는 발행 비중에
+    비례해 배분했으나, 그러면 기둥별 클릭 평균이 모두 clicks_total / 전체 발행 수로
+    같아져 판별력이 0이다. 기둥 점수에는 넣지 않고(clicks=0) 리포트에 합계만 표시한다.
+    clicks_total 인자는 호출부 호환을 위해 유지한다.
     """
+    del clicks_total
     from collections import defaultdict
 
     posts: dict[str, int] = defaultdict(int)
@@ -59,19 +61,12 @@ def _scores(
         posts[stat.pillar] += 1
         replies[stat.pillar] += stat.replies
 
-    total_posts = sum(posts.values())
-    out: list[weighting.PillarScore] = []
-    for pillar, count in posts.items():
-        share = count / total_posts if total_posts else 0.0
-        out.append(
-            weighting.PillarScore(
-                pillar=pillar,
-                posts=count,
-                clicks=round(clicks_total * share),
-                replies=replies[pillar],
-            )
+    return [
+        weighting.PillarScore(
+            pillar=pillar, posts=count, clicks=0, replies=replies[pillar]
         )
-    return out
+        for pillar, count in posts.items()
+    ]
 
 
 def run() -> int:
@@ -110,18 +105,22 @@ def run() -> int:
 
     result = weighting.decide(_scores(stats, clicks_total), today, config.LAST_WEIGHT_ADJUST)
     report = weighting.render(result, today, window)
+    report += (
+        f"\n\n계정 링크 클릭 합계({window}일): {clicks_total}"
+        "\n  클릭은 기둥별 귀속이 불가능해 점수에서 제외합니다(답글 기준 판정)."
+    )
     log.info("\n%s", report)
 
     if result.adjusted:
         log.warning(
             "로테이션 변경 필요 — Variables 에 아래 값을 반영하십시오.\n"
-            "  PILLAR_ROTATION_OVERRIDE = %s\n"
+            "  PILLAR_ROTATION_AUTO = %s\n"
             "  LAST_WEIGHT_ADJUST = %s",
             ",".join(result.after), today.isoformat(),
         )
         report += (
             "\n\nVariables 반영 필요\n"
-            f"  PILLAR_ROTATION_OVERRIDE = {','.join(result.after)}\n"
+            f"  PILLAR_ROTATION_AUTO = {','.join(result.after)}\n"
             f"  LAST_WEIGHT_ADJUST = {today.isoformat()}"
         )
 

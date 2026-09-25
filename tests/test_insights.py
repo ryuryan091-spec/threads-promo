@@ -215,10 +215,13 @@ class TestScoring:
         expected = 1.0 * config.WEIGHT_SCORE_CLICKS + 1.0 * config.WEIGHT_SCORE_REPLIES
         assert s.score == pytest.approx(expected)
 
-    def test_clicks_weighted_higher(self):
-        clicks_heavy = _score("A", 10, 10, 0)
-        replies_heavy = _score("B", 10, 0, 10)
-        assert clicks_heavy.score > replies_heavy.score
+    def test_clicks_excluded_from_score(self):
+        """v1.2.0: 클릭은 기둥 귀속이 불가능해 가중치 0. 답글만 점수에 반영된다."""
+        assert config.WEIGHT_SCORE_CLICKS == 0.0
+        clicks_only = _score("A", 10, 10, 0)
+        replies_only = _score("B", 10, 0, 10)
+        assert clicks_only.score == 0.0
+        assert replies_only.score > clicks_only.score
 
     def test_zero_posts_no_division_error(self):
         assert _score("A", 0, 0, 0).score == 0.0
