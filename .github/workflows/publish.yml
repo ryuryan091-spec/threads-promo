@@ -70,6 +70,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}
+          PILLAR_ROTATION_AUTO: ${{ vars.PILLAR_ROTATION_AUTO }}
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           ASSET_RAW_BASE_URL: ${{ vars.ASSET_RAW_BASE_URL }}
@@ -77,5 +78,5 @@ jobs:
           PUBLISH_SLOTS: "A,B,C"
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           SLOT: ${{ steps.slot.outputs.slot }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
         run: python -m src.main

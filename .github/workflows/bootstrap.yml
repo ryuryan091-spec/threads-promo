@@ -39,10 +39,13 @@ jobs:
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
           GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # 입력값은 run: 에 직접 삽입하지 않고 env 로 넘긴다(스크립트 인젝션 방지, GitHub 권고).
+          INPUT_CODE: ${{ inputs.code }}
+          INPUT_REDIRECT_URI: ${{ inputs.redirect_uri }}
         run: |
           python scripts/bootstrap_token.py \
-            --code "${{ inputs.code }}" \
-            --redirect-uri "${{ inputs.redirect_uri }}" \
+            --code "$INPUT_CODE" \
+            --redirect-uri "$INPUT_REDIRECT_URI" \
             --persist
 
       - name: Verify

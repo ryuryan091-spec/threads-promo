@@ -30,7 +30,7 @@ concurrency:
 jobs:
   reply:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30   # v1.2.0: 스윕 시간 예산 25분(REPLY_SWEEP_BUDGET_SEC) + 준비 여유
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,8 +71,9 @@ jobs:
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+          REPLY_SCHEDULED_RUN_CAP: ${{ vars.REPLY_SCHEDULED_RUN_CAP || '6' }}
           EVENT_NAME: ${{ github.event_name }}
           REPLY_SLOTS: "A,B,C"
           SLOT: ${{ steps.slot.outputs.slot }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'live' && 'false' || vars.DRY_RUN || 'true' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
         run: python -m src.run_reply

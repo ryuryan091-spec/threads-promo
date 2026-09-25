@@ -47,5 +47,9 @@ jobs:
           TOKEN_REFRESHED_AT: ${{ secrets.TOKEN_REFRESHED_AT }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
           CHAT_ENABLED: ${{ vars.CHAT_ENABLED || 'false' }}
+          CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '6' }}
+          CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '8' }}
+          CHAT_WEEKEND_MIN: ${{ vars.CHAT_WEEKEND_MIN || '2' }}
+          CHAT_WEEKEND_MAX: ${{ vars.CHAT_WEEKEND_MAX || '3' }}
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
         run: python -m src.run_watchdog

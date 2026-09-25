@@ -50,6 +50,8 @@ jobs:
           CHAT_ENABLED: ${{ vars.CHAT_ENABLED || 'false' }}
           CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '6' }}
           CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '8' }}
+          CHAT_WEEKEND_MIN: ${{ vars.CHAT_WEEKEND_MIN || '2' }}
+          CHAT_WEEKEND_MAX: ${{ vars.CHAT_WEEKEND_MAX || '3' }}
           CHAT_SOURCE_MODE: ${{ vars.CHAT_SOURCE_MODE || 'mix' }}
           MOOD_RSS_URLS: ${{ vars.MOOD_RSS_URLS }}
           MOOD_WEB_MAX_USES: ${{ vars.MOOD_WEB_MAX_USES || '2' }}
@@ -57,6 +59,7 @@ jobs:
           EVENT_STORY_ENABLED: ${{ vars.EVENT_STORY_ENABLED || 'false' }}
           ADAPTIVE_WEIGHTS_ENABLED: ${{ vars.ADAPTIVE_WEIGHTS_ENABLED || 'false' }}
           PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}
+          PILLAR_ROTATION_AUTO: ${{ vars.PILLAR_ROTATION_AUTO }}
           LAST_WEIGHT_ADJUST: ${{ vars.LAST_WEIGHT_ADJUST }}
         run: |
           if [ "${{ inputs.web_search }}" = "true" ]; then

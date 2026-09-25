@@ -39,6 +39,7 @@ jobs:
           X_URL: ${{ vars.X_URL }}
           INSIGHTS_ENABLED: ${{ vars.INSIGHTS_ENABLED || 'true' }}
           INSIGHTS_LOOKBACK_DAYS: ${{ vars.INSIGHTS_LOOKBACK_DAYS || '7' }}
-          INSIGHTS_POST_LIMIT: ${{ vars.INSIGHTS_POST_LIMIT || '7' }}
+          INSIGHTS_POST_LIMIT: ${{ vars.INSIGHTS_POST_LIMIT || '70' }}
           PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}
+          PILLAR_ROTATION_AUTO: ${{ vars.PILLAR_ROTATION_AUTO }}
         run: python -m src.run_insights

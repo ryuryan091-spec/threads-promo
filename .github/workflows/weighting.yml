@@ -40,5 +40,6 @@ jobs:
           X_URL: ${{ vars.X_URL }}
           ADAPTIVE_WEIGHTS_ENABLED: ${{ vars.ADAPTIVE_WEIGHTS_ENABLED || 'false' }}
           PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}
+          PILLAR_ROTATION_AUTO: ${{ vars.PILLAR_ROTATION_AUTO }}
           LAST_WEIGHT_ADJUST: ${{ vars.LAST_WEIGHT_ADJUST }}
         run: python -m src.run_weighting
