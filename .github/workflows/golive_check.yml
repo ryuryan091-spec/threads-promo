@@ -56,6 +56,12 @@ jobs:
           MOOD_RSS_URLS: ${{ vars.MOOD_RSS_URLS }}
           MOOD_WEB_MAX_USES: ${{ vars.MOOD_WEB_MAX_USES || '2' }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
+          REPLY_DAILY_CAP: ${{ vars.REPLY_DAILY_CAP || '40' }}
+          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '3' }}
+          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '4' }}
+          FOLLOWUP_ENABLED: ${{ vars.FOLLOWUP_ENABLED || 'false' }}
+          FOLLOWUP_PCT: ${{ vars.FOLLOWUP_PCT || '25' }}
+          FOLLOWUP_DAILY_CAP: ${{ vars.FOLLOWUP_DAILY_CAP || '3' }}
           EVENT_STORY_ENABLED: ${{ vars.EVENT_STORY_ENABLED || 'false' }}
           ADAPTIVE_WEIGHTS_ENABLED: ${{ vars.ADAPTIVE_WEIGHTS_ENABLED || 'false' }}
           PILLAR_ROTATION_OVERRIDE: ${{ vars.PILLAR_ROTATION_OVERRIDE }}

@@ -4,7 +4,7 @@ name: Threads Chat
 # KST 09:00~12:05 창에 9개 트리거. 실행당 CHAT 최대 1건.
 # 하루 몇 건·어느 트리거에서 낼지는 src/chat_plan.py 가 날짜 시드로 정한다(무상태·멱등).
 # 트리거 시각은 src/config.py CHAT_TRIGGERS 와 1:1 대응해야 한다(verify_repo 6번 검사).
-# 정각·반각 회피. 정기 발행(08:23/12:47)·워치독(09:53, 읽기 전용)과 무관.
+# 정각·반각 회피. 정기 발행(v1.3.0 슬롯 7개, CHAT 창 밖)·워치독(09:53, 읽기 전용)과 무관.
 
 "on":
   schedule:
@@ -90,6 +90,9 @@ jobs:
           MOOD_WEB_MAX_USES: ${{ vars.MOOD_WEB_MAX_USES || '2' }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
           REPLY_PER_RUN_CAP: ${{ vars.REPLY_PER_RUN_CAP || '4' }}
+          REPLY_DAILY_CAP: ${{ vars.REPLY_DAILY_CAP || '40' }}
+          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '3' }}
+          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '4' }}
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           EVENT_NAME: ${{ github.event_name }}
           TRIGGER: ${{ steps.slot.outputs.slot }}

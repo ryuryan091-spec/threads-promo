@@ -8,7 +8,7 @@ name: Threads Story Event
 "on":
   schedule:
     # KST 03:11 / 13:29 / 17:41 / 23:17
-    #   정기 발행 슬롯(08:23 / 12:47 / 20:31) '직전'을 피해 배치한다.
+    #   정기 발행 슬롯(v1.3.0: config.PUBLISH_SLOT_TIMES 7개) 판정 창과 겹치지 않게 배치한다.
     #   게이트는 아직 발행되지 않은 정기 글을 볼 수 없으므로,
     #   직전에 돌면 최소 간격 조건이 무력화된다.
     - cron: "11 18 * * *"
@@ -71,7 +71,7 @@ jobs:
           EVENT_STORY_ENABLED: ${{ vars.EVENT_STORY_ENABLED || 'false' }}
           EVENT_WINDOW_HOURS: ${{ vars.EVENT_WINDOW_HOURS || '7.2' }}
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
-          PUBLISH_SLOTS: "A,B,C"
+          PUBLISH_SLOTS: "A,B,C,D,E,F,G"
           EVENT_DAILY_CAP: ${{ vars.EVENT_DAILY_CAP || '2' }}
           EVENT_MIN_GAP_HOURS: ${{ vars.EVENT_MIN_GAP_HOURS || '4' }}
           EVENT_RUN: "true"

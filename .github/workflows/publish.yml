@@ -2,13 +2,17 @@ name: Threads Publish
 
 "on":
   schedule:
-    # KST 09:30 = UTC 00:30
-    # KST 08:23(출근) / 12:47(점심) / 20:31(저녁)
-    #   - 최적 시간대 3개에 하나씩 배치. 하루 하나만 실제 실행.
-    #   - 정각·반각 회피. 실제 발행 범위 12시간 이상으로 분산.
-    - cron: "23 23 * * *"
-    - cron: "47 3 * * *"
-    - cron: "31 11 * * *"
+    # v1.3.0: 슬롯 3개 → 7개 (config.PUBLISH_SLOT_TIMES 와 1:1, verify_repo 검사 5·8).
+    #   하루 하나만 실제 발행(날짜 시드 추첨) + 발행 전 1~20분 랜덤 지연.
+    #   KST D 07:14 / A 08:09 / B 12:26 / E 15:07 / F 16:36 / C 19:53 / G 21:43
+    #   판정 창(+47분)이 CHAT(09:00~12:05)·이벤트(03:11/13:29/17:41/23:17 +90분)와 겹치지 않는다.
+    - cron: "14 22 * * *"
+    - cron: "9 23 * * *"
+    - cron: "26 3 * * *"
+    - cron: "7 6 * * *"
+    - cron: "36 7 * * *"
+    - cron: "53 10 * * *"
+    - cron: "43 12 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -27,7 +31,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45   # v1.3.0: 발행 전 지연 최대 20분 + 컨테이너 대기 최대 5분×3(이미지·텍스트 폴백·링크 리플) + 준비 여유
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,9 +50,13 @@ jobs:
         id: slot
         run: |
           case "${{ github.event.schedule }}" in
-            "23 23 * * *") echo "slot=A" >> "$GITHUB_OUTPUT" ;;
-            "47 3 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
-            "31 11 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
+            "14 22 * * *") echo "slot=D" >> "$GITHUB_OUTPUT" ;;
+            "9 23 * * *")  echo "slot=A" >> "$GITHUB_OUTPUT" ;;
+            "26 3 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
+            "7 6 * * *")   echo "slot=E" >> "$GITHUB_OUTPUT" ;;
+            "36 7 * * *")  echo "slot=F" >> "$GITHUB_OUTPUT" ;;
+            "53 10 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
+            "43 12 * * *") echo "slot=G" >> "$GITHUB_OUTPUT" ;;
             *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -75,7 +83,7 @@ jobs:
           X_URL: ${{ vars.X_URL }}
           ASSET_RAW_BASE_URL: ${{ vars.ASSET_RAW_BASE_URL }}
           EVENT_NAME: ${{ github.event_name }}
-          PUBLISH_SLOTS: "A,B,C"
+          PUBLISH_SLOTS: "A,B,C,D,E,F,G"
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           SLOT: ${{ steps.slot.outputs.slot }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}

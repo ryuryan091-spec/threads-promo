@@ -1,17 +1,22 @@
 name: Threads Reply
 
-# 내 글에 달린 댓글에 자동 답글.
-# v1.1.0: 3개 슬롯 모두 실행한다(1-of-3 추첨 제거). 오전(09~12시)은 chat.yml 이
-# 실행마다 답글 스윕을 수행하므로, 이 워크플로우는 오후·저녁을 담당한다.
-# 일일 캡(20)·저자 캡(2)은 실행 수와 무관하게 Threads 조회로 하루 단위 유지된다.
+# 내 글에 달린 댓글에 자동 답글 (+ v1.3.0 셀프 이어쓰기, FOLLOWUP_ENABLED).
+# v1.1.0: 모든 슬롯을 실행한다. 오전(09~12시)은 chat.yml 이 실행마다 답글 스윕을 수행한다.
+# v1.3.0: 슬롯 3개 → 8개, 시작 전 0~10분 랜덤 지연. 응답 공백을 줄이고 답글 시각을 흩뜨린다.
+# 일일 캡·저자 캡은 실행 수와 무관하게 Threads 조회로 하루 단위 유지된다.
 
 "on":
   schedule:
-    # KST 12:19 / 16:53 / 22:07
-    #   발행 슬롯(08:23/12:47/20:31)·CHAT 창(09:00~12:05)과 겹치지 않게 배치.
+    # KST D 07:31 / A 12:19 / E 14:23 / B 16:53 / F 18:37 / G 20:52 / C 22:07 / H 00:58
+    #   CHAT 창(09:00~12:05) 밖. 다른 워크플로 cron 과 5분 이상 떨어뜨렸다.
+    - cron: "31 22 * * *"
     - cron: "19 3 * * *"
+    - cron: "23 5 * * *"
     - cron: "53 7 * * *"
+    - cron: "37 9 * * *"
+    - cron: "52 11 * * *"
     - cron: "07 13 * * *"
+    - cron: "58 15 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -30,7 +35,7 @@ concurrency:
 jobs:
   reply:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # v1.2.0: 스윕 시간 예산 25분(REPLY_SWEEP_BUDGET_SEC) + 준비 여유
+    timeout-minutes: 40   # v1.3.0: 시작 지연 최대 10분 + 스윕 예산 25분 + 준비 여유
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,9 +54,14 @@ jobs:
         id: slot
         run: |
           case "${{ github.event.schedule }}" in
+            "31 22 * * *") echo "slot=D" >> "$GITHUB_OUTPUT" ;;
             "19 3 * * *")  echo "slot=A" >> "$GITHUB_OUTPUT" ;;
+            "23 5 * * *")  echo "slot=E" >> "$GITHUB_OUTPUT" ;;
             "53 7 * * *")  echo "slot=B" >> "$GITHUB_OUTPUT" ;;
+            "37 9 * * *")  echo "slot=F" >> "$GITHUB_OUTPUT" ;;
+            "52 11 * * *") echo "slot=G" >> "$GITHUB_OUTPUT" ;;
             "07 13 * * *") echo "slot=C" >> "$GITHUB_OUTPUT" ;;
+            "58 15 * * *") echo "slot=H" >> "$GITHUB_OUTPUT" ;;
             *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -72,8 +82,14 @@ jobs:
           X_URL: ${{ vars.X_URL }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
           REPLY_SCHEDULED_RUN_CAP: ${{ vars.REPLY_SCHEDULED_RUN_CAP || '6' }}
+          REPLY_DAILY_CAP: ${{ vars.REPLY_DAILY_CAP || '40' }}
+          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '3' }}
+          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '4' }}
+          FOLLOWUP_ENABLED: ${{ vars.FOLLOWUP_ENABLED || 'false' }}
+          FOLLOWUP_PCT: ${{ vars.FOLLOWUP_PCT || '25' }}
+          FOLLOWUP_DAILY_CAP: ${{ vars.FOLLOWUP_DAILY_CAP || '3' }}
           EVENT_NAME: ${{ github.event_name }}
-          REPLY_SLOTS: "A,B,C"
+          REPLY_SLOTS: "A,B,C,D,E,F,G,H"
           SLOT: ${{ steps.slot.outputs.slot }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
         run: python -m src.run_reply

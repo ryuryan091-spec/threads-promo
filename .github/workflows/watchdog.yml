@@ -8,7 +8,7 @@ name: Threads Watchdog
 
 "on":
   schedule:
-    # KST 09:53 / 21:37 — 발행 슬롯(08:23/12:47/20:31) 직후에 배치.
+    # KST 09:53 / 21:37. 공백 임계는 슬롯 표에서 산출한다(watchdog.stale_threshold_hours).
     #   슬롯 직전에 돌면 아직 발행 전 상태를 보게 되어 오탐이 늘어난다.
     - cron: "53 0 * * *"
     - cron: "37 12 * * *"
