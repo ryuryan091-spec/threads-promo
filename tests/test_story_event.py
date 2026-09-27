@@ -152,7 +152,11 @@ class TestGates:
     def _gate(posts, quota=200, regular="OTHER"):
         from src import run_story
 
-        with mock.patch.object(run_story, "_predicted_regular_pillar", return_value=regular):
+        with (
+            mock.patch.object(run_story, "_predicted_regular_pillar", return_value=regular),
+            # v1.3.0: 정기 슬롯 예정 게이트는 TestUpcomingRegularGate(test_humanize_v13)에서 본다.
+            mock.patch.object(run_story, "_minutes_to_regular_slot", return_value=None),
+        ):
             return run_story._gate(posts, NOW, NOW.date(), quota)
 
     def test_passes_when_clear(self):
@@ -163,7 +167,12 @@ class TestGates:
         assert got and "기둥이 STORY" in got
 
     def test_blocks_when_too_soon(self):
-        got = self._gate([_post(1)])
+        # v1.3.0: NOW-1h = KST 20:00 이 새 정기 슬롯 C(19:53) 판정 창 안이라 STORY 로 복원될 수 있다.
+        # 이 테스트는 간격 게이트만 본다.
+        from src import run_story
+
+        with mock.patch.object(run_story, "_story_published_today", return_value=False):
+            got = self._gate([_post(1)])
         assert got and "최소 간격" in got
 
     def test_blocks_at_daily_cap(self):
@@ -290,6 +299,8 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "fetch_user_id", return_value=("1", "u")),
             mock.patch.object(run_story, "ThreadsClient", return_value=client),
             mock.patch.object(run_story, "_predicted_regular_pillar", return_value="OTHER"),
+            # v1.3.0: 곧 나갈 정기 글 간격 게이트는 실행 시각에 의존한다. 이 테스트 대상이 아니다.
+            mock.patch.object(run_story, "_minutes_to_regular_slot", return_value=None),
             mock.patch.object(content, "build_plan", return_value=plan),
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
@@ -327,6 +338,8 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "fetch_user_id", return_value=("1", "u")),
             mock.patch.object(run_story, "ThreadsClient", return_value=client),
             mock.patch.object(run_story, "_predicted_regular_pillar", return_value="OTHER"),
+            # v1.3.0: 곧 나갈 정기 글 간격 게이트는 실행 시각에 의존한다. 이 테스트 대상이 아니다.
+            mock.patch.object(run_story, "_minutes_to_regular_slot", return_value=None),
             mock.patch.object(content, "build_plan", return_value=plan),
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),

@@ -118,8 +118,9 @@ class TestChatPlanV11:
         days = [DAY + dt.timedelta(days=i) for i in range(365)]
         values = [chat_plan.closing_for(d, t) for d in days for t in range(1, 10)]
         ratio = values.count("question") / len(values)
-        assert 0.50 <= ratio <= 0.60
-        assert set(values) == {"question", "statement"}
+        # v1.3.0: 55% → 45%, 나머지는 단정·여운·혼잣말 (test_humanize_v13 에서 상세 검증)
+        assert 0.40 <= ratio <= 0.50
+        assert set(values) == {"question", "statement", "trail", "aside"}
 
     def test_q4_weekend_bounds(self):
         saturday = dt.date(2026, 9, 26)
@@ -191,7 +192,8 @@ class TestClosingPrompt:
     def test_closing_pattern_ratio(self):
         values = [content.closing_for(i) for i in range(1000)]
         ratio = values.count(ai_writer.CLOSING_QUESTION) / len(values)
-        assert ratio == pytest.approx(0.6, abs=0.01)
+        # v1.3.0: 패턴 길이 7, 질문 3/7
+        assert ratio == pytest.approx(3 / 7, abs=0.01)
 
     def test_closing_mixes_with_pillars(self):
         """마무리 패턴(5)과 로테이션(8)이 서로소 — 모든 기둥이 두 마무리를 다 겪는다."""

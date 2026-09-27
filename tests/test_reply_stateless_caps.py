@@ -136,7 +136,7 @@ def _sweep(fake: FakeApi, *, per_run_cap: int = 20, parent_capture: list | None 
     from src.env import load_settings
     from src.threads_client import ThreadsClient
 
-    def gen(api_key, post_text, comment_text, parent_reply_text=""):
+    def gen(api_key, post_text, comment_text, parent_reply_text="", **_kw):  # v1.3.0: style_block
         if parent_capture is not None:
             parent_capture.append(parent_reply_text)
         return "답글입니다"
@@ -186,7 +186,9 @@ class TestSweep:
             _c("a3", user="alice"),
         ]
         fake = FakeApi([_post("post1", 1)], {"post1": conv})
-        assert _sweep(fake) == 0
+        # v1.3.0: 저자 캡 기본값 2→3(Variable). 이 테스트는 '이전 실행분 합산'만 보므로 2로 고정.
+        with mock.patch.object(config, "REPLY_AUTHOR_DAILY_CAP", 2):
+            assert _sweep(fake) == 0
 
     def test_nested_reply_gets_parent_context(self):
         conv = [

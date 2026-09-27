@@ -4,7 +4,7 @@ Threads 무상태(stateless) 자동 발행 파이프라인.
 이미지 + 짧은 글을 발행하고, YouTube / X 링크를 셀프 리플라이로 붙여 유입을 만든다.
 
 - DB 없음. 상태는 GitHub Secret 1개(`THREADS_LONG_LIVED_TOKEN`)뿐.
-- 비용 0원. Threads API 무료, Actions 프라이빗 월 2,000분 내, 이미지는 레포 raw URL.
+- 비용 0원. Threads API 무료, Actions 는 Public 레포 표준 러너 무료(Private 전환 시 재검토), 이미지는 레포 raw URL.
 
 ---
 
@@ -71,6 +71,11 @@ python scripts/bootstrap_token.py --code <CODE> --redirect-uri <URI>
 | `REPLY_SCHEDULED_RUN_CAP` | Variable | 선택 | reply.yml 실행당 답글 상한. 기본 6 (v1.2.0) |
 | `CHAT_WEEKEND_MIN` / `CHAT_WEEKEND_MAX` | Variable | 선택 | 토·일 CHAT 목표. 기본 2 / 3, 0/0 이면 주말 미발행 (v1.2.0) |
 | `PILLAR_ROTATION_AUTO` | Variable | 선택 | 자동 조절 결과 전용 (v1.2.0). 수동 지정은 `PILLAR_ROTATION_OVERRIDE` |
+| `REPLY_DAILY_CAP` | Variable | 선택 | 하루 댓글 답글 상한. 기본 40 (v1.3.0, 이전 상수 20) |
+| `REPLY_AUTHOR_DAILY_CAP` | Variable | 선택 | 같은 사람 하루 답글 상한. 기본 3 (v1.3.0) |
+| `REPLY_THREAD_AUTHOR_CAP` | Variable | 선택 | 한 스레드·같은 사람 누적 상한. 기본 4 (v1.3.0) |
+| `FOLLOWUP_ENABLED` | Variable | 선택 | 셀프 이어쓰기(내 글에 2~12시간 뒤 한 마디). 기본 `false` (v1.3.0) |
+| `FOLLOWUP_PCT` / `FOLLOWUP_DAILY_CAP` | Variable | 선택 | 이어쓰기 대상 비율 % / 하루 상한. 기본 25 / 3 (v1.3.0) |
 
 > 기본 `GITHUB_TOKEN`으로는 Secret 쓰기가 **불가**하다. PAT가 반드시 별도로 필요하다.
 

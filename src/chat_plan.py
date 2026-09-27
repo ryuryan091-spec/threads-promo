@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 
-VERSION = "1.1.0"   # v1.1.0: 주말 목표, 트리거별 소재 비복원 배정, 마무리 비율
+VERSION = "1.2.0"   # v1.2.0: 마무리 4종(질문·단정·여운·혼잣말), 문체 키
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -198,13 +198,29 @@ def gap_wait_seconds(counts: PostCounts, now: dt.datetime) -> int:
     return max(0, int(config.CHAT_MIN_GAP_MIN * 60 - elapsed))
 
 
-def jitter_range(wait_sec: int) -> tuple[int, int]:
-    """발행 전 지연 범위. 간격 대기가 필요하면 그만큼 하한을 올린다."""
+# 창 종료 전 남겨 둘 여유(초): 재검증 조회 + 컨테이너 생성.
+WINDOW_END_MARGIN_SEC = 90
+
+
+def jitter_range(wait_sec: int, now: dt.datetime | None = None) -> tuple[int, int]:
+    """발행 전 지연 범위. 간격 대기가 필요하면 그만큼 하한을 올린다.
+
+    v1.2.0: now 를 주면 상한을 'CHAT 창 종료 - 여유'로 자른다. 지연 상한(540초)이
+    마지막 트리거(11:52)에서 창 종료(12:05)를 넘겨 재검증에서 버려지는 것을 막는다.
+    하한(간격 대기)은 자르지 않는다 — 간격이 모자라면 재검증이 보류한다.
+    """
     low, high = config.CHAT_JITTER
-    if wait_sec <= 0:
-        return low, high
-    low = max(low, wait_sec + 30)   # 30초 여유: 재조회·컨테이너 생성 시간
-    return low, max(high, low + 60)
+    if wait_sec > 0:
+        low = max(low, wait_sec + 30)   # 30초 여유: 재조회·컨테이너 생성 시간
+        high = max(high, low + 60)
+    if now is not None:
+        local = now.astimezone(KST)
+        end = dt.datetime.combine(
+            local.date(), dt.time.fromisoformat(config.CHAT_WINDOW_END), tzinfo=KST
+        )
+        room = int((end - local).total_seconds()) - WINDOW_END_MARGIN_SEC
+        high = max(low, min(high, room))
+    return low, high
 
 
 def source_for(today: dt.date, trigger: int | None, mode: str) -> str:
@@ -229,7 +245,26 @@ def seed_for(today: dt.date, trigger: int | None, seeds: tuple[str, ...]) -> str
     return seeds[order[pos % len(seeds)]]
 
 
+# v1.2.0: 질문이 아닌 나머지 몫을 단정·여운·혼잣말로 나누는 비율(합 100).
+_NON_QUESTION_SPLIT = (("statement", 45), ("trail", 30), ("aside", 25))
+
+
 def closing_for(today: dt.date, trigger: int | None) -> str:
-    """이 트리거 글의 마무리 방식. 'question' | 'statement' (날짜·트리거 결정론)."""
+    """이 트리거 글의 마무리 방식 (날짜·트리거 결정론).
+
+    'question' 이 CHAT_QUESTION_PCT%, 나머지는 statement / trail / aside.
+    """
     key = f"close-{trigger or 0}"
-    return "question" if _seed(today, key) % 100 < config.CHAT_QUESTION_PCT else "statement"
+    if _seed(today, key) % 100 < config.CHAT_QUESTION_PCT:
+        return "question"
+    point = _seed(today, f"{key}-kind") % 100
+    for name, weight in _NON_QUESTION_SPLIT:
+        if point < weight:
+            return name
+        point -= weight
+    return "statement"
+
+
+def style_key(today: dt.date, trigger: int | None) -> str:
+    """CHAT 문체 축 키. 같은 트리거 재실행은 같은 형식(멱등)."""
+    return f"{today.isoformat()}::chat::{trigger or 0}"

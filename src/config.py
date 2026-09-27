@@ -14,7 +14,24 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.2.0"   # v1.2.0: 대화 페이지네이션·AUTO 로테이션·주말 CHAT·마무리 다양화·링크 리플 문구 풀
+VERSION = "1.3.0"   # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
+
+
+def _int_env(name: str, default: int) -> int:
+    """정수 Variable. 빈 문자열·공백은 기본값으로 본다(v1.3.0 신규 키부터 적용).
+
+    int(os.environ.get(...)) 는 워크플로가 빈 값을 넘기면 import 단계에서 죽는다.
+    """
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw else default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("true", "1", "yes")
+
 
 YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "").strip()
 X_URL = os.environ.get("X_URL", "").strip()
@@ -54,8 +71,9 @@ DAILY_REPLY_QUOTA = 1000
 # ---------------------------------------------------------------------------
 REPLY_ENABLED = os.environ.get("REPLY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 REPLY_MAX_LEN = 200                 # 답글 본문 상한
-REPLY_DAILY_CAP = 20                # 자체 일일 답글 상한 (API 한도 1000과 별개)
-REPLY_AUTHOR_DAILY_CAP = 2          # 같은 사람에게 하루 최대 답글 수
+# v1.3.0: 상수 → Variable. 기본 20→40, 저자 2→3 (답글 확대). API 한도 1000과 별개.
+REPLY_DAILY_CAP = _int_env("REPLY_DAILY_CAP", 40)
+REPLY_AUTHOR_DAILY_CAP = _int_env("REPLY_AUTHOR_DAILY_CAP", 3)
 # CHAT 도입으로 하루 게시물이 약 10건이 된다. 5개면 반나절치만 보므로
 # 최근 REPLY_SCAN_HOURS 시간 안의 글을 최대 REPLY_SCAN_POSTS 개까지 본다.
 REPLY_SCAN_POSTS = 20               # 최근 내 글 최대 몇 개까지 훑을지
@@ -79,25 +97,60 @@ REPLY_ITEM_MARGIN_SEC = 40          # 생성·조회 여유
 # chat.yml(timeout 25분) 에서 run_chat 시작부터 쓸 수 있는 시간. 준비·여유 5분 제외.
 CHAT_JOB_BUDGET_SEC = 20 * 60
 # 한 원글 스레드에서 같은 사람과 주고받는 답글 누적 상한(핑퐁 방지, 기간 무관).
-REPLY_THREAD_AUTHOR_CAP = 3
+# v1.3.0: 상수 → Variable, 기본 3→4.
+REPLY_THREAD_AUTHOR_CAP = _int_env("REPLY_THREAD_AUTHOR_CAP", 4)
+
+# v1.3.0: 예약 답글 실행 시작 전 랜덤 지연(초). 슬롯 시각에 답글이 몰려 찍히는 패턴 제거.
+#   reply.yml timeout 40분 = 지연 최대 10분 + 스윕 예산 25분 + 준비 여유.
+REPLY_START_JITTER = (0, 600)
+
+# ---------------------------------------------------------------------------
+# 셀프 이어쓰기 (v1.3.0)
+#   내 글 일부에 몇 시간 뒤 스스로 한 마디를 덧붙인다(생각 보충). 링크 없음.
+#   대상 선정은 게시물 ID 해시(무상태·멱등). 이미 덧붙였는지는 대화 조회로 판정한다.
+#   새 발행 행위이므로 기본 비활성. Variables FOLLOWUP_ENABLED=true 로 켠다.
+# ---------------------------------------------------------------------------
+FOLLOWUP_ENABLED = _bool_env("FOLLOWUP_ENABLED", False)
+FOLLOWUP_PCT = _int_env("FOLLOWUP_PCT", 25)            # 대상 비율(%)
+FOLLOWUP_DAILY_CAP = _int_env("FOLLOWUP_DAILY_CAP", 3)  # 하루 상한(KST)
+FOLLOWUP_MIN_AGE_HOURS = 2.0                          # 원글 발행 후 최소 경과
+FOLLOWUP_MAX_AGE_HOURS = 12.0                         # 이 시간이 지나면 덧붙이지 않음
+FOLLOWUP_PER_RUN = 1                                  # 실행당 1건(몰아 달기 방지)
+FOLLOWUP_MAX_LEN = 150
 
 # ---------------------------------------------------------------------------
 # 안티봇
 #   동일 일정·동일 문구 금지. 고정 sleep 금지. 일일 상한 필수.
 #   슬롯 방식: 여러 cron 중 하루 하나만 실제 실행 -> 시각 분산 + Actions 분 절약
 # ---------------------------------------------------------------------------
-ANTIBOT_PUBLISH_JITTER = (60, 480)   # 발행 전 1~8분
+# v1.3.0: 1~8분 → 1~20분. 슬롯 7개와 함께 발행 시각 분포를 넓힌다.
+#   publish.yml timeout 45분 = 지연 20분 + 컨테이너 대기 최대 5분×3(이미지·텍스트 폴백·링크 리플) + 준비 여유.
+ANTIBOT_PUBLISH_JITTER = (60, 1200)
 ANTIBOT_REPLY_JITTER = (20, 150)     # 답글 사이 20초~2.5분
 # 주간 휴식일. 0 = 매일 발행, 1 = 주 1회 쉬는 날(요일은 주마다 랜덤).
 # 매일 100% 빠짐없이 발행하는 것 자체가 기계적 패턴이라는 판단에 따른 옵션.
 # 주 3~4회가 지속 가능 하한이므로 주 6회는 여전히 안전 구간.
 PUBLISH_WEEKLY_REST_DAYS = int(os.environ.get("PUBLISH_WEEKLY_REST_DAYS", "0"))
 
-# 정기 발행 슬롯 목록. publish.yml 의 PUBLISH_SLOTS 와 같아야 한다(verify_repo 검사).
-# run_story 가 오늘 당첨 슬롯의 기둥을 예측할 때 쓴다.
+# 정기 발행 슬롯. 하루 1개만 실제 발행(antibot.choose_slot).
+#   v1.3.0: 3개 → 7개. cron 은 publish.yml, 판정 창은 insights, 공백 임계는 watchdog 이
+#   이 표 하나에서 산출한다(verify_repo 검사 5·8).
+#   A·B·C 는 이전 슬롯(08:23/12:47/20:31)의 구분자 0·1·2 를 그대로 받는다. 새 판정 창이
+#   이전 발행 시각의 앞부분(A 08:23~08:56, B 12:47~13:13, C 20:31~20:40)을 덮어 전환기에도
+#   대부분 같은 기둥으로 복원된다. 그 뒤로 늦게 나간 이전 글(예: C 20:41 이후)은 '판정불가'로
+#   빠진다 — 인사이트 7일 룩백 동안만의 표본 감소이며 발행에는 영향 없다.
+#   판정 창 [t, t+PUBLISH_CLASSIFY_WINDOW_MIN] 은 CHAT(09:00~12:05)·이벤트 창과 겹치지 않는다.
+PUBLISH_SLOT_TIMES: dict[str, str] = {
+    "D": "07:14", "A": "08:09", "B": "12:26", "E": "15:07",
+    "F": "16:36", "C": "19:53", "G": "21:43",
+}
 PUBLISH_SLOTS: tuple[str, ...] = tuple(
-    s.strip() for s in os.environ.get("PUBLISH_SLOTS", "A,B,C").split(",") if s.strip()
+    s.strip()
+    for s in os.environ.get("PUBLISH_SLOTS", "A,B,C,D,E,F,G").split(",")
+    if s.strip()
 )
+# 판정 창(분) = 지터 최대 20분 + cron 지연 여유 27분 (v1.2.0 의 35 = 8 + 27 과 같은 여유).
+PUBLISH_CLASSIFY_WINDOW_MIN = ANTIBOT_PUBLISH_JITTER[1] // 60 + 27
 
 # ---------------------------------------------------------------------------
 # 인덱스 축
@@ -111,7 +164,10 @@ PUBLISH_SLOTS: tuple[str, ...] = tuple(
 DISCRIMINATOR_MAX = 8
 
 # 실행 구분자. 정기 슬롯과 이벤트 발행이 겹치지 않도록 값을 분리한다.
-DISCRIMINATOR_BY_SLOT = {"A": 0, "B": 1, "C": 2, "MANUAL": 0}
+# v1.3.0: D~G 추가. 4 는 이벤트 전용이라 건너뛴다. 값은 DISCRIMINATOR_MAX(8) 미만.
+DISCRIMINATOR_BY_SLOT = {
+    "A": 0, "B": 1, "C": 2, "D": 3, "E": 5, "F": 6, "G": 7, "MANUAL": 0,
+}
 DISCRIMINATOR_EVENT = 4
 
 ANTIBOT_SLOT_SALT_PUBLISH = "publish"
@@ -284,7 +340,7 @@ ANTIBOT_EVENT_JITTER = (600, 3000)   # 10~50분
 # CHAT (오전 시장 잡담)
 #   KST 09:00~12:05 창에서 텍스트 잡담을 하루 CHAT_DAILY_MIN~MAX 건 발행한다.
 #   본문에 표식을 넣지 않는다. "창 안에서 발행된 글 = CHAT" 으로 정의한다.
-#   정기 슬롯(08:23/12:47)·이벤트 슬롯(03:11/13:29/17:41/23:17)과 겹치지 않는다.
+#   정기 슬롯 판정 창(config.PUBLISH_SLOT_TIMES)·이벤트 슬롯(03:11/13:29/17:41/23:17)과 겹치지 않는다.
 #   기본 비활성. Variables CHAT_ENABLED=true 로 켠다.
 # ---------------------------------------------------------------------------
 CHAT_ENABLED = os.environ.get(
@@ -306,13 +362,16 @@ CHAT_WEEKEND_MIN = int(os.environ.get("CHAT_WEEKEND_MIN", "2"))
 CHAT_WEEKEND_MAX = int(os.environ.get("CHAT_WEEKEND_MAX", "3"))
 # v1.2.0: 질문으로 닫는 비율(%). 나머지는 질문 없이 닫는다.
 # 3시간에 6~8건이 전부 질문으로 끝나면 같은 구조가 반복된다.
-CHAT_QUESTION_PCT = 55
+# v1.3.0: 55 → 45. 나머지는 단정·여운·혼잣말 마무리로 나눈다(chat_plan.closing_for).
+CHAT_QUESTION_PCT = 45
 CHAT_MIN_GAP_MIN = 15          # 직전 게시물(종류 무관)과 최소 간격(분)
 # 간격이 모자라면 버리지 않고 이 한도 안에서 기다렸다 발행한다.
 # 트리거 간격(19~23분)이 cron 지연·지터와 겹치면 간격 미달이 자주 난다.
 # 버리면 일일 목표를 못 채운다(전수 테스트 시뮬레이션에서 확인, 2026-09-19).
 CHAT_MAX_GAP_WAIT_SEC = 600
-CHAT_JITTER = (30, 240)        # 발행 전 랜덤 지연(초)
+# 발행 전 랜덤 지연(초). v1.3.0: 30~240 → 30~540. 트리거 간격(최소 19분) 안에서
+# 발행 시각이 트리거 시각 근처에 몰리지 않게 한다. chat.yml timeout 25분 이내.
+CHAT_JITTER = (30, 540)
 CHAT_TEXT_MAX_LEN = 200
 CHAT_RECENT_FOR_DEDUP = 12
 CHAT_SALT = "chat"
@@ -386,11 +445,22 @@ REPLY_LEADS: tuple[str, ...] = (
     "작업물은 여기 모아두고 있습니다.",
     "매일 조금씩 쌓아가는 곳입니다.",
 )
-# 길이 6: CLOSING_PATTERN(5) 과 서로소 — 첫 문구와 마무리 방식이 고정 짝이 되지 않는다.
+# 길이 6: CLOSING_PATTERN(7)·REPLY_LAYOUTS(5) 와 서로소 — 문구·배치·마무리가 고정 짝이 되지 않는다.
 
-# v1.2.0: 정기·이벤트 글 마무리 패턴(Q=질문, S=질문 없이). run_index % 길이로 고른다.
-# 길이 5 는 로테이션 길이 8 과 서로소라 기둥과 마무리가 고르게 섞인다. 질문 60%.
-CLOSING_PATTERN: tuple[str, ...] = ("Q", "S", "Q", "Q", "S")
+# v1.3.0: 링크 줄 배치 5종. 링크 두 개(YouTube·X)는 항상 포함한다(유입 목적 유지).
+#   {lead} 문구, {yt} YouTube URL, {x} X URL.
+REPLY_LAYOUTS: tuple[str, ...] = (
+    "{lead}\nYouTube: {yt}\nX: {x}",
+    "{lead}\n\n유튜브 {yt}\nX {x}",
+    "{lead}\n{yt}\n{x}",
+    "{lead}\n유튜브는 여기 {yt}\nX는 여기 {x}",
+    "{lead}\n\nYouTube {yt}\nX {x}",
+)
+
+# 정기·이벤트 글 마무리 패턴. run_index % 길이로 고른다.
+#   v1.3.0: Q=질문, S=단정, T=여운, A=혼잣말. 길이 7 은 로테이션(8)·리플 문구(6)와 서로소.
+#   질문 3/7 ≈ 43% (v1.2.0 60%).
+CLOSING_PATTERN: tuple[str, ...] = ("Q", "S", "T", "Q", "A", "S", "Q")
 
 # 홍보형 1 : 관찰형 3 비율. day_of_year % PROMO_CYCLE == 0 이면 홍보형.
 PROMO_CYCLE = 4
@@ -411,3 +481,33 @@ FORBIDDEN_BAIT_TERMS = (
     "댓글 남기면", "좋아요 누르면", "동의하면 댓글",
     "1번 2번 골라", "팔로우하면", "선착순",
 )
+
+# v1.3.0: AI 가 쓴 티가 나는 표현. 이전에는 프롬프트 지시만 있었고 린트가 없었다
+#   (정적 폴백에 "여러분" 이 들어 있었다). 원글·답글·폴백 모두 lint() 로 막는다.
+FORBIDDEN_AI_TELL_TERMS = (
+    "여러분", "것은 어떨까요", "살펴보겠습니다", "알아보겠습니다", "—",
+)
+
+# ---------------------------------------------------------------------------
+# 문체 축 (v1.3.0)
+#   글마다 길이·줄바꿈을 날짜·실행 시드로 뽑아 '# 이번 글 형식' 블록으로 주입한다.
+#   (이름, 가중치). 가중치 합은 자유.
+# ---------------------------------------------------------------------------
+STYLE_LENGTH_WEIGHTS: tuple[tuple[str, int], ...] = (
+    ("one", 25), ("short", 45), ("normal", 30),
+)
+CHAT_STYLE_LENGTH_WEIGHTS: tuple[tuple[str, int], ...] = (
+    ("one", 35), ("short", 50), ("normal", 15),
+)
+STYLE_LAYOUT_WEIGHTS: tuple[tuple[str, int], ...] = (
+    ("lines", 45), ("block", 30), ("mixed", 25),
+)
+# 반복 린트: 최근 글 몇 건과 비교할지. 첫 어절이 같거나, 끝맺음이 이 중 2건 이상과 같으면 재생성.
+REPETITION_LOOKBACK = 5
+REPETITION_ENDING_MAX = 2   # 최근 5건 중 3건 이상 같은 끝맺음이면 재생성
+
+# 답글 문체 축: (이름, 가중치)
+REPLY_LENGTH_WEIGHTS: tuple[tuple[str, int], ...] = (
+    ("tiny", 30), ("one", 45), ("two", 25),
+)
+REPLY_ASK_PCT = 35   # 되묻기를 허용하는 비율(%). 나머지는 되묻지 않는다.

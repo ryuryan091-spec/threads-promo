@@ -21,12 +21,14 @@ v1.1.0 변경 (CHAT 도입에 따른 빈도 확대)
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import os
 import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import antibot, config, content, notifier, reply_engine, watchdog
@@ -40,7 +42,7 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.2.0"   # v1.2.0: 제3자 간 대화 제외, 컨테이너 대기 실패 건별 처리, 예약 실행 캡
+VERSION = "1.3.0"   # v1.3.0: 캡 Variable, 예약 시작 지연, 셀프 이어쓰기
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -149,11 +151,13 @@ def sweep(
     dry_run: bool,
     now: dt.datetime | None = None,
     budget_sec: float | None = None,
+    allow_followup: bool = False,
 ) -> int:
     """최근 글의 댓글에 답글한다. 발행(또는 DRY_RUN 계획) 건수를 돌려준다.
 
     budget_sec: 이 스윕에 쓸 수 있는 시간(초). 다음 답글의 최악 소요가 남은 시간을
     넘으면 새 답글을 시작하지 않는다(v1.2.0, job timeout 방지). None 이면 제한 없음.
+    allow_followup: v1.3.0 셀프 이어쓰기 수행 여부. 반환 건수에는 포함하지 않는다.
     """
     started = time.monotonic()
     now = now or dt.datetime.now(dt.UTC)
@@ -195,6 +199,41 @@ def sweep(
     ledger = build_ledger(conversations, my_post_ids, today)
     log.info("오늘 내 답글 %d건 (일일 캡 %d)", ledger.used_today, config.REPLY_DAILY_CAP)
 
+    sent = _reply_to_comments(
+        client, settings, conversations, my_post_ids, post_texts, ledger, quota,
+        per_run_cap=per_run_cap, dry_run=dry_run, started=started, budget_sec=budget_sec,
+    )
+
+    if allow_followup and config.FOLLOWUP_ENABLED and len(conversations) < len(my_post_ids):
+        # 조회 실패한 대화에 오늘 이어쓰기가 있으면 일일 상한 집계가 틀어진다. 보수적으로 쉰다.
+        log.warning("대화 조회 실패 %d건 — 이번 실행은 이어쓰기를 하지 않습니다.",
+                    len(my_post_ids) - len(conversations))
+    elif allow_followup and config.FOLLOWUP_ENABLED:
+        _followups(
+            client, settings, posts, conversations, now,
+            dry_run=dry_run, started=started, budget_sec=budget_sec,
+            reply_remaining=quota.remaining - sent,
+        )
+
+    log.info("스윕 완료 — %s %d건", "계획" if dry_run else "발행", sent)
+    return sent
+
+
+def _reply_to_comments(
+    client: ThreadsClient,
+    settings: Settings,
+    conversations: dict[str, list[Comment]],
+    my_post_ids: set[str],
+    post_texts: dict[str, str],
+    ledger: ReplyLedger,
+    quota: Any,
+    *,
+    per_run_cap: int,
+    dry_run: bool,
+    started: float,
+    budget_sec: float | None,
+) -> int:
+    """댓글 답글 본체(v1.2.0 sweep 후반부를 분리). 발행(또는 계획) 건수."""
     cap = min(config.REPLY_DAILY_CAP - ledger.used_today, per_run_cap, quota.remaining)
     if cap <= 0:
         log.info("일일 캡 도달 — 이번 실행은 답글하지 않습니다.")
@@ -295,8 +334,130 @@ def sweep(
                 f"[Threads Reply] 발행 실패 id={decision.comment.id}\n{exc}",
             )
 
-    log.info("스윕 완료 — %s %d건", "계획" if dry_run else "발행", sent)
+    log.info("댓글 답글 — %s %d건", "계획" if dry_run else "발행", sent)
     return sent
+# ---------------------------------------------------------------------------
+# 셀프 이어쓰기 (v1.3.0)
+# ---------------------------------------------------------------------------
+
+
+def _has_link(text: str) -> bool:
+    return "http://" in text or "https://" in text
+
+
+def is_followup_target(post_id: str) -> bool:
+    """게시물 ID 해시로 대상 여부를 정한다(무상태·멱등)."""
+    digest = hashlib.sha256(f"{post_id}::followup".encode()).hexdigest()[:8]
+    return int(digest, 16) % 100 < config.FOLLOWUP_PCT
+
+
+def _my_followups(post_id: str, comments: list[Comment]) -> list[Comment]:
+    """원글 직속 내 답글 중 링크 셀프 리플라이가 아닌 것 = 이어쓰기."""
+    return [
+        c for c in comments
+        if c.owned_by_me and c.replied_to_id == post_id and not _has_link(c.text)
+    ]
+
+
+def followup_count_today(conversations: dict[str, list[Comment]], today: dt.date) -> int:
+    count = 0
+    for post_id, comments in conversations.items():
+        for c in _my_followups(post_id, comments):
+            parsed = watchdog.parse_threads_timestamp(c.timestamp)
+            if parsed and parsed.astimezone(KST).date() == today:
+                count += 1
+    return count
+
+
+def followup_candidates(
+    posts: list[dict],
+    conversations: dict[str, list[Comment]],
+    now: dt.datetime,
+) -> list[tuple[str, str]]:
+    """(원글 ID, 원글 본문) 목록. 대상 비율·경과 시간·기존 이어쓰기로 거른다.
+
+    대화 조회에 실패한 글은 '이미 덧붙였는지' 판정 근거가 없으므로 제외한다.
+    """
+    result: list[tuple[str, str]] = []
+    for post in posts:
+        post_id = str(post.get("id", ""))
+        text = (post.get("text") or "").strip()
+        if not post_id or not text or post_id not in conversations:
+            continue
+        parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
+        if parsed is None:
+            continue
+        age = watchdog.hours_since(parsed, now)
+        if not config.FOLLOWUP_MIN_AGE_HOURS <= age <= config.FOLLOWUP_MAX_AGE_HOURS:
+            continue
+        if not is_followup_target(post_id):
+            continue
+        if _my_followups(post_id, conversations[post_id]):
+            continue
+        result.append((post_id, text))
+    return result
+
+
+def _followups(
+    client: ThreadsClient,
+    settings: Settings,
+    posts: list[dict],
+    conversations: dict[str, list[Comment]],
+    now: dt.datetime,
+    *,
+    dry_run: bool,
+    started: float,
+    budget_sec: float | None,
+    reply_remaining: int,
+) -> int:
+    """셀프 이어쓰기. 발행(또는 계획) 건수. 실패는 건별 처리."""
+    today = now.astimezone(KST).date()
+    used = followup_count_today(conversations, today)
+    room = min(config.FOLLOWUP_DAILY_CAP - used, config.FOLLOWUP_PER_RUN, reply_remaining)
+    if room <= 0:
+        log.info("이어쓰기 상한 — 오늘 %d건 (상한 %d)", used, config.FOLLOWUP_DAILY_CAP)
+        return 0
+
+    candidates = antibot.shuffled(followup_candidates(posts, conversations, now))
+    log.info("이어쓰기 후보 %d건 / 이번 실행 %d건", len(candidates), room)
+    done = 0
+    for post_id, post_text in candidates:
+        if done >= room:
+            break
+        if budget_sec is not None and not dry_run:
+            worst = (
+                config.ANTIBOT_REPLY_JITTER[1] + config.CONTAINER_POLL_MAX_SEC
+                + config.CONTAINER_WAIT_TEXT_SEC + config.REPLY_ITEM_MARGIN_SEC
+            )
+            if time.monotonic() - started + worst > budget_sec:
+                log.warning("스윕 시간 예산 부족 — 이어쓰기는 다음 실행")
+                break
+        text = reply_engine.compose_followup(
+            post_text, settings.claude_api_key, content.lint_chat
+        )
+        if not text:
+            log.info("이어쓰기 생략 post=%s (생성 실패)", post_id)
+            continue
+        if dry_run:
+            log.info("DRY_RUN 이어쓰기 post=%s\n  원글: %s\n  덧붙임: %s",
+                     post_id, post_text[:60], text)
+            done += 1
+            continue
+        antibot.jitter_sleep(*config.ANTIBOT_REPLY_JITTER, label="이어쓰기 전")
+        try:
+            reply_id = client.publish_self_reply(post_id, text)
+            log.info("이어쓰기 발행 완료 %s -> %s", post_id, reply_id)
+            done += 1
+        except (ThreadsApiError, ContainerNotReadyError) as exc:
+            if isinstance(exc, ThreadsApiError) and exc.is_blocked:
+                raise
+            log.error("이어쓰기 발행 실패 %s: %s", post_id, exc)
+            notifier.send(
+                settings.telegram_bot_token,
+                settings.telegram_chat_id,
+                f"[Threads Reply] 이어쓰기 실패 post={post_id}\n{exc}",
+            )
+    return done
 
 
 def run() -> int:
@@ -332,12 +493,21 @@ def run() -> int:
         log.info("사용자 ID 조회 완료 — @%s", username)
 
     client = ThreadsClient(user_id, token)
-    # v1.2.0: 일일 캡(20)을 실행당 상한으로 쓰면 답글 사이 지연(최대 150초 × 19)이
-    # reply.yml timeout(20분)을 넘는다. 예약 실행 전용 상한을 둔다.
+
+    # v1.3.0: 예약 실행은 시작 전 랜덤 지연. 답글이 매일 같은 슬롯 시각에 찍히지 않게 한다.
+    #   예산(REPLY_SWEEP_BUDGET_SEC)은 sweep 시작부터 잰다 — timeout 40분에 지연 10분을 더 잡았다.
+    if not event or event == "schedule":
+        antibot.jitter_sleep(
+            *config.REPLY_START_JITTER, label="답글 실행 시작", dry_run=settings.dry_run
+        )
+
+    # v1.2.0: 일일 캡을 실행당 상한으로 쓰면 답글 사이 지연이 timeout 을 넘는다.
+    # 예약 실행 전용 상한을 둔다.
     sweep(
         client, settings,
         per_run_cap=config.REPLY_SCHEDULED_RUN_CAP, dry_run=settings.dry_run,
         budget_sec=config.REPLY_SWEEP_BUDGET_SEC,
+        allow_followup=True,
     )
     return 0
 

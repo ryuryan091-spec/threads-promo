@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from . import ai_writer, chat_plan, config, content, watchdog
 
-VERSION = "1.2.0"   # v1.2.0: 이벤트 창 게시물 = STORY
+VERSION = "1.3.0"   # v1.3.0: 정기 슬롯 7개·판정 창을 config 에서 산출
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -39,12 +39,14 @@ USER_METRICS = ("views", "likes", "replies", "reposts", "quotes",
 #   v1.2.0: cron 지연을 반영해 넓힌다(12→35, 55→90). 좁으면 지연된 글이 판정불가로 빠져
 #   weighting 표본이 줄고, 이벤트 STORY 가 'STORY 발행됨'으로 인식되지 않아 같은 회차가
 #   두 번 나갈 수 있다(독립 리뷰 2026-09-26).
-#   경계: 정기 A 08:23+35=08:58 < CHAT 09:00, 정기 B 12:47+35=13:22 < 이벤트 13:29.
+#   v1.3.0: 정기 창 = 지터 최대 20분 + 여유 27분 = 47분 (config.PUBLISH_CLASSIFY_WINDOW_MIN).
+#   슬롯 표는 config.PUBLISH_SLOT_TIMES 하나에서 읽는다. 창 겹침은 테스트로 전수 검사한다.
 #   이벤트 = 지터 최대 50분 + cron 지연 여유 40분. 23:17 창은 자정을 넘긴다(분 계산 % 1440).
-PUBLISH_WINDOW_MIN = 35
+PUBLISH_WINDOW_MIN = config.PUBLISH_CLASSIFY_WINDOW_MIN
 EVENT_WINDOW_MIN = 90
 
-PUBLISH_SLOTS = {"08:23": "A", "12:47": "B", "20:31": "C"}
+# "HH:MM" -> 슬롯 이름. verify_repo 검사 8 이 publish.yml cron 과 대조한다.
+PUBLISH_SLOTS = {hhmm: slot for slot, hhmm in config.PUBLISH_SLOT_TIMES.items()}
 EVENT_SLOTS = ("03:11", "13:29", "17:41", "23:17")
 
 UNKNOWN = "판정불가"

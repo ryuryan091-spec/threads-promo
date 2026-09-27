@@ -23,8 +23,9 @@
 
 ```
 [GitHub Actions]
-   ├─ publish.yml   일 3회 트리거 → 1회만 실행 → 이미지+본문 발행 → 셀프리플라이(링크)
-   ├─ reply.yml     일 3회 트리거 → 1회만 실행 → 내 글 댓글에 답글
+   ├─ publish.yml   일 7회 트리거 → 1회만 실행(1~20분 지연) → 이미지+본문 발행 → 셀프리플라이(링크)
+   ├─ reply.yml     일 8회 트리거 → 전부 실행(0~10분 지연) → 댓글 답글 + 셀프 이어쓰기(선택)
+   ├─ chat.yml      오전 9회 트리거 → CHAT 잡담 + 답글 스윕
    ├─ verify_token.yml   수동. 토큰 검증 + USER_ID 조회
    ├─ auth_url.yml       수동. OAuth 인가 URL 생성 (예비)
    └─ bootstrap.yml      수동. OAuth 토큰 발급 (예비)
@@ -33,7 +34,8 @@
    config.py        상수·금칙어·상한
    env.py           환경변수 로딩·검증
    ai_writer.py     콘텐츠 기둥, Claude 호출, 프롬프트
-   content.py       기둥·소재 선택, 생성/폴백, 린트
+   content.py       기둥·소재 선택, 생성/폴백, 린트(금칙어·AI 티·반복)
+   style.py         글·답글 문체 축(길이·줄바꿈·되묻기), 반복 판정 (v1.3.0)
    reply_engine.py  댓글 판정, 답글 생성, 정형 문구
    antibot.py       슬롯 판정, 랜덤 지연, 상한
    threads_client.py  Threads API 래퍼
@@ -274,6 +276,33 @@ Secret 값과 일치하는 문자열이 자동 마스킹된 것입니다. `1`, `
 ### 즉시 중단
 Variables `CHAT_ENABLED=false` — 다음 트리거부터 발행 중단. 답글 스윕도 함께 멈춘다(reply.yml 은 계속).
 
+## 5-B. v1.3.0 자연스러운 작성·답글 확대·랜덤 발행
+
+### 반영 절차
+1. 코드 ZIP 반영 → 워크플로 파일 반영(publish / reply / chat / story / watchdog / golive_check)
+2. `python scripts/verify_repo.py` — 검사 1~10 이상 없음 확인
+3. **Threads Go-Live Check** 수동 실행 — C2 에 `REPLY_DAILY/AUTHOR/THREAD_CAP`, `FOLLOWUP_ENABLED` 표시 확인
+4. **Threads Publish** 수동 `dry_run` — 로그 `문체 길이=… 줄바꿈=… 마무리=…` 확인
+5. **Threads Chat** 수동 `dry_run` — 로그 `마무리=… 길이=… 줄바꿈=…` 확인
+6. (선택) Variables `FOLLOWUP_ENABLED=true` 후 **Threads Reply** 수동 `dry_run` — `DRY_RUN 이어쓰기` 로그로 문장 품질 확인 → 이상 없으면 유지
+
+### 로그 읽는 법
+| 로그 | 의미 |
+|---|---|
+| `생성문 린트 실패 … 첫 어절 반복` / `끝맺음 반복` | 최근 글과 시작·끝이 겹쳐 재생성. 정상 |
+| `반복 린트 — 마지막 시도라 채택` | 재생성해도 겹쳐 채택. 자주 보이면 `REPETITION_*` 완화 검토 |
+| `AI 티 표현 검출` | "여러분"·줄표 등. 재생성 |
+| `이어쓰기 후보 N건 / 이번 실행 1건` | 셀프 이어쓰기 대상(2~12시간 경과, 25%, 미작성) |
+| `대화 조회 실패 N건 — 이번 실행은 이어쓰기를 하지 않습니다` | 상한 집계 보호. 다음 실행에서 재시도 |
+| `오늘 정기 발행이 N분 뒤 예정` (story) | 이벤트 글이 곧 나갈 정기 글과 4시간 안에 붙어 보류 |
+
+### 즉시 되돌리기
+- 셀프 이어쓰기: `FOLLOWUP_ENABLED=false`
+- 답글 양: `REPLY_DAILY_CAP=20`, `REPLY_AUTHOR_DAILY_CAP=2`, `REPLY_THREAD_AUTHOR_CAP=3` (v1.2.0 값)
+- 발행 시각·문체: 코드 되돌림 필요(v1.2.0 ZIP 재반영)
+
+---
+
 ## 6. 설정 변경 가이드
 
 ### 6-1. 자주 바꾸는 값
@@ -314,6 +343,10 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 
 정각·반각(`00`, `30`)은 피하십시오. 혼잡 시간대는 실제 실행률이 떨어집니다.
 
+v1.3.0: 정기 슬롯 시각은 `config.PUBLISH_SLOT_TIMES` 한 곳이 기준입니다. 바꿀 때는 `publish.yml` cron·case 를 함께 고치고
+`python scripts/verify_repo.py` 로 검사 5(cron↔case)·8(cron↔슬롯 표)·10(판정 창 겹침)을 통과시키십시오.
+판정 창(슬롯 시각 + 47분)이 CHAT 창(09:00~12:05)·이벤트 창(03:11/13:29/17:41/23:17 + 90분)과 겹치면 기둥 복원이 틀어집니다.
+
 ---
 
 ## 7. 비용 관리
@@ -332,9 +365,11 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | 호출 | 빈도 | 통제 |
 |---|---|---|
 | 발행 본문 | 일 1~2회 | `AI_ENABLED=false`로 차단 |
-| 답글 | 댓글 수만큼, 최대 20 | `REPLY_DAILY_CAP` |
+| 답글 | 댓글 수만큼, 최대 40 (v1.3.0) | `REPLY_DAILY_CAP` |
+| 셀프 이어쓰기 | 일 최대 3 (켠 경우) | `FOLLOWUP_ENABLED` / `FOLLOWUP_DAILY_CAP` |
 
-댓글이 적은 초기에는 일 1~3회로 미미합니다. 답글이 상한까지 차면 일 20회가 실질 비용 구간입니다.
+댓글이 적은 초기에는 일 1~3회로 미미합니다. 답글 호출 수는 상한이 아니라 들어오는 댓글 수로 정해집니다.
+반복 린트(v1.3.0)로 첫 생성이 최근 글과 시작·끝맺음이 겹치면 1회 재생성합니다(글당 최대 +1회).
 
 **Private 전환 시** Actions 분이 과금 대상이 되고 GitHub Pages도 유료 플랜이 필요할 수 있습니다. 전환 전 재검토하십시오.
 
@@ -395,7 +430,13 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |
 | `CHAT_WEEKEND_MIN` / `CHAT_WEEKEND_MAX` | `2` / `3` | v1.2.0 토·일 CHAT 목표 건수. `0`/`0` 이면 주말 CHAT 미발행 |
-| `REPLY_SCHEDULED_RUN_CAP` | `6` | v1.2.0 reply.yml(예약) 실행당 답글 상한. timeout 20분 안에 들어오는 값 |
+| `REPLY_SCHEDULED_RUN_CAP` | `6` | v1.2.0 reply.yml(예약) 실행당 답글 상한. 스윕 예산 25분 안에 들어오는 값 |
+| `REPLY_DAILY_CAP` | `40` | v1.3.0 하루 댓글 답글 상한(상수 → Variable). API 한도 1,000 |
+| `REPLY_AUTHOR_DAILY_CAP` | `3` | v1.3.0 같은 사람 하루 상한 |
+| `REPLY_THREAD_AUTHOR_CAP` | `4` | v1.3.0 한 스레드·같은 사람 누적 상한(핑퐁 방지) |
+| `FOLLOWUP_ENABLED` | `false` | v1.3.0 셀프 이어쓰기. dry_run 로그(`DRY_RUN 이어쓰기`) 확인 후 `true` |
+| `FOLLOWUP_PCT` | `25` | v1.3.0 이어쓰기 대상 비율(게시물 ID 해시) |
+| `FOLLOWUP_DAILY_CAP` | `3` | v1.3.0 이어쓰기 하루 상한. 실행당 1건 |
 | `TOKEN_ISSUED_AT` | — | 토큰 최초 발급일 `YYYY-MM-DD` |
 | `TOKEN_REFRESHED_AT` (Secret) | — | 마지막 갱신일. 주간 워크플로우가 자동 기록 |
 | `REFRESH_ON_EVERY_RUN` | `false` | **매 실행 갱신 금지.** 갱신 워크플로우만 `true` |
@@ -430,3 +471,5 @@ cron 문자열과 `Resolve slot` 스텝의 `case` 분기가 **정확히 일치**
 | 발행 시각 최적화 | 답글 반응 데이터 축적 후 조정 |
 | 성과 측정 | `threads_manage_insights` scope 미도입 |
 | 이미지-본문 매칭 | 현재 날짜 기반 순환. 내용 연동 안 됨 |
+| 60일 비활성 | Public 레포는 60일간 레포 활동이 없으면 예약 워크플로가 자동 비활성화(GitHub 정책). 커밋이 60일 이상 없으면 Actions 탭에서 재활성화 확인 |
+| 인사이트 replies 지표 | 셀프 이어쓰기가 원글 replies 에 포함되는지 미확인. 포함된다면 대상 글(25%)에 +1 잡음 |

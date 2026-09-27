@@ -96,7 +96,7 @@ def _comment(cid: str, text: str, *, user="u1", mine=False, parent="post1") -> d
 def _run_reply(fake: FakeReplyApi, *, ai_text: str | None = "답글 본문입니다") -> int:
     from src import run_reply
 
-    def gen(api_key, post_text, comment_text):
+    def gen(api_key, post_text, comment_text, parent_reply_text="", **_kw):  # v1.3.0: style_block
         if ai_text is None:
             raise RuntimeError("생성 실패")
         return ai_text

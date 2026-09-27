@@ -33,6 +33,7 @@ from . import (
     content,
     mood_source,
     run_reply,
+    style,
     watchdog,
 )
 from .env import MissingEnvError, Settings, load_settings
@@ -44,7 +45,7 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.1.0"   # v1.1.0: 비활성 종료 복원, 예약 DRY_RUN 비용 차단, 소재·마무리 배정
+VERSION = "1.2.0"   # v1.2.0: 문체 축·반복 린트(연성)
 KST = ZoneInfo("Asia/Seoul")
 PILLAR_KEY = "CHAT"
 POSTS_TO_SCAN = 25   # 오늘 게시물(정기 1 + 셀프리플 제외 + CHAT ≤9 + 이벤트) 을 덮는 크기
@@ -105,21 +106,37 @@ def generate_chat(
     recent_texts: list[str],
     mood: mood_source.Mood,
     closing: str = ai_writer.CLOSING_QUESTION,
+    style_block: str = "",
 ) -> str:
-    """생성 + lint_chat. 재시도 소진 시 빈 문자열."""
+    """생성 + lint_chat. 재시도 소진 시 빈 문자열.
+
+    v1.2.0: 반복 린트(연성). 마지막 시도에서 반복만 걸리면 채택한다.
+    반복만 걸린 앞선 후보는 보관했다가, 이후 시도가 하드 린트로 실패하면 쓴다.
+    """
+    repeated = ""
     for attempt in range(1, config.AI_MAX_RETRY + 1):
         try:
             text = ai_writer.generate(
                 api_key, PILLAR_KEY, seed, recent_texts,
                 facts_block=mood.to_prompt_block(), closing=closing,
+                style_block=style_block,
             )
             content.lint_chat(text)
+            try:
+                content.check_repetition(text, recent_texts)
+            except content.RepetitionError as exc:
+                if attempt < config.AI_MAX_RETRY:
+                    repeated = repeated or text
+                    raise
+                log.warning("CHAT 반복 린트 — 마지막 시도라 채택: %s", exc)
             return text
         except content.ContentPolicyError as exc:
             log.warning("CHAT 린트 실패 (%d/%d): %s", attempt, config.AI_MAX_RETRY, exc)
         except ai_writer.AiWriterError as exc:
             log.warning("CHAT 생성 실패 (%d/%d): %s", attempt, config.AI_MAX_RETRY, exc)
-    return ""
+    if repeated:
+        log.warning("CHAT 재시도 소진 — 반복만 걸렸던 후보를 채택합니다.")
+    return repeated
 
 
 _RUN_STARTED = time.monotonic()
@@ -204,12 +221,15 @@ def run() -> int:
     recent_texts = client.get_recent_texts(config.CHAT_RECENT_FOR_DEDUP)
     seed = chat_plan.seed_for(today, trigger, ai_writer.CHAT_PILLAR.seeds)
     closing = chat_plan.closing_for(today, trigger)
+    chat_style = style.pick_post_style(chat_plan.style_key(today, trigger), chat=True)
 
-    text = generate_chat(settings.claude_api_key, seed, recent_texts, mood, closing)
+    text = generate_chat(
+        settings.claude_api_key, seed, recent_texts, mood, closing, chat_style.block()
+    )
     log.info(
-        "기둥=CHAT 소스=%s(우선=%s) 테마=%s 소재=%s 마무리=%s 생성=%s",
+        "기둥=CHAT 소스=%s(우선=%s) 테마=%s 소재=%s 마무리=%s 길이=%s 줄바꿈=%s 생성=%s",
         mood.source, first, ",".join(mood.themes) or "-", seed, closing,
-        "성공" if text else "실패",
+        chat_style.length, chat_style.layout, "성공" if text else "실패",
     )
 
     if not text:
@@ -224,7 +244,9 @@ def run() -> int:
 
     if gap_wait:
         log.info("직전 게시물과 간격 확보를 위해 최소 %d초 대기", gap_wait)
-    antibot.jitter_sleep(*chat_plan.jitter_range(gap_wait), label="CHAT 발행 전")
+    antibot.jitter_sleep(
+        *chat_plan.jitter_range(gap_wait, dt.datetime.now(dt.UTC)), label="CHAT 발행 전"
+    )
 
     # 지터 도중 다른 발행이 나갔거나 창을 벗어났을 수 있다. 직전에 간격까지 포함해 다시 확인한다.
     blocked_again, _ = _check_gate(client, today, trigger, manual)

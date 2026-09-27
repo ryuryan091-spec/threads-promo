@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from . import ai_writer, config
+from . import ai_writer, config, style
 
-VERSION = "1.2.0"   # v1.2.0: 기둥 강제 인자, 마무리 패턴, 링크 리플 문구 회전
+VERSION = "1.3.0"   # v1.3.0: 문체 축, 마무리 4종, 반복·AI티 린트, 링크 리플 배치 5종, 폴백 정리
 
 _log = logging.getLogger(__name__)
 
@@ -34,7 +34,8 @@ class ContentPolicyError(ValueError):
 # 텍스트 풀
 #  - 시장 수치는 넣지 않는다. 데이터 소스가 없는 상태에서 숫자를 쓰면 허위가 된다.
 #  - 종목/목표가/매매권유 표현을 넣지 않는다.
-#  - 방송형 문장 대신 대화의 첫 문장이 되도록 질문으로 닫는다.
+#  - 방송형 문장 대신 대화의 첫 문장이 되도록 쓴다.
+#  - v1.3.0: "여러분"(AI 티 금지어) 제거, 전부 질문 종결이던 것을 일부 단정으로 바꿨다.
 # ---------------------------------------------------------------------------
 
 PROMO_TEXTS: tuple[str, ...] = (
@@ -44,7 +45,7 @@ PROMO_TEXTS: tuple[str, ...] = (
 
     "시장 데이터를 캐릭터 대결로 옮기는 작업을 계속하고 있습니다.\n"
     "쓰다 보니 지표보다 서사가 먼저 기억에 남습니다.\n"
-    "여러분은 시장을 어떤 방식으로 기록하시나요?",
+    "당분간은 이 방식으로 계속 남겨볼 생각입니다.",
 
     "장이 흔들린 날의 기록을 만화로 남기고 있습니다.\n"
     "차트는 지나가면 잊히는데 장면은 남습니다.\n"
@@ -57,16 +58,14 @@ OBSERVATION_TEXTS: tuple[str, ...] = (
     "이런 날 뭘 먼저 확인하시나요?",
 
     "같은 데이터를 봐도 사람마다 다른 결론이 나옵니다.\n"
-    "결론이 갈리는 지점은 대개 데이터가 아니라 전제였습니다.\n"
-    "본인 전제를 어떻게 점검하시는지 궁금합니다.",
+    "결론이 갈리는 지점은 대개 데이터가 아니라 전제였습니다.",
 
     "자동화를 붙일수록 판단이 편해질 줄 알았는데 반대였습니다.\n"
     "볼 게 늘어나니 뭘 안 볼지가 더 어려워졌습니다.\n"
     "정보량 줄이는 본인만의 기준이 있으신가요?",
 
-    "장 끝나고 그날 판단을 다시 읽어보면 절반은 민망합니다.\n"
-    "그래도 안 적어두면 같은 실수를 반복하더군요.\n"
-    "기록 남기시는 분들은 어떤 형식으로 쓰시나요?",
+    "장 끝나고 그날 판단을 다시 읽어보면 민망한 게 꽤 있습니다.\n"
+    "그래도 안 적어두면 같은 실수를 반복하게 되네요.",
 
     "숫자보다 그날의 분위기가 먼저 기억나는 날이 있습니다.\n"
     "그게 기억에는 좋은데 판단에는 나쁩니다.\n"
@@ -169,20 +168,39 @@ def build_reply_text(idx: int = 0) -> str:
     """링크는 본문이 아니라 셀프 리플라이에 배치한다.
 
     v1.2.0: 첫 줄을 REPLY_LEADS 에서 idx 로 회전한다(동일 문구 반복 방지).
-    링크 줄 형식은 고정.
+    v1.3.0: 링크 줄 배치도 REPLY_LAYOUTS 에서 회전한다. 길이 6·5 는 서로소라
+    문구×배치 30가지가 고르게 돈다. 두 링크는 항상 들어간다.
     """
     lead = config.REPLY_LEADS[idx % len(config.REPLY_LEADS)]
-    return (
-        f"{lead}\n"
-        f"YouTube: {config.YOUTUBE_URL}\n"
-        f"X: {config.X_URL}"
-    )
+    layout = config.REPLY_LAYOUTS[idx % len(config.REPLY_LAYOUTS)]
+    return layout.format(lead=lead, yt=config.YOUTUBE_URL, x=config.X_URL)
+
+
+_CLOSING_BY_MARK = {
+    "Q": ai_writer.CLOSING_QUESTION,
+    "S": ai_writer.CLOSING_STATEMENT,
+    "T": ai_writer.CLOSING_TRAIL,
+    "A": ai_writer.CLOSING_ASIDE,
+}
 
 
 def closing_for(idx: int) -> str:
-    """정기·이벤트 글 마무리. CLOSING_PATTERN 을 run_index 로 순환한다."""
+    """정기·이벤트 글 마무리. CLOSING_PATTERN 을 run_index 로 순환한다.
+
+    알 수 없는 표식은 질문(기존 동작)으로 본다.
+    """
     mark = config.CLOSING_PATTERN[idx % len(config.CLOSING_PATTERN)]
-    return ai_writer.CLOSING_STATEMENT if mark == "S" else ai_writer.CLOSING_QUESTION
+    return _CLOSING_BY_MARK.get(mark, ai_writer.CLOSING_QUESTION)
+
+
+class RepetitionError(ContentPolicyError):
+    """최근 글과 시작·끝맺음이 반복된다(v1.3.0). 마지막 시도에서는 경고만 남긴다."""
+
+
+def check_repetition(text: str, recent_texts: list[str]) -> None:
+    issue = style.repetition_issue(text, recent_texts)
+    if issue:
+        raise RepetitionError(issue)
 
 
 def lint(text: str) -> None:
@@ -199,6 +217,10 @@ def lint(text: str) -> None:
     hit_bait = [t for t in config.FORBIDDEN_BAIT_TERMS if t in text]
     if hit_bait:
         raise ContentPolicyError(f"인게이지먼트 베이트 표현 검출: {hit_bait}")
+
+    hit_tell = [t for t in config.FORBIDDEN_AI_TELL_TERMS if t in text]
+    if hit_tell:
+        raise ContentPolicyError(f"AI 티 표현 검출: {hit_tell}")
 
 
 _DIGIT = re.compile(r"[0-9０-９]")
@@ -292,17 +314,31 @@ def _generate_with_ai(
     recent_texts: list[str],
     facts_block: str = "",
     closing: str = ai_writer.CLOSING_QUESTION,
+    style_block: str = "",
 ) -> str:
-    """AI 생성 + 린트. 린트 실패 시 재시도. 모두 실패하면 예외."""
+    """AI 생성 + 린트. 린트 실패 시 재시도. 모두 실패하면 예외.
+
+    v1.3.0: 반복 린트는 연성이다. 마지막 시도에서 반복만 걸리면 경고 후 채택한다.
+    반복 때문에 정적 폴백(고정 문구)으로 떨어지는 편이 더 기계적이기 때문이다.
+    """
     last_error: Exception | None = None
+    # 반복만 걸린 후보. 이후 시도가 하드 린트로 실패하면 이 후보를 쓴다(폴백보다 낫다).
+    repeated: str = ""
 
     for attempt in range(1, config.AI_MAX_RETRY + 1):
         try:
             text = ai_writer.generate(
                 api_key, pillar_key, seed, recent_texts,
-                facts_block=facts_block, closing=closing,
+                facts_block=facts_block, closing=closing, style_block=style_block,
             )
             lint(text)
+            try:
+                check_repetition(text, recent_texts)
+            except RepetitionError as exc:
+                if attempt < config.AI_MAX_RETRY:
+                    repeated = repeated or text
+                    raise
+                _log.warning("반복 린트 — 마지막 시도라 채택: %s", exc)
             return text
         except ContentPolicyError as exc:
             last_error = exc
@@ -313,6 +349,9 @@ def _generate_with_ai(
             _log.warning("생성 실패 (%d/%d): %s",
                          attempt, config.AI_MAX_RETRY, exc)
 
+    if repeated:
+        _log.warning("재시도 소진 — 반복만 걸렸던 후보를 채택합니다.")
+        return repeated
     raise ai_writer.AiWriterError(f"재시도 소진: {last_error}")
 
 
@@ -341,6 +380,8 @@ def build_plan(
     pillar_key = pillar or ai_writer.pick_pillar(idx)
     seed = ai_writer.pick_seed(pillar_key, idx)
     kind = PostKind.PROMO if pillar_key == "PROMO" else PostKind.OBSERVATION
+    # v1.3.0: 문체 축. 날짜+구분자 키라 같은 실행 재시도는 같은 형식(멱등).
+    post_style = style.pick_post_style(f"{today.isoformat()}::{discriminator}")
 
     source = "static"
     text = ""
@@ -355,9 +396,13 @@ def build_plan(
             evidence = {"STORY": episode_block}.get(pillar_key, "")
             text = _generate_with_ai(
                 claude_api_key, pillar_key, seed, recent_texts or [], evidence,
-                closing_for(idx),
+                closing_for(idx), post_style.block(),
             )
             source = "ai"
+            _log.info(
+                "문체 길이=%s 줄바꿈=%s 마무리=%s",
+                post_style.length, post_style.layout, closing_for(idx),
+            )
         except ai_writer.AiWriterError as exc:
             _log.warning("AI 생성 포기 — 정적 텍스트로 폴백: %s", exc)
 

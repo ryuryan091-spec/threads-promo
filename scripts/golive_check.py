@@ -50,7 +50,7 @@ from src import (  # noqa: E402
 from src.redact import redact  # noqa: E402
 from src.threads_client import ThreadsApiError, ThreadsClient, fetch_user_id  # noqa: E402
 
-VERSION = "1.1.0"   # v1.1.0: AUTO 로테이션 점검
+VERSION = "1.2.0"   # v1.2.0: 답글 캡·셀프 이어쓰기 점검
 KST = ZoneInfo("Asia/Seoul")
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
@@ -125,6 +125,14 @@ def check_variables(r: Report) -> None:
           else FAIL, f"{config.CHAT_SOURCE_MODE!r}")
 
     r.add("C2", "REPLY_ENABLED", OK if config.REPLY_ENABLED else WARN, f"{config.REPLY_ENABLED}")
+    # v1.2.0: 답글 캡 Variable. API 한도(24시간 1,000건) 안인지, 0 이하로 막혀 있지 않은지.
+    caps = (config.REPLY_DAILY_CAP, config.REPLY_AUTHOR_DAILY_CAP, config.REPLY_THREAD_AUTHOR_CAP)
+    caps_bad = min(caps) <= 0 or config.REPLY_DAILY_CAP > config.DAILY_REPLY_QUOTA
+    r.add("C2", "REPLY_DAILY/AUTHOR/THREAD_CAP", FAIL if caps_bad else OK,
+          f"일 {caps[0]} · 저자 {caps[1]} · 스레드 {caps[2]}")
+    fu_bad = not 0 <= config.FOLLOWUP_PCT <= 100 or config.FOLLOWUP_DAILY_CAP < 0
+    r.add("C2", "FOLLOWUP_ENABLED", FAIL if fu_bad else OK,
+          f"{config.FOLLOWUP_ENABLED} (비율 {config.FOLLOWUP_PCT}% · 일 {config.FOLLOWUP_DAILY_CAP}건)")
     r.add("C2", "EVENT_STORY_ENABLED", OK, f"{config.EVENT_STORY_ENABLED} (선택 기능)")
     r.add("C2", "ADAPTIVE_WEIGHTS_ENABLED", OK,
           f"{config.ADAPTIVE_WEIGHTS_ENABLED} (30일 데이터 이후 권장)")

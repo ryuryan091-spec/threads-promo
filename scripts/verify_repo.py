@@ -27,11 +27,11 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.3.0"   # v1.3.0: DRY_RUN 식·슬롯 목록·정기/이벤트 cron 대조 검사
+VERSION = "1.4.0"   # v1.4.0: style 모듈, 판정 창 겹침 검사(10)
 
 REQUIRED_MODULES = [
     "config", "env", "ai_writer", "antibot", "chat_plan", "content", "facts",
-    "main", "mood_source", "notifier", "notion_source", "redact", "reply_engine",
+    "main", "mood_source", "notifier", "notion_source", "redact", "reply_engine", "style",
     "insights", "run_chat", "run_insights", "run_refresh", "run_reply", "run_story",
     "run_watchdog", "run_weighting", "threads_client", "weighting",
     "token_manager", "watchdog",
@@ -362,6 +362,43 @@ def check_chat_env_consistency() -> int:
     return failed
 
 
+def _window_minutes(start: str, length: int) -> set[int]:
+    base = int(start[:2]) * 60 + int(start[3:])
+    return {(base + m) % 1440 for m in range(length + 1)}
+
+
+def check_classify_windows() -> int:
+    """정기·이벤트·CHAT 판정 창이 서로 겹치지 않는지.
+
+    겹치면 insights.restore_pillar 가 글의 기둥을 틀리게 복원하고,
+    run_story 가 'STORY 발행됨'을 잘못 판정한다.
+    """
+    print("\n10. 판정 창 겹침 (정기 / 이벤트 / CHAT)")
+    from src import config, insights
+
+    chat_start = int(config.CHAT_WINDOW_START[:2]) * 60 + int(config.CHAT_WINDOW_START[3:])
+    chat_end = int(config.CHAT_WINDOW_END[:2]) * 60 + int(config.CHAT_WINDOW_END[3:])
+    chat = set(range(chat_start, chat_end))
+    windows: list[tuple[str, set[int]]] = []
+    for hhmm, slot in insights.PUBLISH_SLOTS.items():
+        windows.append((f"정기 {slot} {hhmm}", _window_minutes(hhmm, insights.PUBLISH_WINDOW_MIN)))
+    for hhmm in insights.EVENT_SLOTS:
+        windows.append((f"이벤트 {hhmm}", _window_minutes(hhmm, insights.EVENT_WINDOW_MIN)))
+
+    failed = 0
+    for i, (name_a, win_a) in enumerate(windows):
+        if win_a & chat:
+            _fail(f"{name_a} 창이 CHAT 창과 겹칩니다")
+            failed += 1
+        for name_b, win_b in windows[i + 1:]:
+            if win_a & win_b:
+                _fail(f"{name_a} 창과 {name_b} 창이 겹칩니다")
+                failed += 1
+    if not failed:
+        _ok(f"창 {len(windows)}개 + CHAT 창 — 겹침 없음")
+    return failed
+
+
 def main() -> int:
     print(f"[VerifyRepo] v{VERSION}")
     print(f"경로: {REPO_ROOT}")
@@ -376,6 +413,7 @@ def main() -> int:
     total += check_dry_run_expr()
     total += check_slot_constants()
     total += check_chat_env_consistency()
+    total += check_classify_windows()
 
     print("\n" + "=" * 52)
     if total:

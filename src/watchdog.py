@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from . import config
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"   # v1.2.0: 슬롯 공백 임계를 config 슬롯 표·지터에서 산출
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +34,15 @@ log = logging.getLogger(__name__)
 #
 # 따라서 임계값은 고정하지 않고 슬롯 배치와 휴식일 설정에서 산출한다.
 # ---------------------------------------------------------------------------
-SLOT_SPREAD_MAX_GAP_HOURS = 36.2   # 08:23 -> 다음날 20:31
-JITTER_MARGIN_HOURS = 0.5          # 발행 전 랜덤 지연 최대 8분 + 여유
+def _slot_spread_hours() -> float:
+    """가장 이른 슬롯 → 다음날 가장 늦은 슬롯 간격(시간). v1.3.0: 07:14 → 21:43 = 38.48h."""
+    marks = [int(t[:2]) * 60 + int(t[3:]) for t in config.PUBLISH_SLOT_TIMES.values()]
+    return round((24 * 60 + max(marks) - min(marks)) / 60, 2)
+
+
+SLOT_SPREAD_MAX_GAP_HOURS = _slot_spread_hours()
+# 발행 전 랜덤 지연 최대 + 여유 12분. v1.3.0: 지연 최대 20분 → 0.53h (이전 8분 → 0.5h).
+JITTER_MARGIN_HOURS = round(config.ANTIBOT_PUBLISH_JITTER[1] / 3600 + 0.2, 2)
 BASE_STALE_MARGIN_HOURS = 2.0      # 실행 지연·API 지연 흡수
 
 REPLY_STALE_HOURS = 72      # 답글은 대상이 없으면 안 나가므로 넉넉히

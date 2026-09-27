@@ -52,7 +52,7 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.2.0"   # v1.2.0: 이벤트 기둥 STORY 강제, 당첨 슬롯 기반 차단, 가변 감지 창
+VERSION = "1.3.0"   # v1.3.0: 곧 나갈 정기 글과의 최소 간격 게이트
 KST = ZoneInfo("Asia/Seoul")
 ASSETS_DIR = REPO_ROOT / "assets"
 # CHAT 도입 후 하루 게시물이 약 10건이다. 5건이면 정기 글이 보이지 않는다.
@@ -120,6 +120,27 @@ def _predicted_regular_pillar(today: dt.date) -> str | None:
     return ai_writer.pick_pillar(content.run_index(today, disc))
 
 
+def _minutes_to_regular_slot(today: dt.date, now: dt.datetime) -> float | None:
+    """오늘 당첨 정기 슬롯 cron 까지 남은 분. 이미 지났거나 휴식일이면 None.
+
+    v1.3.0: 정기 슬롯이 7개로 늘어 이벤트 cron 뒤 1.5~3시간 안에 정기 슬롯이 오는 날이 생겼다
+    (13:29→15:07, 17:41→19:53, 03:11→07:14). 게이트는 이미 나간 글만 보므로, 곧 나갈 정기 글과
+    EVENT_MIN_GAP_HOURS 안에 붙어 발행되는 것을 여기서 막는다.
+    """
+    if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
+        return None
+    slots = list(config.PUBLISH_SLOTS)
+    if not slots:
+        return None
+    slot = antibot.choose_slot(today, slots, config.ANTIBOT_SLOT_SALT_PUBLISH)
+    hhmm = config.PUBLISH_SLOT_TIMES.get(slot)
+    if not hhmm:
+        return None
+    slot_at = dt.datetime.combine(today, dt.time.fromisoformat(hhmm), tzinfo=KST)
+    remaining = (slot_at - now.astimezone(KST)).total_seconds() / 60
+    return remaining if remaining >= 0 else None
+
+
 def _story_published_today(posts: list[dict], now: dt.datetime) -> bool:
     """오늘(KST) 이미 STORY 로 복원되는 글이 나갔는지(수동·이벤트 포함, CHAT 제외)."""
     today = now.astimezone(KST).date()
@@ -166,6 +187,13 @@ def _gate(
         return "오늘 정기 발행(당첨 슬롯) 기둥이 STORY 입니다. 중복을 피해 건너뜁니다."
     if _story_published_today(posts, now):
         return "오늘 STORY 글이 이미 발행되었습니다."
+
+    ahead = _minutes_to_regular_slot(today, now)
+    if ahead is not None and ahead < config.EVENT_MIN_GAP_HOURS * 60:
+        return (
+            f"오늘 정기 발행이 {ahead:.0f}분 뒤 예정 — 최소 간격 "
+            f"{config.EVENT_MIN_GAP_HOURS}시간 안에 붙습니다."
+        )
 
     elapsed = _hours_since_last_post(posts, now)
     if elapsed is not None and elapsed < config.EVENT_MIN_GAP_HOURS:

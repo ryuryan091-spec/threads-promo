@@ -22,7 +22,7 @@ import requests
 
 from . import config
 
-VERSION = "1.2.0"   # v1.2.0: 마무리(질문/비질문) 지시 분리, AUTO 로테이션 우선순위
+VERSION = "1.3.0"   # v1.3.0: 문체 축 블록, 마무리 4종, 소재 확장, 반복 회피 지시
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +77,15 @@ PILLARS: dict[str, Pillar] = {
             "지나고 나서야 보이는 신호",
             "안 보기로 정한 지표",
             "판단을 미루는 기준",
+            # v1.3.0 확장
+            "급하게 움직이고 싶어지는 순간",
+            "틀렸다고 인정하는 데 걸리는 시간",
+            "모르는 걸 모른다고 적어두기",
+            "남의 확신을 들을 때의 거리감",
+            "아무 일 없는 주간의 기록",
+            "익숙한 패턴이 안 맞는 날",
+            "뉴스 제목과 실제 사이의 간격",
+            "쉬는 것도 판단이라는 생각",
         ),
     ),
     "STORY": Pillar(
@@ -99,6 +108,15 @@ PILLARS: dict[str, Pillar] = {
             "연재를 하루도 안 빠뜨리는 방법",
             "가장 마음에 드는 컷",
             "설정을 바꾸고 싶어지는 순간",
+            # v1.3.0 확장
+            "같은 싸움을 다르게 그리는 방법",
+            "지루한 날을 지루하지 않게",
+            "히어로가 지는 장면을 넣을지",
+            "제목 한 줄에 쓰는 시간",
+            "독자가 먼저 알아챈 설정",
+            "색깔 하나로 분위기 바꾸기",
+            "대사를 줄였더니 나아진 컷",
+            "연재 중에 버린 아이디어",
         ),
     ),
     "PROMO": Pillar(
@@ -117,6 +135,11 @@ PILLARS: dict[str, Pillar] = {
             "어떤 사람이 보면 좋을지",
             "혼자 만드는 것의 장단점",
             "처음과 달라진 방향",
+            # v1.3.0 확장
+            "짧은 영상으로 옮기면서 달라진 것",
+            "기록이 쌓이고 나서 보이는 것",
+            "보는 사람을 처음 의식한 날",
+            "퇴근 후에 이어가는 작업",
         ),
     ),
 }
@@ -133,7 +156,7 @@ CHAT_PILLAR = Pillar(
     evidence_available=True,
     brief=(
         "오늘 아침 시장 분위기에 대해 옆자리 동료에게 건네는 한두 마디를 쓴다. "
-        "1~3문장, 전체 200자 이내. 이 기둥에서는 형식의 문장 수·길이 지시보다 이 조건이 우선한다. "
+        "전체 200자 이내. 이 상한은 '# 이번 글 형식' 의 길이 지시보다 우선한다. "
         "숫자(아라비아 숫자 포함)를 한 글자도 쓰지 않는다. 기업명·인물명을 쓰지 않는다. "
         "연준·FOMC·한국은행 같은 기관명과 금리·유가·환율 같은 일반명사는 쓸 수 있다. "
         "오를지 내릴지 예측하지 않는다. 느낀 분위기와 본인의 태도만 쓴다. "
@@ -152,6 +175,15 @@ CHAT_PILLAR = Pillar(
         "분위기에 휩쓸리지 않는 방법",
         "점심 전에 한 번 더 보는 것",
         "오늘은 안 보기로 한 것",
+        # v1.3.0 확장
+        "밤사이 달라진 제목들",
+        "어제와 비슷해 보이는 아침",
+        "한 단어만 자꾸 눈에 걸리는 날",
+        "일단 지켜보기로 한 것",
+        "평소보다 조용한 알림",
+        "회의 들어가기 전 잠깐 본 것",
+        "괜히 한 번 더 새로고침한 아침",
+        "어제 적어둔 메모를 다시 보는 아침",
     ),
     evidence_note=(
         "위 근거에 있는 테마만 언급할 수 있습니다. 근거에 없는 사건·수치·기관을"
@@ -269,9 +301,10 @@ SYSTEM_PROMPT = """당신은 한국어로 Threads(스레드)에 글을 쓰는 �
 
 # 형식
 - 한국어. 존댓말(~습니다/~요 혼용 가능).
-- 2~4문장. 전체 300자 이내. 짧을수록 좋습니다.
-- 줄바꿈으로 호흡을 나눕니다.
+- 길이와 줄바꿈은 요청문의 '# 이번 글 형식' 지시를 따릅니다. 어떤 경우에도 300자 이내.
 - 마지막 문장은 요청문의 '# 마무리' 지시를 따릅니다. 매번 같은 형태의 끝맺음은 금지.
+- 최근 글과 같은 단어로 시작하지 않습니다. 끝맺는 어미도 최근 글과 겹치지 않게 바꿉니다.
+- 다듬어진 글보다 사람이 휴대폰으로 적은 말투가 낫습니다. 완벽한 대구·요약 문장으로 끝내지 않습니다.
 - 해시태그, 이모지, 링크, URL을 절대 쓰지 않습니다.
 
 # 사실 제약 (가장 중요. 다른 모든 지시보다 우선한다)
@@ -288,7 +321,7 @@ SYSTEM_PROMPT = """당신은 한국어로 Threads(스레드)에 글을 쓰는 �
 - 구체적 종목명, 가격, 수익률, 시장 전망
 - 참여 유도 미끼: "댓글 남기면", "좋아요 누르면", "팔로우하면", "선착순", "1번 2번 골라"
 - 직접 홍보 요청: "구독해주세요", "보러오세요", "많은 관심 부탁"
-- AI가 썼다는 티가 나는 표현: "여러분", "~하는 것은 어떨까요", 과도한 대구법
+- AI가 썼다는 티가 나는 표현: "여러분", "~하는 것은 어떨까요", "살펴보겠습니다", 줄표(—), 과도한 대구법
 
 # 출력
 JSON 한 개만 출력합니다. 다른 말은 붙이지 마세요.
@@ -297,6 +330,8 @@ JSON 한 개만 출력합니다. 다른 말은 붙이지 마세요.
 
 CLOSING_QUESTION = "question"
 CLOSING_STATEMENT = "statement"
+CLOSING_TRAIL = "trail"     # v1.3.0: 결론 없이 여운
+CLOSING_ASIDE = "aside"     # v1.3.0: 짧은 혼잣말
 
 _CLOSING_TEXT = {
     CLOSING_QUESTION: (
@@ -307,6 +342,16 @@ _CLOSING_TEXT = {
         "# 마무리\n"
         "질문 없이 닫습니다. 물음표를 쓰지 않습니다. "
         "담담한 관찰이나 본인의 태도 한 문장으로 끝냅니다."
+    ),
+    CLOSING_TRAIL: (
+        "# 마무리\n"
+        "결론을 내리지 않고 여운을 남기며 닫습니다. 물음표를 쓰지 않습니다. "
+        "교훈이나 정리 문장으로 끝내지 않습니다."
+    ),
+    CLOSING_ASIDE: (
+        "# 마무리\n"
+        "본론에서 살짝 비껴간 짧은 혼잣말 한 마디로 닫습니다. 물음표를 쓰지 않습니다. "
+        "새로운 사실이나 사건을 지어내지 않습니다."
     ),
 }
 
@@ -322,6 +367,7 @@ def _build_user_prompt(
     recent_texts: list[str],
     facts_block: str = "",
     closing: str = CLOSING_QUESTION,
+    style_block: str = "",
 ) -> str:
     parts = [
         f"# 오늘의 주제 영역: {pillar.label}",
@@ -355,6 +401,8 @@ def _build_user_prompt(
             joined,
         ]
 
+    if style_block:
+        parts += ["", style_block]
     parts += ["", closing_block(closing)]
     parts += ["", "위 조건으로 글 한 개를 써서 JSON으로만 출력하세요."]
     return "\n".join(parts)
@@ -419,10 +467,12 @@ def generate(
     model: str | None = None,
     facts_block: str = "",
     closing: str = CLOSING_QUESTION,
+    style_block: str = "",
 ) -> str:
     """Claude 로 게시글 본문을 생성한다. 실패 시 AiWriterError.
 
-    closing: CLOSING_QUESTION(질문으로 닫기) | CLOSING_STATEMENT(질문 없이 닫기)
+    closing: CLOSING_QUESTION | CLOSING_STATEMENT | CLOSING_TRAIL | CLOSING_ASIDE
+    style_block: style.PostStyle.block() — 길이·줄바꿈 지시(v1.3.0). 비우면 생략.
     """
     pillar = get_pillar(pillar_key)
     if pillar is None:
@@ -436,7 +486,7 @@ def generate(
             {
                 "role": "user",
                 "content": _build_user_prompt(
-                    pillar, seed, recent_texts or [], facts_block, closing
+                    pillar, seed, recent_texts or [], facts_block, closing, style_block
                 ),
             }
         ],

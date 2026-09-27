@@ -313,18 +313,24 @@ class TestReplyFailurePaths:
         """v1.1.0: 1-of-3 추첨 제거. 어느 슬롯이든 sweep 한다."""
         from src import run_reply
 
-        for slot in ("A", "B", "C"):
-            os.environ.update({"REPLY_SLOTS": "A,B,C", "SLOT": slot})
+        slots = "A,B,C,D,E,F,G,H"   # v1.3.0: 8슬롯
+        for slot in slots.split(","):
+            os.environ.update({"REPLY_SLOTS": slots, "SLOT": slot})
             with (
                 mock.patch.object(run_reply, "sweep", return_value=0) as sweep,
                 mock.patch.object(run_reply, "_acquire_token", return_value="tok"),
                 mock.patch.object(run_reply, "fetch_user_id", return_value=("1", "u")),
                 mock.patch.object(run_reply, "ThreadsClient"),
+                # v1.3.0: 예약 실행 시작 지연(0~10분)은 실제로 자지 않는다
+                mock.patch.object(run_reply.antibot, "jitter_sleep", return_value=0) as jit,
             ):
                 assert run_reply.run() == 0
             assert sweep.called, slot
             # v1.2.0: 예약 실행 전용 상한(timeout 안에 들어오게)
             assert sweep.call_args.kwargs["per_run_cap"] == config.REPLY_SCHEDULED_RUN_CAP
+            # v1.3.0: 예약 실행은 시작 지연 + 이어쓰기 허용
+            assert jit.call_args.args == config.REPLY_START_JITTER
+            assert sweep.call_args.kwargs["allow_followup"] is True
 
     def test_main_blocked_returns_7(self):
         from src import run_reply
