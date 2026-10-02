@@ -1,22 +1,32 @@
 name: Threads Chat
 
-# 오전 시장 잡담(CHAT) + 답글 스윕.
-# KST 09:00~12:05 창에 9개 트리거. 실행당 CHAT 최대 1건.
+# 시장 잡담(CHAT) + 답글 스윕.
+# v1.5.0: 창 KST 09:00~12:05 → 09:00~24:00. 정기·이벤트 판정 창(+앞 5분)을 뺀 CHAT 구역 5곳
+#   (09:00~12:21 · 15:55~16:31 · 19:12~19:48 · 20:41~21:38 · 22:31~23:12)에 15개 트리거를
+#   구역 길이에 비례해 배치했다(오전 9 · 오후 1 · 저녁 2 · 밤 3). 실행당 CHAT 최대 1건.
 # 하루 몇 건·어느 트리거에서 낼지는 src/chat_plan.py 가 날짜 시드로 정한다(무상태·멱등).
-# 트리거 시각은 src/config.py CHAT_TRIGGERS 와 1:1 대응해야 한다(verify_repo 6번 검사).
-# 정각·반각 회피. 정기 발행(v1.3.0 슬롯 7개, CHAT 창 밖)·워치독(09:53, 읽기 전용)과 무관.
+# 트리거 시각은 src/config.py CHAT_TRIGGERS 와 1:1 대응해야 한다(verify_repo 6번 검사),
+# 모든 트리거는 CHAT 구역 안이어야 한다(verify_repo 10번 검사).
+# 정각·반각 회피, 타 워크플로 cron 과 6분 이상(워치독 09:53 ↔ T3 09:47, 답글 20:52 ↔ T12 20:44).
+# reply.yml 과 같은 concurrency 그룹이라 답글 실행 구간(슬롯 + 시작 지연 0~10분 + 스윕)을 피해 두었다.
 
 "on":
   schedule:
-    - cron: "4 0 * * *"    # T1 KST 09:04
-    - cron: "23 0 * * *"    # T2 KST 09:23
-    - cron: "44 0 * * *"    # T3 KST 09:44
-    - cron: "7 1 * * *"    # T4 KST 10:07
-    - cron: "26 1 * * *"    # T5 KST 10:26
-    - cron: "48 1 * * *"    # T6 KST 10:48
-    - cron: "9 2 * * *"    # T7 KST 11:09
-    - cron: "31 2 * * *"    # T8 KST 11:31
-    - cron: "52 2 * * *"    # T9 KST 11:52
+    - cron: "4 0 * * *"       # T1 KST 09:04
+    - cron: "26 0 * * *"      # T2 KST 09:26
+    - cron: "47 0 * * *"      # T3 KST 09:47
+    - cron: "11 1 * * *"      # T4 KST 10:11
+    - cron: "33 1 * * *"      # T5 KST 10:33
+    - cron: "56 1 * * *"      # T6 KST 10:56
+    - cron: "18 2 * * *"      # T7 KST 11:18
+    - cron: "39 2 * * *"      # T8 KST 11:39
+    - cron: "57 2 * * *"      # T9 KST 11:57
+    - cron: "58 6 * * *"      # T10 KST 15:58
+    - cron: "17 10 * * *"     # T11 KST 19:17
+    - cron: "44 11 * * *"     # T12 KST 20:44
+    - cron: "19 12 * * *"     # T13 KST 21:19
+    - cron: "36 13 * * *"     # T14 KST 22:36
+    - cron: "54 13 * * *"     # T15 KST 22:54
   workflow_dispatch:
     inputs:
       mode:
@@ -36,7 +46,8 @@ concurrency:
 jobs:
   chat:
     runs-on: ubuntu-latest
-    # 간격 대기(≤10분) + 지터(≤4분) + 답글 스윕(≤8분) 을 덮는다.
+    # run_chat 예산 CHAT_JOB_BUDGET_SEC(20분: 간격 대기 ≤15분 + 지연 + 생성 + 답글 스윕)
+    # + 준비·여유 5분. 실행 간 겹침은 concurrency 가 직렬화한다(대기 중 실행은 최신 1건만 유지).
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -52,15 +63,21 @@ jobs:
         id: slot
         run: |
           case "${{ github.event.schedule }}" in
-            "4 0 * * *")   echo "slot=T1" >> "$GITHUB_OUTPUT" ;;
-            "23 0 * * *")  echo "slot=T2" >> "$GITHUB_OUTPUT" ;;
-            "44 0 * * *")  echo "slot=T3" >> "$GITHUB_OUTPUT" ;;
-            "7 1 * * *")   echo "slot=T4" >> "$GITHUB_OUTPUT" ;;
-            "26 1 * * *")  echo "slot=T5" >> "$GITHUB_OUTPUT" ;;
-            "48 1 * * *")  echo "slot=T6" >> "$GITHUB_OUTPUT" ;;
-            "9 2 * * *")   echo "slot=T7" >> "$GITHUB_OUTPUT" ;;
-            "31 2 * * *")  echo "slot=T8" >> "$GITHUB_OUTPUT" ;;
-            "52 2 * * *")  echo "slot=T9" >> "$GITHUB_OUTPUT" ;;
+            "4 0 * * *")     echo "slot=T1" >> "$GITHUB_OUTPUT" ;;
+            "26 0 * * *")    echo "slot=T2" >> "$GITHUB_OUTPUT" ;;
+            "47 0 * * *")    echo "slot=T3" >> "$GITHUB_OUTPUT" ;;
+            "11 1 * * *")    echo "slot=T4" >> "$GITHUB_OUTPUT" ;;
+            "33 1 * * *")    echo "slot=T5" >> "$GITHUB_OUTPUT" ;;
+            "56 1 * * *")    echo "slot=T6" >> "$GITHUB_OUTPUT" ;;
+            "18 2 * * *")    echo "slot=T7" >> "$GITHUB_OUTPUT" ;;
+            "39 2 * * *")    echo "slot=T8" >> "$GITHUB_OUTPUT" ;;
+            "57 2 * * *")    echo "slot=T9" >> "$GITHUB_OUTPUT" ;;
+            "58 6 * * *")    echo "slot=T10" >> "$GITHUB_OUTPUT" ;;
+            "17 10 * * *")   echo "slot=T11" >> "$GITHUB_OUTPUT" ;;
+            "44 11 * * *")   echo "slot=T12" >> "$GITHUB_OUTPUT" ;;
+            "19 12 * * *")   echo "slot=T13" >> "$GITHUB_OUTPUT" ;;
+            "36 13 * * *")   echo "slot=T14" >> "$GITHUB_OUTPUT" ;;
+            "54 13 * * *")   echo "slot=T15" >> "$GITHUB_OUTPUT" ;;
             *)             echo "slot=MANUAL" >> "$GITHUB_OUTPUT" ;;
           esac
 
@@ -81,8 +98,8 @@ jobs:
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           CHAT_ENABLED: ${{ vars.CHAT_ENABLED || 'false' }}
-          CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '6' }}
-          CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '8' }}
+          CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '5' }}
+          CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '15' }}
           CHAT_WEEKEND_MIN: ${{ vars.CHAT_WEEKEND_MIN || '2' }}
           CHAT_WEEKEND_MAX: ${{ vars.CHAT_WEEKEND_MAX || '3' }}
           CHAT_SOURCE_MODE: ${{ vars.CHAT_SOURCE_MODE || 'mix' }}

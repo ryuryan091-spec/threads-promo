@@ -48,8 +48,8 @@ jobs:
           X_URL: ${{ vars.X_URL }}
           DRY_RUN: ${{ vars.DRY_RUN }}
           CHAT_ENABLED: ${{ vars.CHAT_ENABLED || 'false' }}
-          CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '6' }}
-          CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '8' }}
+          CHAT_DAILY_MIN: ${{ vars.CHAT_DAILY_MIN || '5' }}
+          CHAT_DAILY_MAX: ${{ vars.CHAT_DAILY_MAX || '15' }}
           CHAT_WEEKEND_MIN: ${{ vars.CHAT_WEEKEND_MIN || '2' }}
           CHAT_WEEKEND_MAX: ${{ vars.CHAT_WEEKEND_MAX || '3' }}
           CHAT_SOURCE_MODE: ${{ vars.CHAT_SOURCE_MODE || 'mix' }}

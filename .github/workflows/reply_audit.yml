@@ -1,0 +1,45 @@
+name: Threads Reply Audit
+
+# v1.4.0 답글 감사. 읽기 전용 — Threads 에 아무것도 쓰지 않는다(GET 만, Claude 호출 없음).
+# 스케줄 없음. 수동 실행만.
+# 최근 N일 내 글에 내가 단 답글을, 그 답글이 응답한 댓글·현재 로직 재판정과 함께
+# Actions 요약(Summary)에 표로 남긴다. 계정명은 가린다.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "최근 며칠 (1~14)"
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threads-reply-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # 14일 × 글 최대 20건/일 × 대화 최대 4페이지 GET
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Reply Audit
+        env:
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '3' }}
+          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '4' }}
+          # 입력값은 run 에 직접 넣지 않고 env 로 넘긴다(스크립트 주입 방지). 범위는 스크립트가 1~14 로 맞춘다.
+          AUDIT_DAYS: ${{ inputs.days }}
+        run: python scripts/reply_audit.py --days "$AUDIT_DAYS"
