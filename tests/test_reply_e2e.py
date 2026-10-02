@@ -135,12 +135,16 @@ class TestReplyEngineE2E:
         assert fake.created[0]["text"] in reply_engine.NON_KOREAN_REPLIES
 
     def test_choice_comment_gets_neutral(self):
-        from src import reply_engine
-
+        # v1.4.0: 선택형 질문은 정형 문구가 아니라 AI 생성(중립 지시)으로 답한다.
         os.environ["CLAUDE_AI_KEY"] = "sk-ant-test"
         fake = FakeReplyApi([_comment("r1", "A랑 B 중에 뭐가 나은가요?")])
         assert _run_reply(fake) == 0
-        assert fake.created[0]["text"] in reply_engine.NEUTRAL_THANKS_REPLIES
+        assert fake.created[0]["text"] == "답글 본문입니다"
+
+    def test_choice_comment_without_ai_key_skipped(self):
+        fake = FakeReplyApi([_comment("r1", "A랑 B 중에 뭐가 나은가요?")])
+        assert _run_reply(fake) == 0
+        assert fake.published == []
 
     def test_own_comment_skipped(self):
         os.environ["CLAUDE_AI_KEY"] = "sk-ant-test"

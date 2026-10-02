@@ -19,9 +19,10 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
-from . import config
+from . import chat_plan, config
 
-VERSION = "1.2.0"   # v1.2.0: 슬롯 공백 임계를 config 슬롯 표·지터에서 산출
+VERSION = "1.5.0"   # v1.5.0: CHAT 무발행 판정을 트리거 기회 수로(창 09:00~24:00)
+# v1.2.1: 신선도 목록 조회 25 → 40 (CHAT 트리거 15개). v1.2.0: 슬롯 공백 임계 산출
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +50,25 @@ REPLY_STALE_HOURS = 72      # 답글은 대상이 없으면 안 나가므로 넉
 QUOTA_ALARM_RATIO = 0.5     # 발행 쿼터를 절반 넘게 쓰면 이상 징후
 # 발행 신선도 판정용 (목록 1회 호출). CHAT 도입 후 하루 약 10건이라
 # 3건이면 정기 글이 CHAT 에 가려 보이지 않는다.
-RECENT_POSTS_TO_SCAN = 25
-CHAT_CHECK_AFTER = "12:30"    # KST. CHAT 창 종료 후에만 무발행을 판정한다
+# v1.4.0: 25 → 2 × CHAT 트리거 수 + 10 (= 40). 정기 글 간격은 최대 약 38.5시간이라
+#   그 사이에 CHAT 창이 두 번 들어간다. 평일 최대 15건 × 2 = 30건이 25건을 넘으면
+#   정기 글이 목록 밖으로 밀려 '발행 이력 없음' 오탐이 난다. +10 은 이벤트·정기 글 여유.
+#   v1.5.0 재산출: 값은 창 위치가 아니라 하루 CHAT 최대 건수(= 트리거 수)에만 달려 있다.
+#   정기 글 최대 간격(가장 이른 슬롯 07:14 → 다음날 가장 늦은 슬롯 21:43 + 지연) 안에 KST 날짜가
+#   최대 2개 걸치므로 CHAT 최대 2 × 15 = 30건 + 이벤트(일 상한 EVENT_DAILY_CAP=2 × 2일) + 여유.
+#   창이 하루 전체가 되어도 하루 최대 건수는 같으므로 40 그대로 유효하다.
+RECENT_POSTS_TO_SCAN = 2 * len(config.CHAT_TRIGGERS) + 10
+# v1.5.0: CHAT 무발행 경고 조건. 이전에는 창 종료 뒤(12:30 이후)에만 0건을 경고했다.
+#   창이 24:00 까지라 워치독(09:53·21:37) 시점에 창이 끝나 있지 않다. 대신 '발행 기회가 지난 트리거 수'
+#   (chat_plan.due_opportunities: 첫 선택 트리거 이후 트리거 중 예정 + 유예가 지난 것)로 본다.
+#   - 유예 30분: cron 지연(정상 0~5분, 혼잡 시 더) + 준비·생성·지연(최대 약 17분)을 덮는다.
+#   - 기회 2회 이상: 첫 선택 트리거 하나가 cron 누락되는 것은 설계상 허용(다음 트리거가 보충)이라
+#     한 번은 사실상 '나왔어야 한다'고 단정할 수 없다. 두 번 연속 기회가 지나도 0건이면 경고한다.
+#   09:53 실행: 기회는 T1(09:04) 하나뿐 → 경고하지 않는다.
+#   21:37 실행: T1~T12(20:44 + 30분 ≤ 21:37) 중 첫 선택 트리거 이후 개수. 평일(목표 ≥ 5)은 첫 선택이
+#     T11 이하일 수밖에 없어(뒤 4개로 5건 불가) 항상 판정된다. 주말(2~3건)은 첫 선택이 T12 이후면 보류.
+CHAT_CHECK_GRACE_MIN = 30
+CHAT_CHECK_MIN_DUE = 2
 CONVERSATION_SCAN_LIMIT = 1   # 답글 활동 확인용. 호출 수를 줄이려 최신 글만 본다.
 
 
@@ -240,26 +258,29 @@ def check_chat_activity(
     """CHAT 이 켜져 있는데 오늘 한 건도 없으면 경고한다.
 
     CHAT 은 목표가 soft(cron 누락 허용)라 건수 미달은 경보하지 않는다. 0건만 본다.
-    창이 끝나기 전에는 판정하지 않는다.
+    v1.5.0: 발행 기회가 CHAT_CHECK_MIN_DUE 번 이상 지났을 때만 판정한다(CHAT_CHECK_GRACE_MIN 주석).
     """
     if not enabled:
         return Finding(Severity.OK, "CHAT 비활성", "CHAT_ENABLED=false — 검사 생략")
 
     from zoneinfo import ZoneInfo
 
-    local = now.astimezone(ZoneInfo("Asia/Seoul"))
-    hh, mm = (int(x) for x in CHAT_CHECK_AFTER.split(":"))
-    if (local.hour, local.minute) < (hh, mm):
-        return Finding(Severity.OK, "CHAT 판정 보류", f"{CHAT_CHECK_AFTER} 이전")
+    today = now.astimezone(ZoneInfo("Asia/Seoul")).date()
+    due = chat_plan.due_opportunities(today, now, CHAT_CHECK_GRACE_MIN)
+    if due < CHAT_CHECK_MIN_DUE:
+        return Finding(
+            Severity.OK, "CHAT 판정 보류",
+            f"지난 발행 기회 {due}회 < {CHAT_CHECK_MIN_DUE}회 (유예 {CHAT_CHECK_GRACE_MIN}분)",
+        )
 
     if chat_today == 0:
         return Finding(
             Severity.WARN,
             "CHAT 무발행",
-            "오늘 CHAT 창에 발행된 글이 없습니다. chat.yml 실행 여부, "
-            "CLAUDE_AI_KEY, 린트 실패 로그를 확인하십시오.",
+            f"오늘 CHAT 발행 기회 {due}회가 지났는데 CHAT 구역에 발행된 글이 없습니다. "
+            "chat.yml 실행 여부, CLAUDE_AI_KEY, 린트 실패 로그를 확인하십시오.",
         )
-    return Finding(Severity.OK, "CHAT 정상", f"오늘 {chat_today}건")
+    return Finding(Severity.OK, "CHAT 정상", f"오늘 {chat_today}건 (지난 기회 {due}회)")
 
 
 def check_quota(used: int, total: int) -> Finding:

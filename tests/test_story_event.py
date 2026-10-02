@@ -176,7 +176,9 @@ class TestGates:
         assert got and "최소 간격" in got
 
     def test_blocks_at_daily_cap(self):
-        posts = [_post(5), _post(6)]      # 둘 다 오늘
+        # 둘 다 오늘. v1.5.0: 5시간 전(KST 16:00)은 CHAT 구역(15:55~16:31) 안이라 텍스트면 CHAT 으로
+        # 빠진다. 이 테스트는 정기·이벤트 글의 상한을 보므로 이미지 글로 둔다.
+        posts = [{**_post(5), "media_type": "IMAGE"}, {**_post(6), "media_type": "IMAGE"}]
         got = self._gate(posts)
         assert got and "상한" in got
 
@@ -305,7 +307,7 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
             mock.patch.object(antibot, "jitter_sleep", return_value=0),
-            # 실제 현재 시각이 CHAT 창(KST 09:00~12:05)이면 '방금 글'이 CHAT 으로
+            # 실제 현재 시각이 CHAT 구역(v1.5.0: KST 09:00~24:00 창 안)이면 '방금 글'이 CHAT 으로
             # 분류되어 게이트에서 제외된다. 시각 의존을 없애 정기 글로 고정한다.
             mock.patch.object(run_story.chat_plan, "is_chat_time", return_value=False),
             # v1.2.0: _post_now(20) 은 실행 시각에 따라 이벤트 판정 창(03:11·23:17 +90분)에
@@ -344,7 +346,7 @@ class TestPostJitterRecheck:
             mock.patch.object(run_story, "_select_usable_image",
                               return_value=("https://x/y.png", [])),
             mock.patch.object(antibot, "jitter_sleep", return_value=0),
-            # 실제 현재 시각이 CHAT 창(KST 09:00~12:05)이면 '방금 글'이 CHAT 으로
+            # 실제 현재 시각이 CHAT 구역(v1.5.0: KST 09:00~24:00 창 안)이면 '방금 글'이 CHAT 으로
             # 분류되어 게이트에서 제외된다. 시각 의존을 없애 정기 글로 고정한다.
             mock.patch.object(run_story.chat_plan, "is_chat_time", return_value=False),
             # v1.2.0: _post_now(20) 은 실행 시각에 따라 이벤트 판정 창(03:11·23:17 +90분)에

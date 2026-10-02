@@ -14,6 +14,10 @@
   4. 워크플로우가 참조하는 모듈이 실제로 있는지
   5. cron 과 slot 매핑 일치 여부
   6. chat.yml cron 과 config.CHAT_TRIGGERS(KST) 일치 여부
+  7. DRY_RUN 식
+  8. 정기·이벤트 cron 과 코드 상수
+  9. CHAT 계획 변수 일치
+ 10. 판정 창 겹침 · CHAT 구역 · 트리거 위치 (v1.5.0 규칙)
 """
 
 from __future__ import annotations
@@ -27,7 +31,8 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.4.0"   # v1.4.0: style 모듈, 판정 창 겹침 검사(10)
+VERSION = "1.5.0"   # v1.5.0: 검사 10 — 예약 창 상호 겹침·CHAT 구역·트리거 위치
+# v1.4.0: style 모듈, 판정 창 겹침 검사(10)
 
 REQUIRED_MODULES = [
     "config", "env", "ai_writer", "antibot", "chat_plan", "content", "facts",
@@ -50,6 +55,8 @@ REQUIRED_FILES = [
     ".github/workflows/insights.yml",
     ".github/workflows/weighting.yml",
     ".github/workflows/verify_token.yml",
+    ".github/workflows/reply_audit.yml",   # v1.4.0 답글 감사(읽기 전용)
+    "scripts/reply_audit.py",
 ]
 
 # 워크플로우가 실행하는 모듈
@@ -368,17 +375,18 @@ def _window_minutes(start: str, length: int) -> set[int]:
 
 
 def check_classify_windows() -> int:
-    """정기·이벤트·CHAT 판정 창이 서로 겹치지 않는지.
+    """정기·이벤트 판정 창(예약 구간)과 CHAT 구역 규칙.
 
-    겹치면 insights.restore_pillar 가 글의 기둥을 틀리게 복원하고,
-    run_story 가 'STORY 발행됨'을 잘못 판정한다.
+    v1.5.0: CHAT 창이 09:00~24:00 으로 넓어져 판정 창이 CHAT 창 안에 들어온다.
+    규칙이 '판정 창이 CHAT 창과 겹치지 않음' 에서 아래로 바뀌었다.
+      a. 정기·이벤트 판정 창끼리 겹치지 않는다(겹치면 기둥 복원·'STORY 발행됨' 판정이 틀어진다).
+      b. CHAT 구역(chat_plan.chat_zones = 창 − 예약 구간, 30분 이상)이 비어 있지 않다.
+      c. CHAT 구역이 어느 판정 창과도 겹치지 않는다(예약 구간 우선 — 산출 결과 재확인).
+      d. 모든 CHAT 트리거가 CHAT 구역 안이고, 트리거 뒤 구역 잔여가 TRIGGER_MIN_ROOM_MIN 분 이상이다.
     """
-    print("\n10. 판정 창 겹침 (정기 / 이벤트 / CHAT)")
-    from src import config, insights
+    print("\n10. 판정 창 겹침 · CHAT 구역 · 트리거 위치")
+    from src import chat_plan, config, insights
 
-    chat_start = int(config.CHAT_WINDOW_START[:2]) * 60 + int(config.CHAT_WINDOW_START[3:])
-    chat_end = int(config.CHAT_WINDOW_END[:2]) * 60 + int(config.CHAT_WINDOW_END[3:])
-    chat = set(range(chat_start, chat_end))
     windows: list[tuple[str, set[int]]] = []
     for hhmm, slot in insights.PUBLISH_SLOTS.items():
         windows.append((f"정기 {slot} {hhmm}", _window_minutes(hhmm, insights.PUBLISH_WINDOW_MIN)))
@@ -387,15 +395,34 @@ def check_classify_windows() -> int:
 
     failed = 0
     for i, (name_a, win_a) in enumerate(windows):
-        if win_a & chat:
-            _fail(f"{name_a} 창이 CHAT 창과 겹칩니다")
-            failed += 1
         for name_b, win_b in windows[i + 1:]:
             if win_a & win_b:
                 _fail(f"{name_a} 창과 {name_b} 창이 겹칩니다")
                 failed += 1
+
+    zones = chat_plan.chat_zones()
+    if not zones:
+        _fail("CHAT 구역이 없습니다 — 창 안이 예약 구간으로 가득 찼습니다")
+        failed += 1
+    zone_minutes = {m for a, b in zones for m in range(a, b)}
+    for name, win in windows:
+        if win & zone_minutes:
+            _fail(f"{name} 판정 창이 CHAT 구역과 겹칩니다")
+            failed += 1
+
+    for idx, hhmm in enumerate(config.CHAT_TRIGGERS, start=1):
+        mark = int(hhmm[:2]) * 60 + int(hhmm[3:])
+        zone = next((z for z in zones if z[0] <= mark < z[1]), None)
+        if zone is None:
+            _fail(f"T{idx} {hhmm} 이 CHAT 구역 밖입니다")
+            failed += 1
+        elif zone[1] - mark < chat_plan.TRIGGER_MIN_ROOM_MIN:
+            _fail(f"T{idx} {hhmm} 뒤 구역 잔여 {zone[1] - mark}분 < {chat_plan.TRIGGER_MIN_ROOM_MIN}분")
+            failed += 1
+
     if not failed:
-        _ok(f"창 {len(windows)}개 + CHAT 창 — 겹침 없음")
+        _ok(f"판정 창 {len(windows)}개 겹침 없음 · CHAT 구역 {len(zones)}곳({chat_plan.zones_label()})"
+            f" · 트리거 {len(config.CHAT_TRIGGERS)}개 전부 구역 안")
     return failed
 
 

@@ -1,4 +1,7 @@
-"""오전 시장 잡담(CHAT) 발행 + 답글 스윕 엔트리포인트.
+"""시장 잡담(CHAT) 발행 + 답글 스윕 엔트리포인트.
+
+v1.5.0: CHAT 창 09:00~24:00(정기·이벤트 예약 구간 제외 CHAT 구역). 시간대(band: 오전·오후·
+저녁·밤)를 프롬프트에 넣고 시간대별 소재 풀에서 소재를 고른다(chat_plan.band_for).
 
 실행: python -m src.run_chat
 
@@ -45,10 +48,13 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.2.0"   # v1.2.0: 문체 축·반복 린트(연성)
+VERSION = "1.5.0"   # v1.5.0: 시간대 맥락·시간대 소재. v1.2.0: 문체 축·반복 린트(연성)
 KST = ZoneInfo("Asia/Seoul")
 PILLAR_KEY = "CHAT"
-POSTS_TO_SCAN = 25   # 오늘 게시물(정기 1 + 셀프리플 제외 + CHAT ≤9 + 이벤트) 을 덮는 크기
+# 오늘 게시물(정기 1 + 셀프리플 제외 + CHAT ≤15 + 이벤트 ≤ EVENT_DAILY_CAP) 을 덮는 크기.
+# v1.5.0: CHAT 이 하루 전체로 흩어져 마지막 트리거(22:54)에는 그날 글이 전부 목록에 든다.
+#   정기 글은 하루 1건(antibot.choose_slot)이라 현실 최대 1 + 15 + 2 = 18 ≤ 25.
+POSTS_TO_SCAN = 25
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +113,7 @@ def generate_chat(
     mood: mood_source.Mood,
     closing: str = ai_writer.CLOSING_QUESTION,
     style_block: str = "",
+    time_block: str = "",
 ) -> str:
     """생성 + lint_chat. 재시도 소진 시 빈 문자열.
 
@@ -119,7 +126,7 @@ def generate_chat(
             text = ai_writer.generate(
                 api_key, PILLAR_KEY, seed, recent_texts,
                 facts_block=mood.to_prompt_block(), closing=closing,
-                style_block=style_block,
+                style_block=style_block, time_block=time_block,
             )
             content.lint_chat(text)
             try:
@@ -142,6 +149,21 @@ def generate_chat(
 _RUN_STARTED = time.monotonic()
 
 
+def sweep_budget_sec(now: dt.datetime, elapsed_sec: float) -> float:
+    """CHAT 실행의 답글 스윕 예산(초).
+
+    job 예산 잔여(CHAT_JOB_BUDGET_SEC - 경과)와 '다음 트리거까지 - 여유' 중 작은 값.
+    v1.4.0: 트리거 간격 11~13분에서 스윕이 다음 트리거를 넘기면 대기 실행이 취소된다.
+    다음 트리거가 없으면(마지막 트리거·창 밖 수동 실행) job 예산만 쓴다.
+    v1.5.0: 규칙 유지. 간격이 18분~3시간대가 되어 같은 구역 안 연속 트리거에서만 실제로 잘린다.
+    """
+    budget = config.CHAT_JOB_BUDGET_SEC - elapsed_sec
+    until_next = chat_plan.seconds_until_next_trigger(now)
+    if until_next is not None:
+        budget = min(budget, until_next - config.CHAT_SWEEP_NEXT_TRIGGER_MARGIN_SEC)
+    return max(0.0, float(budget))
+
+
 def _safe_sweep(client: ThreadsClient, settings: Settings) -> None:
     """답글 스윕. 실패가 CHAT 결과를 뒤집지 않게 격리한다(차단 신호만 전파).
 
@@ -150,7 +172,9 @@ def _safe_sweep(client: ThreadsClient, settings: Settings) -> None:
     if not config.REPLY_ENABLED:
         log.info("REPLY_ENABLED=false — 답글 스윕 생략")
         return
-    remaining = config.CHAT_JOB_BUDGET_SEC - (time.monotonic() - _RUN_STARTED)
+    remaining = sweep_budget_sec(
+        dt.datetime.now(dt.UTC), time.monotonic() - _RUN_STARTED
+    )
     try:
         run_reply.sweep(
             client, settings,
@@ -219,16 +243,19 @@ def run() -> int:
     )
 
     recent_texts = client.get_recent_texts(config.CHAT_RECENT_FOR_DEDUP)
-    seed = chat_plan.seed_for(today, trigger, ai_writer.CHAT_PILLAR.seeds)
+    # v1.5.0: 예약 실행은 트리거 예정 시각, 수동 실행은 현재 시각의 시간대.
+    band = chat_plan.band_for(trigger, now)
+    seed = chat_plan.seed_for(today, trigger, ai_writer.chat_seeds(band), band=band)
     closing = chat_plan.closing_for(today, trigger)
     chat_style = style.pick_post_style(chat_plan.style_key(today, trigger), chat=True)
 
     text = generate_chat(
-        settings.claude_api_key, seed, recent_texts, mood, closing, chat_style.block()
+        settings.claude_api_key, seed, recent_texts, mood, closing, chat_style.block(),
+        ai_writer.chat_time_block(band),
     )
     log.info(
-        "기둥=CHAT 소스=%s(우선=%s) 테마=%s 소재=%s 마무리=%s 길이=%s 줄바꿈=%s 생성=%s",
-        mood.source, first, ",".join(mood.themes) or "-", seed, closing,
+        "기둥=CHAT 시간대=%s 소스=%s(우선=%s) 테마=%s 소재=%s 마무리=%s 길이=%s 줄바꿈=%s 생성=%s",
+        band, mood.source, first, ",".join(mood.themes) or "-", seed, closing,
         chat_style.length, chat_style.layout, "성공" if text else "실패",
     )
 
@@ -248,7 +275,8 @@ def run() -> int:
         *chat_plan.jitter_range(gap_wait, dt.datetime.now(dt.UTC)), label="CHAT 발행 전"
     )
 
-    # 지터 도중 다른 발행이 나갔거나 창을 벗어났을 수 있다. 직전에 간격까지 포함해 다시 확인한다.
+    # 지터 도중 다른 발행이 나갔거나 구역을 벗어났을 수 있다. 직전에 간격까지 포함해 다시 확인한다.
+    # v1.5.0: 구역 끝까지 chat_plan.PUBLISH_MIN_ROOM_SEC 초 미만이어도 보류한다.
     blocked_again, _ = _check_gate(client, today, trigger, manual)
     if blocked_again:
         log.info("지연 후 재검증에서 보류 — %s", blocked_again)

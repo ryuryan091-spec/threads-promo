@@ -73,8 +73,11 @@ class TestCanned:
         assert a == b
 
     def test_within_pool(self):
-        got = reply_engine.pick_canned(reply_engine.NEUTRAL_THANKS_REPLIES, "z9")
-        assert got in reply_engine.NEUTRAL_THANKS_REPLIES
+        # v1.4.0: 선택형 정형 문구 폐지. 외국어 문구 풀 + 이미 쓴 문구 제외로 확인한다.
+        pool = reply_engine.NON_KOREAN_REPLIES
+        got = reply_engine.pick_canned(pool, "z9")
+        assert got in pool
+        assert reply_engine.pick_canned(pool, "z9", exclude=[got]) in set(pool) - {got}
 
 
 class TestAntibot:

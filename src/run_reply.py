@@ -16,6 +16,13 @@ v1.1.0 변경 (CHAT 도입에 따른 빈도 확대)
   - 일일 캡·저자 캡을 실행 내 메모리가 아니라 Threads 조회 결과로 산정한다.
     실행이 여러 번이어도 하루 캡이 하루 캡으로 유지된다.
   - 대댓글(내 답글에 달린 댓글)은 내 직전 답글을 맥락으로 함께 넘긴다.
+
+v1.4.0 변경 (답글 고도화, DESIGN_V14_REPLY.md)
+  - 대댓글 맥락: replied_to 사슬을 최대 REPLY_CONTEXT_TURNS 턴까지 대화로 넘긴다.
+  - 반복 린트 대상: 이번 실행에서 만든 답글(최신순) + 같은 글의 내 답글(최신순, 링크 리플 제외).
+    같은 목록 앞 5건을 프롬프트 '# 이미 쓴 답글'로도 넘긴다.
+  - 외국어 정형 문구: 같은 글 대화에서 내가 이미 쓴 문구(이번 실행 계획분 포함)는 다시 쓰지 않는다.
+  - 발행 실패한 답글은 '이번 실행에서 만든 답글'에 넣지 않는다(실제로 보이지 않으므로).
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ from zoneinfo import ZoneInfo
 from . import antibot, config, content, notifier, reply_engine, watchdog
 from .env import MissingEnvError, Settings, load_settings
 from .main import _acquire_token  # 토큰 확보 로직 재사용
-from .reply_engine import Comment, ReplyStrategy
+from .reply_engine import Comment, DialogueTurn, ReplyStrategy
 from .threads_client import (
     ContainerNotReadyError,
     ThreadsApiError,
@@ -42,7 +49,7 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.3.0"   # v1.3.0: 캡 Variable, 예약 시작 지연, 셀프 이어쓰기
+VERSION = "1.4.0"   # v1.4.0: 대화 맥락 사슬, 답글 반복 린트, 외국어 문구 중복 회피
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -79,6 +86,28 @@ def _already_replied_ids(comments: list[Comment]) -> set[str]:
         for c in comments
         if c.owned_by_me and c.replied_to_id
     }
+
+
+def my_reply_texts(comments: list[Comment]) -> list[str]:
+    """대화 안의 내 글(답글·이어쓰기) 본문, 최신순. 링크 셀프 리플라이는 뺀다(v1.4.0).
+
+    timestamp 문자열(ISO, 같은 형식)로 정렬한다. 없으면 대화 순서의 역순.
+    """
+    mine = [(i, c) for i, c in enumerate(comments) if c.owned_by_me and c.text.strip()]
+    mine.sort(key=lambda pair: (pair[1].timestamp, pair[0]), reverse=True)
+    return reply_engine.prior_reply_texts(c.text for _, c in mine)
+
+
+@dataclass(frozen=True)
+class ReplyPlan:
+    """응답 후보 한 건(v1.4.0: 튜플 → 데이터클래스, 맥락 필드 추가)."""
+
+    post_id: str
+    post_text: str
+    decision: reply_engine.ReplyDecision
+    parent_text: str                       # 내 직전 답글(대댓글일 때). 하위 호환용
+    dialogue: tuple[DialogueTurn, ...] = ()
+    used_texts: tuple[str, ...] = ()       # 같은 글 대화에서 내가 이미 쓴 글 전부(링크 포함)
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +269,17 @@ def _reply_to_comments(
         return 0
 
     # 대상 추출. 이번 실행에서 계획한 건도 캡 계산에 포함한다.
-    plans: list[tuple[str, reply_engine.ReplyDecision, str]] = []
+    plans: list[ReplyPlan] = []
     planned_author: dict[str, int] = defaultdict(int)
     planned_thread: dict[tuple[str, str], int] = defaultdict(int)
+    # v1.4.0: 같은 글의 내 답글(최신순, 링크 리플 제외) — 반복 린트·'이미 쓴 답글'
+    mine_by_post: dict[str, list[str]] = {}
 
     for post_id, comments in conversations.items():
         replied = _already_replied_ids(comments)
         by_id = {c.id: c for c in comments}
+        mine_by_post[post_id] = my_reply_texts(comments)
+        used_texts = tuple(c.text for c in comments if c.owned_by_me and c.text)
         # v1.2.0: 응답 대상은 내 원글에 단 댓글, 또는 내 답글에 단 댓글뿐이다.
         # 제3자끼리 주고받는 대화에 끼어들지 않는다.
         reply_targets = my_post_ids | {c.id for c in comments if c.owned_by_me}
@@ -270,7 +303,14 @@ def _reply_to_comments(
 
             planned_author[comment.username] += 1
             planned_thread[key] += 1
-            plans.append((post_texts.get(post_id, ""), decision, parent_text))
+            plans.append(ReplyPlan(
+                post_id=post_id,
+                post_text=post_texts.get(post_id, ""),
+                decision=decision,
+                parent_text=parent_text,
+                dialogue=reply_engine.build_dialogue(comment, by_id),
+                used_texts=used_texts,
+            ))
 
     log.info("응답 후보 %d건 / 이번 실행 상한 %d건", len(plans), cap)
     if not plans:
@@ -278,7 +318,11 @@ def _reply_to_comments(
 
     sent = 0
     attempted = 0
-    for post_text, decision, parent_text in antibot.shuffled(plans):
+    # v1.4.0: 이번 실행에서 실제로 발행(또는 DRY_RUN 계획)한 답글. 최신이 앞.
+    run_texts: list[str] = []
+    run_texts_by_post: dict[str, list[str]] = defaultdict(list)
+    for plan in antibot.shuffled(plans):
+        decision = plan.decision
         if not antibot.within_daily_cap(sent, cap, label="답글"):
             break
         if budget_sec is not None and not dry_run:
@@ -297,8 +341,11 @@ def _reply_to_comments(
         attempted += 1
 
         text = reply_engine.compose(
-            decision, post_text, settings.claude_api_key, content.lint_reply,
-            parent_reply_text=parent_text,
+            decision, plan.post_text, settings.claude_api_key, content.lint_reply,
+            parent_reply_text=plan.parent_text,
+            dialogue=plan.dialogue,
+            recent_replies=run_texts + mine_by_post.get(plan.post_id, []),
+            used_texts=plan.used_texts + tuple(run_texts_by_post[plan.post_id]),
         )
         if not text:
             log.info("응답 생략 %s (%s)", decision.comment.id, decision.reason)
@@ -306,12 +353,14 @@ def _reply_to_comments(
 
         if dry_run:
             log.info(
-                "DRY_RUN 대상=%s(@%s) 방침=%s 대댓글=%s\n  댓글: %s\n  답글: %s",
+                "DRY_RUN 대상=%s(@%s) 방침=%s(%s) 맥락=%d턴\n  댓글: %s\n  답글: %s",
                 decision.comment.id, decision.comment.username,
-                decision.strategy.value, "예" if parent_text else "아니오",
+                decision.strategy.value, decision.reason, len(plan.dialogue),
                 decision.comment.text[:60], text,
             )
             sent += 1
+            run_texts.insert(0, text)
+            run_texts_by_post[plan.post_id].append(text)
             continue
 
         # 안티봇 — 답글 사이 랜덤 지연 (v1.2.0: 실패 건 다음에도 지연)
@@ -322,6 +371,8 @@ def _reply_to_comments(
             reply_id = client.publish_self_reply(decision.comment.id, text)
             log.info("답글 발행 완료 %s -> %s", decision.comment.id, reply_id)
             sent += 1
+            run_texts.insert(0, text)
+            run_texts_by_post[plan.post_id].append(text)
         except (ThreadsApiError, ContainerNotReadyError) as exc:
             # v1.2.0: 컨테이너 대기 실패(ContainerNotReadyError)는 ThreadsApiError 계열이
             # 아니라 스윕 전체가 중단됐다. 건별 실패로 처리하고 다음 건을 계속한다.

@@ -56,6 +56,7 @@ VERSION = "1.3.0"   # v1.3.0: 곧 나갈 정기 글과의 최소 간격 게이�
 KST = ZoneInfo("Asia/Seoul")
 ASSETS_DIR = REPO_ROOT / "assets"
 # CHAT 도입 후 하루 게시물이 약 10건이다. 5건이면 정기 글이 보이지 않는다.
+# v1.5.0: 23:17 실행 시점에 그날 CHAT 이 전부 목록에 든다. 현실 최대 = 정기 1 + CHAT 15 + 이벤트 2 = 18 ≤ 25.
 POSTS_TO_SCAN = 25
 
 logging.basicConfig(
@@ -69,9 +70,11 @@ for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
 
 
 def _non_chat_stamps(posts: list[dict]) -> list[dt.datetime]:
-    """CHAT 창 게시물을 뺀 발행 시각.
+    """CHAT 구역 게시물을 뺀 발행 시각.
 
-    CHAT 은 오전 잡담이라 정기·이벤트 발행과 간격·상한을 공유하지 않는다.
+    CHAT 은 시장 잡담이라 정기·이벤트 발행과 간격·상한을 공유하지 않는다.
+    v1.5.0: CHAT 창이 09:00~24:00 이지만 판정 창(이벤트 +90분 포함) 안의 글은 CHAT 이 아니다
+    (chat_plan.chat_zones 가 예약 구간을 뺀다). 텍스트 폴백 이벤트 글도 여기서 세어진다.
     섞어 세면 CHAT 만으로 이벤트 상한·최소 간격이 매일 막힌다.
     """
     stamps: list[dt.datetime] = []

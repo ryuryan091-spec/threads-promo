@@ -1,4 +1,6 @@
-"""CHAT 기둥 근거 — 오늘 아침 시장 분위기 수집.
+"""CHAT 기둥 근거 — 최근 24시간 시장 분위기 수집.
+
+v1.5.0: CHAT 이 하루 전체(09:00~24:00)에 나가므로 '오늘 아침' 표현을 시간 중립으로 바꿨다.
 
 소스
   rss  뉴스 RSS 헤드라인 (URL 은 Variables MOOD_RSS_URLS)
@@ -28,7 +30,7 @@ import requests
 
 from . import ai_writer, config
 
-VERSION = "1.0.0"
+VERSION = "1.5.0"   # v1.5.0: 프롬프트 문구 시간 중립화(오늘 아침 → 최근 24시간)
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -56,7 +58,7 @@ class Mood:
     def to_prompt_block(self) -> str:
         if not self.has_evidence:
             return ""
-        lines = ["# 오늘 아침 시장 분위기 근거"]
+        lines = ["# 최근 24시간 시장 분위기 근거"]
         lines.append(f"- 화제 테마: {', '.join(self.themes)}")
         if self.mood_word:
             lines.append(f"- 전반적 분위기: {self.mood_word}")
@@ -177,7 +179,7 @@ def fetch_rss(urls: tuple[str, ...], now: dt.datetime) -> Mood:
 # web (Claude 웹 검색 서버 도구)
 # ---------------------------------------------------------------------------
 
-WEB_SYSTEM_PROMPT = """당신은 시장 분위기 조사원입니다. 웹 검색으로 오늘 아침 기준 최근 24시간의
+WEB_SYSTEM_PROMPT = """당신은 시장 분위기 조사원입니다. 웹 검색으로 지금 기준 최근 24시간의
 미국·한국 금융시장 분위기를 파악합니다.
 
 출력은 JSON 한 개만 씁니다. 다른 말은 붙이지 않습니다.

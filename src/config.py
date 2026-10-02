@@ -14,7 +14,8 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.3.0"   # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
+VERSION = "1.5.0"   # v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
+# v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
 
 
 def _int_env(name: str, default: int) -> int:
@@ -67,7 +68,8 @@ DAILY_REPLY_QUOTA = 1000
 # ---------------------------------------------------------------------------
 # 답글 엔진 (Reply Engine)
 #   X Reply Engine 운영 결정사항 이식: 내 글 댓글만, 좋아요 미사용,
-#   외국어는 무응답이 아니라 한국어 정형 문구, 선택형은 중립 감사만.
+#   외국어는 무응답이 아니라 한국어 정형 문구.
+#   v1.4.0: 선택형 질문은 정형 문구 폐지 → AI 생성(어느 쪽도 고르지 않는 지시). 리액션 전략 신설.
 # ---------------------------------------------------------------------------
 REPLY_ENABLED = os.environ.get("REPLY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 REPLY_MAX_LEN = 200                 # 답글 본문 상한
@@ -76,7 +78,8 @@ REPLY_DAILY_CAP = _int_env("REPLY_DAILY_CAP", 40)
 REPLY_AUTHOR_DAILY_CAP = _int_env("REPLY_AUTHOR_DAILY_CAP", 3)
 # CHAT 도입으로 하루 게시물이 약 10건이 된다. 5개면 반나절치만 보므로
 # 최근 REPLY_SCAN_HOURS 시간 안의 글을 최대 REPLY_SCAN_POSTS 개까지 본다.
-REPLY_SCAN_POSTS = 20               # 최근 내 글 최대 몇 개까지 훑을지
+# v1.4.0: 20 → 40. 24시간 최악 = 정기 7 + CHAT 15 + 이벤트 4 = 26건이 20을 넘는다.
+REPLY_SCAN_POSTS = 40               # 최근 내 글 최대 몇 개까지 훑을지
 REPLY_SCAN_HOURS = 24               # 이 시간 안에 발행된 글만 스캔
 REPLY_SCAN_LIMIT = 100              # 글당 조회할 댓글 수 (v1.2.0: 25→100, 페이지네이션)
 # 대화 조회 페이지 상한. 페이지당 25건 × 4 = 100건.
@@ -96,6 +99,13 @@ REPLY_SWEEP_BUDGET_SEC = 25 * 60
 REPLY_ITEM_MARGIN_SEC = 40          # 생성·조회 여유
 # chat.yml(timeout 25분) 에서 run_chat 시작부터 쓸 수 있는 시간. 준비·여유 5분 제외.
 CHAT_JOB_BUDGET_SEC = 20 * 60
+# v1.4.0: CHAT 트리거 간격이 11~13분으로 줄었다. CHAT 실행의 답글 스윕이 다음 트리거 시각을 넘기면
+# concurrency(threads-reply) 대기열에서 뒤 실행이 취소되어 CHAT 이 누락된다.
+# 스윕 예산을 '다음 트리거까지 남은 시간 - 이 여유'로 자른다. 마지막 트리거는 기존 예산 그대로.
+# v1.5.0: 트리거가 하루 전체로 흩어져 간격이 18분~3시간대가 되었다. 절단 규칙은 그대로 유효하다
+#   (같은 구역 안 연속 트리거에서만 실제로 잘린다). reply.yml 슬롯 전 절단은 시뮬레이션에서
+#   차이가 없어 넣지 않았다(DESIGN_V15_CHAT_WINDOW.md).
+CHAT_SWEEP_NEXT_TRIGGER_MARGIN_SEC = 60
 # 한 원글 스레드에서 같은 사람과 주고받는 답글 누적 상한(핑퐁 방지, 기간 무관).
 # v1.3.0: 상수 → Variable, 기본 3→4.
 REPLY_THREAD_AUTHOR_CAP = _int_env("REPLY_THREAD_AUTHOR_CAP", 4)
@@ -103,6 +113,19 @@ REPLY_THREAD_AUTHOR_CAP = _int_env("REPLY_THREAD_AUTHOR_CAP", 4)
 # v1.3.0: 예약 답글 실행 시작 전 랜덤 지연(초). 슬롯 시각에 답글이 몰려 찍히는 패턴 제거.
 #   reply.yml timeout 40분 = 지연 최대 10분 + 스윕 예산 25분 + 준비 여유.
 REPLY_START_JITTER = (0, 600)
+
+# v1.4.0: 답글 품질 고도화 (DESIGN_V14_REPLY.md)
+#   맥락: 새 댓글의 replied_to 사슬을 대화 안에서 거슬러 올라가 최대 N턴을 프롬프트에 넣는다.
+REPLY_CONTEXT_TURNS = 4             # 대댓글 맥락 최대 턴 수(새 댓글 제외)
+REPLY_CONTEXT_POST_CHARS = 600      # 프롬프트에 넣는 원글 길이 상한 (이전 300)
+REPLY_CONTEXT_TURN_CHARS = 300      # 대화 턴·새 댓글 하나의 길이 상한 (이전 직전 답글 200)
+REPLY_PRIOR_REPLIES_MAX = 5         # '이미 쓴 답글'로 넣는 내 답글 수(링크 리플 제외)
+#   리액션(ㅋㅋ·ㄹㅇ·대박 등): AI 한 마디. 상한 초과·물음표면 재생성, 끝내 실패하면 생략.
+REPLY_REACTION_MAX_LEN = 25         # REACTION 답글 상한(자)
+REPLY_REACTION_MAX_CHARS = 12       # 리액션 어휘 판정 시 댓글 문자 수 상한(자모만인 댓글은 무제한)
+#   답글 형식 범주: 댓글 문자 수(공백·기호 제외) 기준
+REPLY_SHORT_COMMENT_CHARS = 12      # 이하면 '짧은 댓글' → 한 마디
+REPLY_LONG_COMMENT_CHARS = 60       # 이상이면 '긴 댓글' → 한두 문장
 
 # ---------------------------------------------------------------------------
 # 셀프 이어쓰기 (v1.3.0)
@@ -139,7 +162,8 @@ PUBLISH_WEEKLY_REST_DAYS = int(os.environ.get("PUBLISH_WEEKLY_REST_DAYS", "0"))
 #   이전 발행 시각의 앞부분(A 08:23~08:56, B 12:47~13:13, C 20:31~20:40)을 덮어 전환기에도
 #   대부분 같은 기둥으로 복원된다. 그 뒤로 늦게 나간 이전 글(예: C 20:41 이후)은 '판정불가'로
 #   빠진다 — 인사이트 7일 룩백 동안만의 표본 감소이며 발행에는 영향 없다.
-#   판정 창 [t, t+PUBLISH_CLASSIFY_WINDOW_MIN] 은 CHAT(09:00~12:05)·이벤트 창과 겹치지 않는다.
+#   판정 창 [t, t+PUBLISH_CLASSIFY_WINDOW_MIN] 은 이벤트 창과 겹치지 않는다. v1.5.0: CHAT 창(09:00~24:00)
+#   안에 들어오지만 CHAT 구역은 판정 창(+앞 CHAT_RESERVED_MARGIN_MIN)을 빼고 정한다(예약 구간 우선).
 PUBLISH_SLOT_TIMES: dict[str, str] = {
     "D": "07:14", "A": "08:09", "B": "12:26", "E": "15:07",
     "F": "16:36", "C": "19:53", "G": "21:43",
@@ -199,7 +223,8 @@ INSIGHTS_ENABLED = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 INSIGHTS_LOOKBACK_DAYS = int(os.environ.get("INSIGHTS_LOOKBACK_DAYS", "7"))
 # CHAT 도입 후 하루 게시물 약 10건. 7일 룩백을 덮으려면 70건이 필요하다.
-INSIGHTS_POST_LIMIT = int(os.environ.get("INSIGHTS_POST_LIMIT", "70"))
+# v1.4.0: CHAT 평일 최대 15건. 7일 최악 = 정기 7×7 + CHAT(평일 5×15 + 주말 2×3) + 이벤트 4×7 = 158 → 160.
+INSIGHTS_POST_LIMIT = int(os.environ.get("INSIGHTS_POST_LIMIT", "160"))
 
 # 팔로워 100명 미만이면 follower_demographics 를 가져올 수 없다(공식 제약).
 INSIGHTS_DEMOGRAPHICS_MIN_FOLLOWERS = 100
@@ -334,44 +359,87 @@ EVENT_WINDOW_HOURS = float(os.environ.get("EVENT_WINDOW_HOURS", "7.2"))
 EVENT_DAILY_CAP = int(os.environ.get("EVENT_DAILY_CAP", "2"))
 EVENT_MIN_GAP_HOURS = float(os.environ.get("EVENT_MIN_GAP_HOURS", "4"))
 ANTIBOT_EVENT_JITTER = (600, 3000)   # 10~50분
+# 이벤트 슬롯(KST)과 판정 창(분). story.yml cron 과 일치해야 한다(verify_repo 검사 8).
+#   v1.5.0: insights 에서 이동(이름은 insights.EVENT_SLOTS / EVENT_WINDOW_MIN 으로 유지).
+#   chat_plan 이 CHAT 예약 구간을 산출하려면 이 표가 필요한데, insights 는 chat_plan 을
+#   import 하므로 insights 에 두면 순환 import 가 된다.
+#   판정 창 = 지터 최대 50분 + cron 지연 여유 40분. 23:17 창은 자정을 넘긴다(분 계산 % 1440).
+EVENT_SLOT_TIMES: tuple[str, ...] = ("03:11", "13:29", "17:41", "23:17")
+EVENT_CLASSIFY_WINDOW_MIN = 90
 
 
 # ---------------------------------------------------------------------------
-# CHAT (오전 시장 잡담)
-#   KST 09:00~12:05 창에서 텍스트 잡담을 하루 CHAT_DAILY_MIN~MAX 건 발행한다.
-#   본문에 표식을 넣지 않는다. "창 안에서 발행된 글 = CHAT" 으로 정의한다.
-#   정기 슬롯 판정 창(config.PUBLISH_SLOT_TIMES)·이벤트 슬롯(03:11/13:29/17:41/23:17)과 겹치지 않는다.
+# CHAT (시장 잡담)
+#   KST CHAT_WINDOW_START~CHAT_WINDOW_END 창의 'CHAT 구역'에서 텍스트 잡담을
+#   하루 CHAT_DAILY_MIN~MAX 건 발행한다.
+#   본문에 표식을 넣지 않는다. "CHAT 구역 안에서 발행된 텍스트 글 = CHAT" 으로 정의한다.
+#   v1.5.0: 창 09:00~12:05 → 09:00~24:00 (마스터 결정: 창 끝은 정오가 아니라 자정이었다.
+#   하루 전체에 흩어 3시간에 몰아 내는 패턴을 없앤다. DESIGN_V15_CHAT_WINDOW.md).
+#   창 안에 정기·이벤트 판정 창이 들어오므로, 그 '예약 구간'(판정 창 + 앞 여유)을 뺀
+#   나머지 중 CHAT_MIN_ZONE_MIN 분 이상인 구간만 CHAT 구역으로 쓴다(chat_plan.chat_zones).
 #   기본 비활성. Variables CHAT_ENABLED=true 로 켠다.
 # ---------------------------------------------------------------------------
 CHAT_ENABLED = os.environ.get(
     "CHAT_ENABLED", "false"
 ).strip().lower() in ("true", "1", "yes")
 CHAT_WINDOW_START = "09:00"   # KST
-CHAT_WINDOW_END = "12:05"     # KST. 이 시각 이후 시작한 실행은 즉시 종료
-
-# chat.yml cron 과 1:1 대응. 순서가 곧 트리거 번호(T1~T9).
-CHAT_TRIGGERS: tuple[str, ...] = (
-    "09:04", "09:23", "09:44", "10:07", "10:26",
-    "10:48", "11:09", "11:31", "11:52",
+# KST. 끝 미포함. "24:00" = 같은 KST 날짜의 자정 직전까지. 다음 날로 넘기지 않는다
+# (chat_today 집계·날짜 시드가 KST 날짜 단위라서).
+CHAT_WINDOW_END = "24:00"
+# v1.5.0: 정기·이벤트 판정 창 시작 전 이 분만큼도 CHAT 에서 뺀다.
+#   예약 발행 직전에 CHAT 이 붙어 나가는 것을 막는다(정기 지터 최소 1분과 합쳐 6분 이상 떨어짐).
+CHAT_RESERVED_MARGIN_MIN = 5
+# v1.5.0: 예약 구간 사이 빈 구간이 이 분보다 짧으면 CHAT 구역으로 쓰지 않는다(판정에서도 제외).
+#   트리거 1개가 준비(~1.5분)·생성(~1분)·지연·종료 여유(90초)·cron 지연(정상 0~5분)을 담으려면
+#   30분은 필요하다. 짧은 틈(13:14~13:24 10분, 15:00~15:02 2분, 17:24~17:36 12분)은 빠진다.
+#   판정에서도 빼는 이유: 그 틈에 들어오는 텍스트 글은 CHAT 이 아니라 크게 늦은 정기 폴백일
+#   가능성이 크다(CHAT 은 구역 밖에서 게이트가 막는다).
+CHAT_MIN_ZONE_MIN = 30
+# v1.5.0: 시간대 표기(프롬프트 맥락·소재 풀). (이름, 시작 KST). 다음 항목 시작 전까지.
+CHAT_TIME_BANDS: tuple[tuple[str, str], ...] = (
+    ("오전", "09:00"), ("오후", "12:30"), ("저녁", "18:00"), ("밤", "21:00"),
 )
-CHAT_DAILY_MIN = int(os.environ.get("CHAT_DAILY_MIN", "6"))
-CHAT_DAILY_MAX = int(os.environ.get("CHAT_DAILY_MAX", "8"))
+
+# chat.yml cron 과 1:1 대응. 순서가 곧 트리거 번호(T1~T15).
+# v1.4.0: 9개 → 15개. 평일 일일 건수 5~15건 무작위(마스터 결정, 봇 회피).
+# v1.5.0: 09:02~11:50(간격 11~13분) → CHAT 구역 5곳에 길이 비례로 재배치(오전 8 · 오후 2 · 저녁 2 · 밤 3).
+#   조건: 전부 CHAT 구역 안·트리거 뒤 구역 잔여 ≥ 15분, 연속 간격 ≥ 11분, 정각·반각 회피,
+#   타 워크플로 cron 과 6분 이상(워치독 09:53 ↔ 09:46 = 7분, 답글 20:52 ↔ 20:44 = 8분).
+#   답글(reply.yml, 같은 concurrency 그룹) 실행 구간을 피해 배치했다 — DESIGN_V15_CHAT_WINDOW.md 표.
+CHAT_TRIGGERS: tuple[str, ...] = (
+    "09:04", "09:26", "09:47", "10:11", "10:33", "10:56", "11:18", "11:39", "11:57",
+    "15:58",
+    "19:17",
+    "20:44", "21:19",
+    "22:36", "22:54",
+)
+# v1.4.0: 기본 6/8 → 5/15. daily_bounds 가 트리거 수(15) 이하로 보정한다.
+CHAT_DAILY_MIN = int(os.environ.get("CHAT_DAILY_MIN", "5"))
+CHAT_DAILY_MAX = int(os.environ.get("CHAT_DAILY_MAX", "15"))
 # v1.2.0: 토·일(KST) 목표 건수. 휴장일에 평일과 같은 창·같은 건수로 나가는 것은
 # 기계적 패턴이다. 0/0 이면 주말 CHAT 미발행.
 CHAT_WEEKEND_MIN = int(os.environ.get("CHAT_WEEKEND_MIN", "2"))
 CHAT_WEEKEND_MAX = int(os.environ.get("CHAT_WEEKEND_MAX", "3"))
 # v1.2.0: 질문으로 닫는 비율(%). 나머지는 질문 없이 닫는다.
-# 3시간에 6~8건이 전부 질문으로 끝나면 같은 구조가 반복된다.
+# 하루 여러 건(v1.4.0: 평일 5~15건)이 전부 질문으로 끝나면 같은 구조가 반복된다.
 # v1.3.0: 55 → 45. 나머지는 단정·여운·혼잣말 마무리로 나눈다(chat_plan.closing_for).
 CHAT_QUESTION_PCT = 45
+# v1.4.0: 15 → 10. 트리거 간격이 11~13분으로 줄어 15분이면 연속 선택 트리거가 매번 간격 대기에 걸린다.
+# v1.5.0: 10 → 15 복원. 트리거 간격이 18분 이상(같은 구역 안)으로 넓어졌다.
+#   같은 구역의 연속 트리거 쌍은 '첫 글 최악 시각 + 15분'이 구역 끝 − 90초 안에 들어오게 배치했다.
 CHAT_MIN_GAP_MIN = 15          # 직전 게시물(종류 무관)과 최소 간격(분)
 # 간격이 모자라면 버리지 않고 이 한도 안에서 기다렸다 발행한다.
-# 트리거 간격(19~23분)이 cron 지연·지터와 겹치면 간격 미달이 자주 난다.
+# 트리거 간격이 cron 지연·지터와 겹치면 간격 미달이 자주 난다.
 # 버리면 일일 목표를 못 채운다(전수 테스트 시뮬레이션에서 확인, 2026-09-19).
-CHAT_MAX_GAP_WAIT_SEC = 600
-# 발행 전 랜덤 지연(초). v1.3.0: 30~240 → 30~540. 트리거 간격(최소 19분) 안에서
-# 발행 시각이 트리거 시각 근처에 몰리지 않게 한다. chat.yml timeout 25분 이내.
-CHAT_JITTER = (30, 540)
+# v1.4.0: 600 유지 — 최소 간격(10분) 전체를 기다릴 수 있는 값.
+# v1.5.0: 600 → 900 — 최소 간격(15분) 전체를 기다릴 수 있는 값. 간격 대기 + 지연 최악
+#   jitter_range(900) 상한 990초 + 준비·생성 여유(120초) = 1110초 < CHAT_JOB_BUDGET_SEC(1200초).
+CHAT_MAX_GAP_WAIT_SEC = 900
+# 발행 전 랜덤 지연(초). v1.3.0: 30~240 → 30~540. v1.4.0: 30~540 → 30~300.
+# v1.5.0: 30~300 → 60~600. 발행 시각 분산을 넓힌다(트리거 시각 + 1~10분).
+#   지연 상한 + 하한(11분) < 최소 트리거 간격(18분)이라 정시 실행은 다음 트리거 전에 발행을 마친다.
+#   상한은 구역 끝 − 90초로 잘린다(chat_plan.jitter_range).
+CHAT_JITTER = (60, 600)
 CHAT_TEXT_MAX_LEN = 200
 CHAT_RECENT_FOR_DEDUP = 12
 CHAT_SALT = "chat"
@@ -506,8 +574,14 @@ STYLE_LAYOUT_WEIGHTS: tuple[tuple[str, int], ...] = (
 REPETITION_LOOKBACK = 5
 REPETITION_ENDING_MAX = 2   # 최근 5건 중 3건 이상 같은 끝맺음이면 재생성
 
-# 답글 문체 축: (이름, 가중치)
-REPLY_LENGTH_WEIGHTS: tuple[tuple[str, int], ...] = (
-    ("tiny", 30), ("one", 45), ("two", 25),
-)
-REPLY_ASK_PCT = 35   # 되묻기를 허용하는 비율(%). 나머지는 되묻지 않는다.
+# 답글 문체 축: 범주별 (길이 이름, 가중치)
+#   v1.4.0: 댓글 ID 해시만으로 길이를 고르던 방식(tiny 30/one 45/two 25) → 댓글 내용으로 범주를
+#   먼저 정하고 범주 안에서만 해시로 변주한다(style.reply_kind). 범주 이름은 style.REPLY_KINDS.
+REPLY_LENGTH_WEIGHTS_BY_KIND: dict[str, tuple[tuple[str, int], ...]] = {
+    "reaction": (("react", 1),),
+    "short": (("tiny", 1),),
+    "question": (("one", 60), ("two", 40)),
+    "long": (("one", 45), ("two", 55)),
+    "normal": (("tiny", 35), ("one", 65)),
+}
+REPLY_ASK_PCT = 35   # 되묻기를 허용하는 비율(%). 보통·긴 댓글에만 적용. 나머지 범주는 되묻지 않는다.

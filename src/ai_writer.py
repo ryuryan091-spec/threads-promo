@@ -22,7 +22,8 @@ import requests
 
 from . import config
 
-VERSION = "1.3.0"   # v1.3.0: 문체 축 블록, 마무리 4종, 소재 확장, 반복 회피 지시
+VERSION = "1.5.0"   # v1.5.0: CHAT 시간대(band) 맥락 블록·시간대별 소재 풀
+# v1.3.0: 문체 축 블록, 마무리 4종, 소재 확장, 반복 회피 지시
 
 log = logging.getLogger(__name__)
 
@@ -146,16 +147,18 @@ PILLARS: dict[str, Pillar] = {
 
 # ---------------------------------------------------------------------------
 # 로테이션 밖 기둥
-#   CHAT 은 오전 잡담 전용이다(run_chat 만 사용). PILLARS 에 넣지 않는다.
+#   CHAT 은 시장 잡담 전용이다(run_chat 만 사용). PILLARS 에 넣지 않는다.
 #   PILLARS 는 정기 로테이션·weighting·insights 의 기둥 집합이므로,
 #   여기에 넣으면 CHAT 이 정기 로테이션 슬롯을 배정받는 사고가 난다.
 # ---------------------------------------------------------------------------
 CHAT_PILLAR = Pillar(
     key="CHAT",
-    label="오전 시장 잡담",
+    label="시장 잡담",
     evidence_available=True,
     brief=(
-        "오늘 아침 시장 분위기에 대해 옆자리 동료에게 건네는 한두 마디를 쓴다. "
+        "지금 시장 분위기에 대해 옆자리 동료에게 건네는 한두 마디를 쓴다. "
+        "시간 표현은 '# 지금 시간대' 에 맞춘다. 그 시간대가 아닌 때를 '지금'처럼 말하지 않는다"
+        "(예: 저녁에 '오늘 아침', 오전에 '퇴근길'). "
         "전체 200자 이내. 이 상한은 '# 이번 글 형식' 의 길이 지시보다 우선한다. "
         "숫자(아라비아 숫자 포함)를 한 글자도 쓰지 않는다. 기업명·인물명을 쓰지 않는다. "
         "연준·FOMC·한국은행 같은 기관명과 금리·유가·환율 같은 일반명사는 쓸 수 있다. "
@@ -164,6 +167,7 @@ CHAT_PILLAR = Pillar(
         "(예: '다들 눈빛이 바뀌었다', '주변이 술렁인다'). 확인할 수 없는 관찰이다. "
         "가볍게 끝낸다."
     ),
+    # 오전 시간대 소재(v1.4.0 까지의 소재 그대로). 다른 시간대는 CHAT_SEEDS_BY_BAND.
     seeds=(
         "출근길에 본 첫 화면",
         "밤사이 바뀐 공기",
@@ -192,6 +196,81 @@ CHAT_PILLAR = Pillar(
 )
 
 EXTRA_PILLARS: dict[str, Pillar] = {"CHAT": CHAT_PILLAR}
+
+# ---------------------------------------------------------------------------
+# v1.5.0: CHAT 시간대(band)별 소재 풀 · 맥락 문구
+#   CHAT 창이 09:00~24:00 으로 넓어졌다. 밤 10시 글이 '오늘 아침'을 말하면 부자연스럽고
+#   그 자체가 봇 신호다. 시간대 이름은 config.CHAT_TIME_BANDS 와 같아야 한다(테스트).
+#   소재 규칙(기존과 같음): 숫자·기업명·인물명·전망 없음(lint_chat 통과), 짧은 명사구.
+#   풀 크기 ≥ 그 시간대 트리거 수 + 1(수동) — chat_plan.seed_for(band=...) 가 하루 안에서 겹치지 않게 배정.
+# ---------------------------------------------------------------------------
+CHAT_SEEDS_BY_BAND: dict[str, tuple[str, ...]] = {
+    "오전": CHAT_PILLAR.seeds,
+    "오후": (
+        "점심 먹고 다시 본 화면",
+        "오후가 되니 달라진 제목들",
+        "오전에 적어둔 메모를 다시 보는 오후",
+        "회의 사이에 잠깐 본 것",
+        "오후 들어 조용해진 알림",
+        "장 마감 전후의 공기",
+        "하루의 절반이 지난 시점의 생각",
+        "오후에는 한 번만 확인하기로 한 것",
+        "나른한 오후의 거리 두기",
+        "아침과 다르게 읽히는 같은 단어",
+    ),
+    "저녁": (
+        "퇴근길에 돌아본 하루",
+        "오늘 하루 가장 많이 들린 단어",
+        "저녁 먹으며 떠올린 것",
+        "하루를 정리하며 지우는 것",
+        "오늘은 더 안 보기로 한 저녁",
+        "미국장 열리기 전의 조용한 시간",
+        "퇴근하고 나서야 보이는 흐름",
+        "저녁 뉴스 제목을 그냥 넘기기",
+        "하루 동안 바뀌지 않은 생각",
+        "내일 아침 다시 볼 것 하나",
+    ),
+    "밤": (
+        "미국장 열릴 무렵의 공기",
+        "자기 전에 한 번 더 보는 것",
+        "밤에 보는 화면과 낮에 보는 화면",
+        "오늘 하루를 한 단어로 적기",
+        "늦은 밤 괜히 새로고침한 것",
+        "밤에는 일단 내려놓기로 한 것",
+        "조용한 밤의 불편함",
+        "내일로 미뤄둔 판단",
+        "하루 끝에 다시 읽은 메모",
+        "잠들기 전 끄는 알림",
+    ),
+}
+
+# 시간대 맥락. '지금이 언제인지'만 알린다. 시장 일정은 중립 표현만 쓴다(수치·전망 없음).
+CHAT_BAND_CONTEXT: dict[str, str] = {
+    "오전": "지금은 오전입니다(한국시간). 하루를 시작하는 시간대입니다.",
+    "오후": "지금은 오후입니다(한국시간). 점심 이후 하루의 중간입니다.",
+    "저녁": "지금은 저녁입니다(한국시간). 퇴근 무렵부터 저녁 시간대입니다.",
+    "밤": (
+        "지금은 밤입니다(한국시간). 미국장 개장 전후 시간대입니다. "
+        "개장 뒤의 움직임을 예측하거나 단정하지 않습니다."
+    ),
+}
+
+
+def chat_seeds(band: str) -> tuple[str, ...]:
+    """시간대 소재 풀. 알 수 없는 시간대는 오전 풀(기존 동작)."""
+    return CHAT_SEEDS_BY_BAND.get(band, CHAT_PILLAR.seeds)
+
+
+def chat_time_block(band: str) -> str:
+    """CHAT 프롬프트의 '# 지금 시간대' 블록. 알 수 없는 시간대면 빈 문자열."""
+    context = CHAT_BAND_CONTEXT.get(band)
+    if not context:
+        return ""
+    return (
+        "# 지금 시간대\n"
+        f"{context}\n"
+        "시간을 가리키는 말(아침·점심·퇴근길·밤 등)은 지금 시간대에 맞는 것만 씁니다."
+    )
 
 
 def get_pillar(key: str) -> Pillar | None:
@@ -368,10 +447,15 @@ def _build_user_prompt(
     facts_block: str = "",
     closing: str = CLOSING_QUESTION,
     style_block: str = "",
+    time_block: str = "",
 ) -> str:
     parts = [
         f"# 오늘의 주제 영역: {pillar.label}",
         pillar.brief,
+    ]
+    if time_block:
+        parts += ["", time_block]
+    parts += [
         "",
         f"# 소재 힌트\n{seed}",
         "",
@@ -468,11 +552,13 @@ def generate(
     facts_block: str = "",
     closing: str = CLOSING_QUESTION,
     style_block: str = "",
+    time_block: str = "",
 ) -> str:
     """Claude 로 게시글 본문을 생성한다. 실패 시 AiWriterError.
 
     closing: CLOSING_QUESTION | CLOSING_STATEMENT | CLOSING_TRAIL | CLOSING_ASIDE
     style_block: style.PostStyle.block() — 길이·줄바꿈 지시(v1.3.0). 비우면 생략.
+    time_block: chat_time_block(band) — CHAT 시간대 맥락(v1.5.0). 비우면 생략.
     """
     pillar = get_pillar(pillar_key)
     if pillar is None:
@@ -486,7 +572,8 @@ def generate(
             {
                 "role": "user",
                 "content": _build_user_prompt(
-                    pillar, seed, recent_texts or [], facts_block, closing, style_block
+                    pillar, seed, recent_texts or [], facts_block, closing, style_block,
+                    time_block,
                 ),
             }
         ],

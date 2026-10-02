@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from . import ai_writer, chat_plan, config, content, watchdog
 
-VERSION = "1.3.0"   # v1.3.0: 정기 슬롯 7개·판정 창을 config 에서 산출
+VERSION = "1.5.0"   # v1.5.0: 이벤트 표 config 이동·예약 창 우선 복원. v1.3.0: 정기 슬롯 7개
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -42,15 +42,17 @@ USER_METRICS = ("views", "likes", "replies", "reposts", "quotes",
 #   v1.3.0: 정기 창 = 지터 최대 20분 + 여유 27분 = 47분 (config.PUBLISH_CLASSIFY_WINDOW_MIN).
 #   슬롯 표는 config.PUBLISH_SLOT_TIMES 하나에서 읽는다. 창 겹침은 테스트로 전수 검사한다.
 #   이벤트 = 지터 최대 50분 + cron 지연 여유 40분. 23:17 창은 자정을 넘긴다(분 계산 % 1440).
+#   v1.5.0: 이벤트 표·창은 config(EVENT_SLOT_TIMES·EVENT_CLASSIFY_WINDOW_MIN)로 옮겼다.
+#   chat_plan 이 CHAT 예약 구간을 같은 출처에서 산출한다(순환 import 회피). 이름은 유지한다.
 PUBLISH_WINDOW_MIN = config.PUBLISH_CLASSIFY_WINDOW_MIN
-EVENT_WINDOW_MIN = 90
+EVENT_WINDOW_MIN = config.EVENT_CLASSIFY_WINDOW_MIN
 
 # "HH:MM" -> 슬롯 이름. verify_repo 검사 8 이 publish.yml cron 과 대조한다.
 PUBLISH_SLOTS = {hhmm: slot for slot, hhmm in config.PUBLISH_SLOT_TIMES.items()}
-EVENT_SLOTS = ("03:11", "13:29", "17:41", "23:17")
+EVENT_SLOTS = config.EVENT_SLOT_TIMES
 
 UNKNOWN = "판정불가"
-CHAT = "CHAT"   # 오전 잡담. 시간창 + 형식으로 판정한다(chat_plan.is_chat_post).
+CHAT = "CHAT"   # 시장 잡담. CHAT 구역 + 형식으로 판정한다(chat_plan.is_chat_post).
 
 
 def parse_timestamp(raw: str) -> dt.datetime | None:
@@ -176,12 +178,16 @@ def discriminator_from_timestamp(posted_at: dt.datetime) -> int | None:
 
 
 def restore_pillar(posted_at: dt.datetime, media_type: str = "") -> str:
-    """게시물 발행 시각(+형식)에서 기둥을 복원한다. 불가하면 UNKNOWN."""
-    if chat_plan.is_chat_post(posted_at, media_type):
-        return CHAT
+    """게시물 발행 시각(+형식)에서 기둥을 복원한다. 불가하면 UNKNOWN.
+
+    v1.5.0: 정기·이벤트 판정 창을 먼저 본다(예약 창 우선). CHAT 창이 하루 전체(09:00~24:00)로
+    넓어져 판정 창이 CHAT 창 안에 들어오므로, 판정 창 안에서 텍스트로 폴백된 정기 글은
+    CHAT 이 아니라 그 슬롯의 기둥이다. chat_plan.chat_zones 도 예약 구간을 빼고 산출하므로
+    두 판정은 같은 결론을 낸다(순서는 그 불변식이 깨져도 예약 창이 이기게 하는 이중 장치).
+    """
     disc = discriminator_from_timestamp(posted_at)
     if disc is None:
-        return UNKNOWN
+        return CHAT if chat_plan.is_chat_post(posted_at, media_type) else UNKNOWN
     if disc == config.DISCRIMINATOR_EVENT:
         # v1.2.0: 이벤트 경로는 기둥을 STORY 로 강제한다(run_story).
         return "STORY"

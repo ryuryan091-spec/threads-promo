@@ -6,6 +6,12 @@
   - 결정론: key(날짜·실행 구분자·댓글 ID 등) 해시로 뽑는다. 같은 실행 재시도는 같은 형식.
   - 무상태: 저장하지 않는다.
   - 어투는 존댓말 고정(마스터 결정 전 기본값 유지). 축은 길이·줄바꿈·마무리·되묻기뿐.
+
+v1.1.0 (답글 고도화)
+  - 답글 형식은 댓글 '내용'으로 범주를 먼저 정한다(리액션·짧은 댓글·질문·긴 댓글·보통).
+    범주 안에서만 댓글 ID 해시로 길이·되묻기를 바꾼다. 같은 댓글은 항상 같은 형식(결정론).
+  - 답글 길이의 기준은 이 모듈의 '# 이번 답글 형식' 블록 하나다(시스템 프롬프트는 이를 참조).
+    REPLY_MAX_LEN(200)은 린트의 절대 상한(안전망)일 뿐 형식 기준이 아니다.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from dataclasses import dataclass
 
 from . import config
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.1.0: 댓글 내용 기반 답글 형식(범주 → 해시)
 
 # 마무리 4종. ai_writer 의 CLOSING_* 와 같은 값.
 QUESTION = "question"
@@ -35,11 +41,37 @@ _LAYOUT_TEXT = {
     "block": "줄바꿈 없이 한 덩어리로 씁니다.",
     "mixed": "첫 문장 뒤에서만 한 번 줄을 바꿉니다.",
 }
-_REPLY_LENGTH_TEXT = {
-    "tiny": "한 마디로 답합니다. 40자 이내.",
-    "one": "한 문장으로 답합니다.",
-    "two": "두 문장으로 답합니다.",
+# v1.1.0: 답글 길이 기준(자). 형식 블록 문구가 이 값에서 나온다. react 만 compose 가 강제한다.
+REPLY_LENGTH_LIMITS: dict[str, int] = {
+    "react": config.REPLY_REACTION_MAX_LEN,
+    "tiny": 40,
+    "one": 80,
+    "two": 150,
 }
+_REPLY_LENGTH_TEXT = {
+    "react": f"짧은 한 마디로 답합니다. {REPLY_LENGTH_LIMITS['react']}자 이내.",
+    "tiny": f"한 마디로 답합니다. {REPLY_LENGTH_LIMITS['tiny']}자 이내.",
+    "one": f"한 문장으로 답합니다. {REPLY_LENGTH_LIMITS['one']}자 이내.",
+    "two": f"두 문장으로 답합니다. {REPLY_LENGTH_LIMITS['two']}자 이내.",
+}
+
+# 답글 범주(댓글 내용으로 결정)
+KIND_REACTION = "reaction"   # ㅋㅋ·ㄹㅇ·대박 등 (reply_engine.is_reaction)
+KIND_SHORT = "short"         # 문자 REPLY_SHORT_COMMENT_CHARS 이하
+KIND_QUESTION = "question"   # 물음표 또는 의문 어미
+KIND_LONG = "long"           # 문자 REPLY_LONG_COMMENT_CHARS 이상
+KIND_NORMAL = "normal"
+REPLY_KINDS = (KIND_REACTION, KIND_SHORT, KIND_QUESTION, KIND_LONG, KIND_NORMAL)
+
+_KIND_TEXT = {
+    KIND_REACTION: "가벼운 리액션 댓글입니다. 받아주는 한 마디만 씁니다.",
+    KIND_SHORT: "짧은 댓글이니 짧게 받습니다.",
+    KIND_QUESTION: "질문에 먼저 답합니다. 첫 문장이 곧 답이어야 합니다.",
+    KIND_LONG: "댓글에서 가장 와닿은 한 가지에만 반응합니다.",
+    KIND_NORMAL: "",
+}
+# 되묻기를 허용할 수 있는 범주. 나머지는 항상 되묻지 않는다.
+_ASKABLE_KINDS = (KIND_NORMAL, KIND_LONG)
 
 
 def _hash(key: str) -> int:
@@ -84,6 +116,7 @@ def pick_post_style(key: str, *, chat: bool = False) -> PostStyle:
 class ReplyStyle:
     length: str
     may_ask: bool
+    kind: str = ""
 
     def block(self) -> str:
         ask = (
@@ -91,14 +124,60 @@ class ReplyStyle:
             if self.may_ask
             else "되묻지 않습니다. 물음표를 쓰지 않습니다."
         )
-        return "\n".join(["# 이번 답글 형식", _REPLY_LENGTH_TEXT[self.length], ask])
+        lines = ["# 이번 답글 형식", _REPLY_LENGTH_TEXT[self.length]]
+        if _KIND_TEXT.get(self.kind):
+            lines.append(_KIND_TEXT[self.kind])
+        lines.append(ask)
+        return "\n".join(lines)
 
 
-def pick_reply_style(key: str) -> ReplyStyle:
-    return ReplyStyle(
-        length=weighted_pick(f"{key}::rlen", config.REPLY_LENGTH_WEIGHTS),
-        may_ask=_hash(f"{key}::ask") % 100 < config.REPLY_ASK_PCT,
-    )
+_CORE_STRIP = re.compile(r"[\s\W_]+")
+# 의문 어미. 물음표 없이 끝나는 질문("어떻게 하시나요", "궁금하네요")을 잡는다. 보수적으로 둔다.
+_QUESTION_TAIL = re.compile(
+    r"(까요|나요|가요|는지요?|던가요?|인가요?|건가요?|을까|를까|할까|어때요?|뭔가요|"
+    r"궁금(해요|합니다|하네요|하다|해서요)?)$"
+)
+
+
+def core_text(text: str) -> str:
+    """공백·기호·이모지를 뺀 '문자'만. 길이 판정의 기준."""
+    return _CORE_STRIP.sub("", text or "")
+
+
+def is_question(text: str) -> bool:
+    """물음표가 있거나 의문 어미로 끝나면 질문으로 본다."""
+    raw = (text or "").strip()
+    if "?" in raw or "？" in raw:
+        return True
+    return bool(_QUESTION_TAIL.search(_TRAILING.sub("", raw)))
+
+
+def reply_kind(text: str, *, reaction: bool = False) -> str:
+    """댓글 내용으로 답글 범주를 정한다. 우선순위: 리액션 > 질문 > 짧음 > 김 > 보통.
+
+    질문은 길이보다 우선한다. "왜요?" 처럼 짧아도 답이 필요하다.
+    """
+    if reaction:
+        return KIND_REACTION
+    if is_question(text):
+        return KIND_QUESTION
+    size = len(core_text(text))
+    if size <= config.REPLY_SHORT_COMMENT_CHARS:
+        return KIND_SHORT
+    if size >= config.REPLY_LONG_COMMENT_CHARS:
+        return KIND_LONG
+    return KIND_NORMAL
+
+
+def pick_reply_style(key: str, comment_text: str = "", *, reaction: bool = False) -> ReplyStyle:
+    """댓글 내용으로 범주를 정하고, 범주 안에서만 key(댓글 ID) 해시로 변주한다.
+
+    같은 댓글(같은 ID·같은 본문)은 재시도해도 같은 형식이다(결정론).
+    """
+    kind = reply_kind(comment_text, reaction=reaction)
+    length = weighted_pick(f"{key}::rlen", config.REPLY_LENGTH_WEIGHTS_BY_KIND[kind])
+    may_ask = kind in _ASKABLE_KINDS and _hash(f"{key}::ask") % 100 < config.REPLY_ASK_PCT
+    return ReplyStyle(length=length, may_ask=may_ask, kind=kind)
 
 
 # ---------------------------------------------------------------------------

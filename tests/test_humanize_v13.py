@@ -79,8 +79,11 @@ class TestStyleAxes:
         assert chat["normal"] < post["normal"]
 
     def test_reply_style(self):
-        styles = [style.pick_reply_style(f"cid{i}") for i in range(4000)]
-        assert {s.length for s in styles} == {"tiny", "one", "two"}
+        # v1.4.0: 형식 범주는 댓글 내용으로 정하고 범주 안에서만 해시로 변주한다.
+        #   되묻기 허용 비율(REPLY_ASK_PCT)은 보통·긴 댓글에만 적용된다.
+        text = "이 방식으로 계속 기록하시는 거 좋아 보여요"   # 보통 댓글
+        styles = [style.pick_reply_style(f"cid{i}", text) for i in range(4000)]
+        assert {s.length for s in styles} == {"tiny", "one"}
         ask = sum(s.may_ask for s in styles) / len(styles)
         assert ask == pytest.approx(config.REPLY_ASK_PCT / 100, abs=0.03)
         assert "물음표를 쓰지 않습니다" in style.ReplyStyle("one", False).block()
@@ -202,7 +205,8 @@ class TestLintAndFallback:
         assert any(not t.rstrip().endswith("?") for t in texts)
 
     def test_canned_replies_pass_lint(self):
-        for text in reply_engine.NON_KOREAN_REPLIES + reply_engine.NEUTRAL_THANKS_REPLIES:
+        # v1.4.0: 선택형 정형 문구(NEUTRAL_THANKS_REPLIES) 폐지 — 외국어 문구만 남는다.
+        for text in reply_engine.NON_KOREAN_REPLIES:
             content.lint_reply(text)
 
     def test_seed_pools_expanded(self):
@@ -644,17 +648,21 @@ class TestUpcomingRegularGate:
 
 class TestReviewFixes:
     def test_chat_jitter_capped_at_window_end(self):
-        now = dt.datetime(2026, 9, 28, 11, 58, tzinfo=KST)
+        # v1.4.0: 지연 상한 540 → 300초. 11:58 은 여유(330초)가 상한보다 커서
+        # 자르지 않으므로, 상한이 실제로 잘리는 12:01(여유 150초)로 옮겼다.
+        # v1.5.0: 창 끝(12:05) → 오전 구역 끝(12:21, 정기 B 12:26 − 5분). 12:16 은 여유 210초.
+        now = dt.datetime(2026, 9, 28, 12, 16, tzinfo=KST)
         low, high = chat_plan.jitter_range(0, now)
-        room = (7 * 60) - chat_plan.WINDOW_END_MARGIN_SEC
+        room = (5 * 60) - chat_plan.WINDOW_END_MARGIN_SEC
         assert high == max(low, room) and high < config.CHAT_JITTER[1]
         early = dt.datetime(2026, 9, 28, 9, 4, tzinfo=KST)
         assert chat_plan.jitter_range(0, early) == config.CHAT_JITTER
 
     def test_chat_jitter_gap_wait_not_cut(self):
-        now = dt.datetime(2026, 9, 28, 12, 0, tzinfo=KST)
+        # v1.5.0: 12:00 → 12:18 (오전 구역 끝 12:21 까지 여유 90초 = 종료 여유와 같음)
+        now = dt.datetime(2026, 9, 28, 12, 18, tzinfo=KST)
         low, high = chat_plan.jitter_range(300, now)
-        assert low == 330 and high == low   # 간격 대기는 유지, 재검증이 창 밖을 보류
+        assert low == 330 and high == low   # 간격 대기는 유지, 재검증이 구역 밖을 보류
 
     def test_repeated_candidate_used_when_retry_hard_fails(self):
         seq = ["요즘 반복된 글", "여러분 금지어"]

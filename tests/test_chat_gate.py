@@ -34,8 +34,16 @@ def _counts(posts: list[dict], now: dt.datetime) -> chat_plan.PostCounts:
 
 
 class TestWindow:
+    # v1.5.0: 창 09:00~24:00 − 예약 구간(정기·이벤트 판정 창 + 앞 5분), 30분 미만 틈 제외.
+    #   CHAT 구역 09:00~12:21 · 15:55~16:31 · 19:12~19:48 · 20:41~21:38 · 22:31~23:12.
     @pytest.mark.parametrize("hh,mm,expected", [
-        (8, 59, False), (9, 0, True), (10, 30, True), (12, 4, True), (12, 5, False),
+        (8, 59, False), (9, 0, True), (10, 30, True), (12, 20, True), (12, 21, False),
+        (12, 5, True),                      # v1.4.0 창 끝(12:05) → 이제 구역 안
+        (13, 20, False),                    # 13:14~13:24 틈(10분) — 30분 미만이라 제외
+        (15, 54, False), (15, 55, True), (16, 30, True), (16, 31, False),
+        (19, 12, True), (19, 47, True), (19, 48, False),
+        (20, 41, True), (21, 37, True), (21, 38, False),
+        (22, 31, True), (23, 11, True), (23, 12, False), (23, 59, False),
     ])
     def test_boundaries(self, hh, mm, expected):
         assert chat_plan.is_chat_time(_kst(hh, mm)) is expected
@@ -66,7 +74,9 @@ class TestWindow:
             assert hhmm[3:] not in ("00", "30"), hhmm
 
     @pytest.mark.parametrize("raw,expected", [
-        ("T1", 1), ("t9", 9), ("T0", None), ("T10", None), ("MANUAL", None), ("", None),
+        # v1.4.0: 트리거 15개 — T10~T15 유효, T16 부터 무효.
+        ("T1", 1), ("t9", 9), ("T10", 10), ("t15", 15), ("T0", None), ("T16", None),
+        ("MANUAL", None), ("", None),
     ])
     def test_trigger_number(self, raw, expected):
         assert chat_plan.trigger_number(raw) == expected
@@ -106,7 +116,8 @@ class TestDailyPlan:
             mock.patch.object(config, "CHAT_DAILY_MIN", 50),
             mock.patch.object(config, "CHAT_DAILY_MAX", 99),
         ):
-            assert chat_plan.daily_bounds() == (9, 9)
+            total = len(config.CHAT_TRIGGERS)   # v1.4.0: 15
+            assert chat_plan.daily_bounds() == (total, total)
         with (
             mock.patch.object(config, "CHAT_DAILY_MIN", 5),
             mock.patch.object(config, "CHAT_DAILY_MAX", 2),
@@ -177,9 +188,10 @@ class TestGate:
 
     def test_gap_wait_and_jitter_range(self):
         now = _kst(10, 0)
-        recent = _counts([_post(now - dt.timedelta(minutes=10))], now)
+        # v1.5.0: 최소 간격 10 → 15분. 4분 전 글이면 11분 대기.
+        recent = _counts([_post(now - dt.timedelta(minutes=4))], now)
         wait = chat_plan.gap_wait_seconds(recent, now)
-        assert wait == 5 * 60
+        assert wait == (config.CHAT_MIN_GAP_MIN - 4) * 60 == 11 * 60
         low, high = chat_plan.jitter_range(wait)
         assert low >= wait + 30 and high > low
         assert chat_plan.jitter_range(0) == config.CHAT_JITTER
@@ -230,9 +242,10 @@ class TestGate:
         assert got and "최소 간격" in got
 
     def test_blocks_outside_window(self):
-        now = _kst(12, 10)
+        # v1.5.0: 12:10 은 이제 구역 안. 정기 B(12:26) 예약 구간 안인 12:30 으로 옮겼다.
+        now = _kst(12, 30)
         got = chat_plan.gate(DAY, now, 9, _counts([], now), manual=True)
-        assert got and "창" in got
+        assert got and "구역" in got
 
     def test_unknown_trigger_blocked_on_schedule(self):
         now = _kst(10, 0)
@@ -351,28 +364,34 @@ class TestRunChat:
         trig = _first_selected(DAY)
         hhmm = config.CHAT_TRIGGERS[trig - 1]
         now = _kst(int(hhmm[:2]), int(hhmm[3:]))
-        client = _client([_post(now - dt.timedelta(minutes=8))])
+        # v1.4.0: 직전 글은 CHAT 이 아닌 글(이미지)로 둔다. 첫 선택 트리거가 창 안
+        # 깊숙이 있으면 8분 전 텍스트 글이 오늘 CHAT 으로 세어져 '이미 발행'으로 보류된다.
+        prev = {**_post(now - dt.timedelta(minutes=8)), "media_type": "IMAGE"}
+        later = {**_post(now - dt.timedelta(minutes=16)), "media_type": "IMAGE"}
+        client = _client([prev])
         # 재검증 시점에는 간격이 충족된 것으로 본다(지터 동안 시간이 흐름).
-        client.get_my_posts.side_effect = [
-            [_post(now - dt.timedelta(minutes=8))],
-            [_post(now - dt.timedelta(minutes=16))],
-        ]
+        client.get_my_posts.side_effect = [[prev], [later]]
         with mock.patch.object(run_chat.chat_plan, "jitter_range",
                                wraps=chat_plan.jitter_range) as jr:
             code, _, _ = _run_chat(client, now=now, trigger=f"T{trig}")
         assert code == 0
         client.publish_text_post.assert_called_once()
-        assert jr.call_args.args[0] == 7 * 60     # 15분 - 8분 = 7분 대기 요청
+        # v1.5.0: 15분 - 8분 = 7분 대기 요청 (v1.4.0: 10분 - 8분 = 2분)
+        assert jr.call_args.args[0] == (config.CHAT_MIN_GAP_MIN - 8) * 60 == 7 * 60
 
     def test_gap_wait_over_limit_skips(self, chat_env):
         trig = _first_selected(DAY)
         hhmm = config.CHAT_TRIGGERS[trig - 1]
         now = _kst(int(hhmm[:2]), int(hhmm[3:]))
-        client = _client([_post(now)])       # 방금 글 → 대기 15분 > 한도 10분
-        with mock.patch.object(config, "CHAT_MAX_GAP_WAIT_SEC", 600):
+        # v1.4.0: 최소 간격이 10분이라 방금 글이면 대기 600초 = 기본 한도(600초)로 통과한다.
+        # 한도 초과 경로를 보려고 한도를 300초로 낮춘다. 직전 글은 CHAT 이 아닌 글(이미지)로
+        # 둬야 '이미 발행' 보류가 아니라 간격 한도 보류를 검증한다.
+        client = _client([{**_post(now), "media_type": "IMAGE"}])   # 방금 글 → 대기 600초
+        with mock.patch.object(config, "CHAT_MAX_GAP_WAIT_SEC", 300):
             code, gen, sweep = _run_chat(client, now=now, trigger=f"T{trig}")
         assert code == 0
         assert not client.publish_text_post.called
+        assert not gen.called                # 간격 한도 보류는 생성 전에 끝난다
         sweep.assert_called_once()
 
     def test_lint_failure_skips_publish(self, chat_env):
@@ -397,7 +416,11 @@ class TestRunChat:
     def test_dry_run_never_publishes(self, chat_env):
         os.environ["DRY_RUN"] = "true"
         client = _client([])
-        code, gen, _ = _run_chat(client, now=_kst(10, 7), trigger="T4")
+        # v1.4.0: 고정 T4 대신 이 날의 첫 선택 트리거(계획이 바뀌어도 게이트 통과).
+        trig = _first_selected(DAY)
+        hhmm = config.CHAT_TRIGGERS[trig - 1]
+        now = _kst(int(hhmm[:2]), int(hhmm[3:]))
+        code, gen, _ = _run_chat(client, now=now, trigger=f"T{trig}")
         assert code == 0
         assert gen.called                      # 미리보기는 생성한다
         assert not client.publish_text_post.called

@@ -8,6 +8,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 import pytest
+from test_reply_v14 import varied_gen
 
 from src import config, reply_engine, run_reply
 from src.reply_engine import Comment
@@ -136,10 +137,12 @@ def _sweep(fake: FakeApi, *, per_run_cap: int = 20, parent_capture: list | None 
     from src.env import load_settings
     from src.threads_client import ThreadsClient
 
+    texts = varied_gen()   # v1.4.0: 같은 실행 안 반복 답글은 생략되므로(R6) 서로 다른 답글
+
     def gen(api_key, post_text, comment_text, parent_reply_text="", **_kw):  # v1.3.0: style_block
         if parent_capture is not None:
             parent_capture.append(parent_reply_text)
-        return "답글입니다"
+        return texts(api_key, post_text, comment_text, parent_reply_text)
 
     with (
         mock.patch("src.threads_client._request", side_effect=fake),

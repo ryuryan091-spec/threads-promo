@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import test_chat_gate as _tcg
 from test_chat_gate import DAY, _client, _first_selected, _kst, _run_chat
+from test_reply_v14 import varied_gen
 
 from src import (
     ai_writer,
@@ -85,9 +86,12 @@ class TestRunChatGuards:
         trig = _first_selected(DAY)
         client = _client([])
         _, gen, _ = _run_chat(client, now=_trigger_now(trig), trigger=f"T{trig}")
+        # v1.5.0: 시간대(band) 소재 풀에서 시간대 시드로 배정한다(이전: 단일 풀·트리거 번호 칸).
+        band = chat_plan.band_for(trig, _trigger_now(trig))
         assert gen.call_args.args[2] == chat_plan.seed_for(
-            DAY, trig, ai_writer.CHAT_PILLAR.seeds
+            DAY, trig, ai_writer.chat_seeds(band), band=band
         )
+        assert gen.call_args.kwargs["time_block"] == ai_writer.chat_time_block(band)
         assert gen.call_args.kwargs["closing"] == chat_plan.closing_for(DAY, trig)
 
 
@@ -585,7 +589,7 @@ class TestWorkflowDefaults:
         )
 
     def test_m1_insights_limit_matches_config_default(self):
-        assert "INSIGHTS_POST_LIMIT: ${{ vars.INSIGHTS_POST_LIMIT || '70' }}" in self._body(
+        assert "INSIGHTS_POST_LIMIT: ${{ vars.INSIGHTS_POST_LIMIT || '160' }}" in self._body(
             "insights.yml"
         )
 
@@ -720,7 +724,8 @@ class TestReviewFixes:
                "THREADS_LONG_LIVED_TOKEN": "t", "CLAUDE_AI_KEY": "k", "DRY_RUN": "false"}
         with (
             mock.patch.dict(os.environ, env),
-            mock.patch("src.reply_engine._generate_reply", return_value="답글입니다"),
+            # v1.4.0: 같은 실행 안 반복 답글은 생략되므로(R6) 서로 다른 답글을 돌려준다.
+            mock.patch("src.reply_engine._generate_reply", side_effect=varied_gen()),
             mock.patch("src.antibot.time.sleep"),
             mock.patch.object(run_reply.time, "monotonic", side_effect=clock),
             mock.patch.object(run_reply.notifier, "send"),

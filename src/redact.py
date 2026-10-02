@@ -12,6 +12,10 @@
   2. install()     : 로그 레코드 생성 시점에 메시지·예외 트레이스를 마스킹한다.
                      src 패키지 import 시 1회 설치된다(src/__init__.py).
   3. 호출 지점     : notifier.send, ThreadsApiError 생성자에서도 한 번 더 적용한다.
+
+v1.1.0
+  4. mask_username / mask_mentions : 답글 감사 요약(scripts/reply_audit.py)처럼 타인 댓글을
+     Actions 요약에 옮길 때 계정명을 가린다. 자격증명 마스킹과는 별개다.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ import os
 import re
 import traceback
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.1.0: 계정명 가림(mask_username, mask_mentions)
 
 MASK = "***"
 
@@ -68,6 +72,22 @@ def redact(text: object) -> str:
     for pattern, repl in _PATTERNS:
         out = pattern.sub(repl, out)
     return out
+
+
+_MENTION = re.compile(r"@[A-Za-z0-9_.]+")
+
+
+def mask_username(name: object) -> str:
+    """계정명을 앞 2글자만 남기고 가린다. 빈 값은 '-'."""
+    value = str(name or "").strip().lstrip("@")
+    if not value:
+        return "-"
+    return value[:2] + MASK
+
+
+def mask_mentions(text: object) -> str:
+    """본문 속 @계정 언급을 가린다."""
+    return _MENTION.sub("@" + MASK, str(text or ""))
 
 
 _INSTALLED = False
