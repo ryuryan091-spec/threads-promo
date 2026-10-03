@@ -36,10 +36,12 @@ jobs:
 
       - name: Reply Audit
         env:
+          # v1.6.0 계정 보호(안전) 모드 — 기본값은 config.SAFETY_VARIABLE_DEFAULTS 와 같아야 한다(verify_repo 검사 11)
+          REPLY_CANNED_ENABLED: ${{ vars.REPLY_CANNED_ENABLED || 'false' }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
-          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '3' }}
-          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '4' }}
+          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '1' }}
+          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '2' }}
           # 입력값은 run 에 직접 넣지 않고 env 로 넘긴다(스크립트 주입 방지). 범위는 스크립트가 1~14 로 맞춘다.
           AUDIT_DAYS: ${{ inputs.days }}
         run: python scripts/reply_audit.py --days "$AUDIT_DAYS"

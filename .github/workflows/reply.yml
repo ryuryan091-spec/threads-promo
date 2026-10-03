@@ -69,6 +69,10 @@ jobs:
 
       - name: Reply
         env:
+          # v1.6.0 계정 보호(안전) 모드 — 기본값은 config.SAFETY_VARIABLE_DEFAULTS 와 같아야 한다(verify_repo 검사 11)
+          AUTOMATION_ENABLED: ${{ vars.AUTOMATION_ENABLED || 'false' }}
+          WARMUP_UNTIL: ${{ vars.WARMUP_UNTIL }}
+          REPLY_CANNED_ENABLED: ${{ vars.REPLY_CANNED_ENABLED || 'false' }}
           THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
@@ -83,10 +87,10 @@ jobs:
           YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
           X_URL: ${{ vars.X_URL }}
           REPLY_ENABLED: ${{ vars.REPLY_ENABLED || 'true' }}
-          REPLY_SCHEDULED_RUN_CAP: ${{ vars.REPLY_SCHEDULED_RUN_CAP || '6' }}
-          REPLY_DAILY_CAP: ${{ vars.REPLY_DAILY_CAP || '40' }}
-          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '3' }}
-          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '4' }}
+          REPLY_SCHEDULED_RUN_CAP: ${{ vars.REPLY_SCHEDULED_RUN_CAP || '3' }}
+          REPLY_DAILY_CAP: ${{ vars.REPLY_DAILY_CAP || '10' }}
+          REPLY_AUTHOR_DAILY_CAP: ${{ vars.REPLY_AUTHOR_DAILY_CAP || '1' }}
+          REPLY_THREAD_AUTHOR_CAP: ${{ vars.REPLY_THREAD_AUTHOR_CAP || '2' }}
           FOLLOWUP_ENABLED: ${{ vars.FOLLOWUP_ENABLED || 'false' }}
           FOLLOWUP_PCT: ${{ vars.FOLLOWUP_PCT || '25' }}
           FOLLOWUP_DAILY_CAP: ${{ vars.FOLLOWUP_DAILY_CAP || '3' }}
