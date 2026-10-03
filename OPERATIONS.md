@@ -7,6 +7,10 @@
 
 ## 0. 한 장 요약
 
+> **v1.6.0 계정 보호(안전) 모드가 기본이다.** `AUTOMATION_ENABLED` 를 넣지 않으면 모든 쓰기 경로가
+> 아무것도 쓰지 않고 종료한다(5-C 절, DESIGN_V16_SAFETY.md). 아래 표의 빈도는 자동화를 켰을 때의
+> 기능별 상한이며, 실제로는 일일 예산(`DAILY_POST_BUDGET`, 기본 2)과 답글 캡(일 10)이 먼저 걸린다.
+
 | 항목 | 내용 |
 |---|---|
 | 목적 | Threads로 YouTube·X 유입 (Threads 자체 수익 없음) |
@@ -175,7 +179,7 @@ OAuth 경로(`auth_url.yml` → `bootstrap.yml`)는 예비로 남겨둔 것입�
 | `36001` / subcode 2207083 | 이미지 포맷 인식 불가 | URL이 이미지가 아니거나 JPEG/PNG 아님 | 실행 시 출력되는 `진단:` 줄 참조 |
 | exit 5 | 이미지 검증 실패 | 발행 전 사전 차단 | `진단:` 줄이 원인을 지목함 |
 | `24` / subcode 4279009 | Media Not Found | 컨테이너 처리 완료 전 발행 | 자동 대기·폴링으로 해소됨. 재발 시 `CONTAINER_WAIT_IMAGE_SEC` 상향 |
-| exit 7 | **API 접근 차단 (code=200)** — 워크플로우 전체 정지 필요 |
+| exit 7 | **계정·토큰 사용 불가** | API 접근 차단(code=200) 또는 v1.6.0 부터 토큰 무효(code=190 / HTTP 401). 그 실행의 이후 쓰기 0건·재시도 없음·텔레그램 1회 | `AUTOMATION_ENABLED=false` 로 전체 정지 후 계정·앱·토큰 확인(190 이면 4-3 재발급) |
 | exit 6 | 컨테이너 처리 실패 | ERROR/EXPIRED/타임아웃 | 로그의 `error_message` 확인 |
 | `1349245` | 테스트 초대 미수락 | Threads Tester 수락 안 함 | Threads 앱 → 설정 → 웹사이트 권한 → 초대 → 수락 |
 | `1349168` | 리디렉션 URI 화이트리스트 없음 | 콜백 URL 미등록 | Meta 콘솔 → 설정 → 리디렉션 콜백 URL |
@@ -237,6 +241,7 @@ Secret 값과 일치하는 문자열이 자동 마스킹된 것입니다. `1`, `
 
 | 대상 | 방법 |
 |---|---|
+| **모든 쓰기 중지 (v1.6.0, 권장)** | Variables → `AUTOMATION_ENABLED` = `false` (또는 삭제). 읽기 워크플로는 계속 돈다 |
 | 발행만 중지 | Variables → `DRY_RUN` = `true` |
 | 답글만 중지 | Variables → `REPLY_ENABLED` = `false` |
 | AI 생성만 중지 | Variables → `AI_ENABLED` = `false` (정적 텍스트로 동작) |
@@ -310,6 +315,45 @@ Variables `CHAT_ENABLED=false` — 다음 트리거부터 발행 중단. 답글 
 - 셀프 이어쓰기: `FOLLOWUP_ENABLED=false`
 - 답글 양: `REPLY_DAILY_CAP=20`, `REPLY_AUTHOR_DAILY_CAP=2`, `REPLY_THREAD_AUTHOR_CAP=3` (v1.2.0 값)
 - 발행 시각·문체: 코드 되돌림 필요(v1.2.0 ZIP 재반영)
+
+---
+
+## 5-C. 계정 보호(안전) 모드 운영 (v1.6.0)
+
+배경·항목별 설명·롤백은 `DESIGN_V16_SAFETY.md`. 요약:
+
+| 스위치 | 기본 | 효과 |
+|---|---|---|
+| `AUTOMATION_ENABLED` | `false` | false 면 정기·CHAT·STORY·답글·이어쓰기 전부 쓰기 0건, Claude 호출 0건, 종료코드 0 |
+| `WARMUP_UNTIL` | 빈 값 | 그날(KST)까지 정기 1건/일만. 링크·답글·이어쓰기·CHAT·STORY 중지. 형식 오류면 워밍업으로 적용 |
+| `DAILY_POST_BUDGET` | `2` | 정기+CHAT+STORY 하루 합계. 당첨 정기 슬롯 + 47분 전까지 1건은 정기 몫 |
+| `LINK_REPLY_PCT` | `0` | 링크 셀프 리플라이 비율(게시물 ID 해시) |
+| `REPLY_CANNED_ENABLED` | `false` | 외국어 댓글 정형 문구. false 면 건너뜀 |
+
+### 새 계정 시작 순서 (권장 — 효과 미검증)
+
+1. 배포 후 Variables 에 `AUTOMATION_ENABLED` 를 넣지 않는다(기본 false). 한동안 앱에서 사람이 직접 사용한다(권장).
+2. `Threads Go-Live Check` 실행 → C13 표에서 적용값 확인.
+3. 처음 켤 때는 `WARMUP_UNTIL` 을 2~4주 뒤 날짜로 **먼저** 넣고 `AUTOMATION_ENABLED=true`.
+4. 워밍업 종료 후 기본값으로 운영. 값은 하나씩, 1~2주 간격으로 올린다. golive_check '안전 프로필' WARN 확인.
+5. 비활성화된 계정을 대신해 새 계정을 만드는 것은 Meta 계정 무결성(Account Integrity) 정책상 집행 회피로 볼 수 있다(2차 출처 — 원문 확인 필요).
+
+### 로그 읽는 법
+
+| 로그 | 의미 |
+|---|---|
+| `발행 생략 — AUTOMATION_ENABLED=false — 계정 보호 모드(킬 스위치)…` | 정상(꺼짐) |
+| `CHAT 생략 — 워밍업(~YYYY-MM-DD KST) — CHAT 중지` | 정상(워밍업) |
+| `오늘(KST) 최상위 게시물 N건 — DAILY_POST_BUDGET 적용값 M건 도달` | 예산 소진 — 정상 |
+| `… 정기 발행 몫 1건 예약 중 (HH:MM KST 까지)` | CHAT·STORY 가 정기 몫을 기다림 — 정상 |
+| `링크 셀프 리플라이 생략 — LINK_REPLY_PCT 적용값 0% 대상 아님` | 정상 |
+| `회로 차단 — 계정·토큰 사용 불가 오류…` + exit 7 | 즉시 `AUTOMATION_ENABLED=false`, 5-1 exit 7 참조 |
+| `안전모드 v1.0.0: 자동화=… · 예산 … · 링크리플 …%` | 실행 시작 시 적용값 요약 |
+
+### 워치독
+
+자동화 꺼짐·워밍업(글 0건)·예산 0 에서는 발행 공백, CHAT 무발행, 답글 정체를 경보하지 않고 OK + 사유로 남긴다.
+기본 예산(2)에서는 CHAT 목표(5~15)를 채울 수 없으므로 CHAT 무발행 판정을 생략한다. API 접근 차단 감지는 그대로다.
 
 ---
 
@@ -438,16 +482,22 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. �
 | `PILLAR_ROTATION_OVERRIDE` | — | 수동 로테이션. 최우선. **설정 시 자동 조절 정지** |
 | `PILLAR_ROTATION_AUTO` | — | v1.2.0 자동 조절 결과 전용. weighting 리포트가 안내한 값을 여기에 넣는다(OVERRIDE 아님). 불변식 위반 값은 무시. **이관**: 과거 자동 결과를 OVERRIDE 에 넣어 두었다면 그 값을 AUTO 로 옮기고 OVERRIDE 는 삭제 |
 | `LAST_WEIGHT_ADJUST` | — | 마지막 조정일 `YYYY-MM-DD` |
-| `REPLY_ENABLED` | `true` | 답글 스위치 |
+| `REPLY_ENABLED` | `true` | 답글 스위치 (v1.6.0: `AUTOMATION_ENABLED`·워밍업에도 막힘) |
+| `AUTOMATION_ENABLED` | `false` | v1.6.0 전역 킬 스위치. false 면 모든 쓰기 경로 종료(코드 0) |
+| `DAILY_POST_BUDGET` | `2` | v1.6.0 KST 하루 자동 최상위 게시물 총량(정기+CHAT+STORY), 정기 몫 1건 예약 |
+| `LINK_REPLY_PCT` | `0` | v1.6.0 링크 셀프 리플라이 비율 0~100 (게시물 ID 해시) |
+| `WARMUP_UNTIL` | — | v1.6.0 워밍업 종료일 `YYYY-MM-DD`(KST, 포함). 형식 오류는 워밍업으로 적용 |
+| `REPLY_CANNED_ENABLED` | `false` | v1.6.0 외국어 댓글 정형 문구 사용 여부 |
+| `REPLY_PER_RUN_CAP` | `2` | v1.6.0 CHAT 실행 답글 스윕 상한 (이전 4) |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | 모델 |
 | `PUBLISH_WEEKLY_REST_DAYS` | `0` | 주간 휴식일 수. 안티봇 강화 시 `1` |
 | `CHAT_DAILY_MIN` / `CHAT_DAILY_MAX` | `5` / `15` | v1.4.0 평일 CHAT 목표 건수(날짜 시드 무작위). 트리거 15개 이하로 자동 보정. 이전 기본 `6` / `8` |
 | `CHAT_WEEKEND_MIN` / `CHAT_WEEKEND_MAX` | `2` / `3` | v1.2.0 토·일 CHAT 목표 건수. `0`/`0` 이면 주말 CHAT 미발행 |
-| `REPLY_SCHEDULED_RUN_CAP` | `6` | v1.2.0 reply.yml(예약) 실행당 답글 상한. 스윕 예산 25분 안에 들어오는 값 |
-| `REPLY_DAILY_CAP` | `40` | v1.3.0 하루 댓글 답글 상한(상수 → Variable). API 한도 1,000 |
-| `REPLY_AUTHOR_DAILY_CAP` | `3` | v1.3.0 같은 사람 하루 상한 |
-| `REPLY_THREAD_AUTHOR_CAP` | `4` | v1.3.0 한 스레드·같은 사람 누적 상한(핑퐁 방지) |
-| `FOLLOWUP_ENABLED` | `false` | v1.3.0 셀프 이어쓰기. dry_run 로그(`DRY_RUN 이어쓰기`) 확인 후 `true` |
+| `REPLY_SCHEDULED_RUN_CAP` | `3` | reply.yml(예약) 실행당 답글 상한 (v1.6.0, 이전 6) |
+| `REPLY_DAILY_CAP` | `10` | 하루 댓글 답글 상한 (v1.6.0, 이전 40). API 한도 1,000 |
+| `REPLY_AUTHOR_DAILY_CAP` | `1` | 같은 사람 하루 상한 (v1.6.0, 이전 3) |
+| `REPLY_THREAD_AUTHOR_CAP` | `2` | 한 스레드·같은 사람 누적 상한(핑퐁 방지) (v1.6.0, 이전 4) |
+| `FOLLOWUP_ENABLED` | `false` | v1.3.0 셀프 이어쓰기. dry_run 로그(`DRY_RUN 이어쓰기`) 확인 후 `true`. v1.6.0: 킬 스위치·워밍업에도 막힘 |
 | `FOLLOWUP_PCT` | `25` | v1.3.0 이어쓰기 대상 비율(게시물 ID 해시) |
 | `FOLLOWUP_DAILY_CAP` | `3` | v1.3.0 이어쓰기 하루 상한. 실행당 1건 |
 | `TOKEN_ISSUED_AT` | — | 토큰 최초 발급일 `YYYY-MM-DD` |
