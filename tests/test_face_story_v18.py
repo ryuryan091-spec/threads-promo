@@ -528,7 +528,7 @@ class TestScriptContract:
         monkeypatch.setattr(script_writer, "_call_claude", fake)
         mood = mood_source.Mood("rss", ("금리",), "관망")
         s = script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1", mood=mood, character="GOC")
-        expected = script_writer._user_prompt("F1", None, s.hook_type, mood, [], "GOC")
+        expected = script_writer._user_prompt("F1", None, s.hook_type, mood, [], "GOC", dt.date(2026, 10, 5))
         assert seen["prompt"] == expected
         assert s.continuity is None and "continuity" not in s.to_dict()
 
@@ -1026,7 +1026,7 @@ class TestPublishRunner:
 class TestConfigAndWorkflow:
     def test_defaults_off(self):
         assert config.SAFETY_VARIABLE_DEFAULTS["FACE_STORY_ENABLED"] == "false"
-        assert config.VERSION == "1.8.2"
+        assert config.VERSION == "1.8.3"
         assert config.FACE_STORY_SCAN_ROWS > 10 >= 2
 
     def test_clamps(self, monkeypatch):
@@ -1323,3 +1323,126 @@ class TestBetaScriptThinking:
             script_writer._call_claude("k", "p", "GOC")
         msg = str(info.value)
         assert "stop_reason=max_tokens" in msg and "'thinking'" in msg and "output_tokens=1500" in msg
+
+
+# ---------------------------------------------------------------------------
+# J. 운영 베타 3차 — 빠른 훅 · 분위기 훅 · 휴장일 표현 · 장면/움직임 다양화 (v1.8.3)
+# ---------------------------------------------------------------------------
+
+
+class TestBetaContentFixes:
+    def test_calm_mood_excludes_alarm_hooks(self):
+        """C1: 낙관·안도 날에 경고형(A)·긴급형(D)을 고르지 않는다."""
+        for mood in ("낙관", "안도"):
+            t = hooks.select_hook_type("F1", None, allowed=hooks.NO_VILLAIN_HOOK_TYPES, mood_word=mood)
+            assert t == hooks.HOOK_C
+            t = hooks.select_hook_type("F3", None, allowed=hooks.NO_VILLAIN_HOOK_TYPES, mood_word=mood)
+            assert t not in hooks.ALARM_HOOK_TYPES
+        assert hooks.select_hook_type("F1", None, allowed=hooks.NO_VILLAIN_HOOK_TYPES, mood_word="긴장") == "A"
+        # 허용 유형이 경고형뿐이면 비우지 않고 그대로 쓴다(빈 선택 방지)
+        assert hooks.select_hook_type("F1", None, allowed=("A",), mood_word="낙관") == "A"
+
+    def test_hook_length_fast(self):
+        assert (hooks.HOOK_MIN_CHARS, hooks.HOOK_MAX_CHARS) == (8, 14)
+        for spec in hooks.HOOK_SPECS.values():
+            assert hooks.HOOK_MIN_CHARS <= len(spec["example"]) <= hooks.HOOK_MAX_CHARS
+
+    def test_day_context(self):
+        sunday, monday = dt.date(2026, 10, 4), dt.date(2026, 10, 5)
+        assert "주말" in script_writer.day_context(sunday) and "일요일" in script_writer.day_context(sunday)
+        assert "결과는 아직 없다" in script_writer.day_context(monday)
+        assert not any(c.isdigit() for c in script_writer.day_context(sunday))   # 숫자 금지 규칙과 충돌 방지
+        assert script_writer.day_context(None) == ""
+
+    def test_weekend_phrase_rejected(self):
+        """C2: 휴장일(주말)에 '오늘 시장'을 말하면 거부한다. 평일은 규칙 대상 아님(결과 단정은 프롬프트 규칙)."""
+        raw = _goc_raw()
+        raw["body"][0] = "오늘 시장은 고요한 바람 속에서 천천히 숨을 고르고 있었습니다 정말로"
+        sunday = dt.date(2026, 10, 4)
+        issues = script_writer.validate(raw, hooks.HOOK_C, character="GOC", day=sunday)
+        assert any("주말인데 '오늘 시장'" in i for i in issues)
+        weekday = script_writer.validate(raw, hooks.HOOK_C, character="GOC", day=dt.date(2026, 10, 5))
+        assert not any("주말" in i for i in weekday)
+
+    def test_system_prompt_forbids_result_assertion(self):
+        sp = script_writer.system_prompt("GOC")
+        assert "결과를 사실로 단정하지 않습니다" in sp and "오늘 시장은 잔잔했다" in sp
+        assert "서 있는 정면 전신을 반복하지 않는다" in sp
+
+    def test_write_script_passes_mood_and_day(self, monkeypatch):
+        seen = {}
+
+        def fake(api_key, prompt, character="EDT"):
+            seen["prompt"] = prompt
+            return _goc_raw() | {"hook": "모두가 놓친 신호"}
+
+        monkeypatch.setattr(script_writer, "_call_claude", fake)
+        s = script_writer.write_script("k", content_id="sv-20261004-1", fmt="F1",
+                                       mood=mood_source.Mood("web", ("금리",), "낙관"), character="GOC")
+        assert s.hook_type == hooks.HOOK_C
+        assert "주말, 시장이 열리지 않는 날" in seen["prompt"]
+
+    def test_image_shot_directives_distinct(self):
+        """C3: 장면마다 다른 구도·자세, 참조 이미지는 외형만."""
+        from src.video import image_gen
+        prompts = [image_gen.build_prompt("guardian over the city", None, True, "GOC", shot_index=i)
+                   for i in range(5)]
+        assert len(set(prompts)) == 5
+        for i, p in enumerate(prompts):
+            assert image_gen.SHOT_DIRECTIVES[i] in p
+            assert "do NOT copy the reference's pose" in p and "only character" in p
+            assert "tiger" not in p.lower()
+        edt = image_gen.build_prompt("x", "Debt Titan", True, "EDT", shot_index=2)
+        assert image_gen.SHOT_DIRECTIVES[2] in edt and "do NOT copy" in edt
+        assert image_gen.build_prompt("x", None, False, "GOC") == image_gen.build_prompt("x", None, False, "GOC",
+                                                                                          shot_index=None)
+
+    def test_generate_scenes_passes_shot_index(self, monkeypatch, tmp_path):
+        from src.video import image_gen
+        asked = []
+
+        class _Models:
+            def generate_content(self, model, contents):
+                asked.append(contents[-1])
+                part = mock.Mock(inline_data=mock.Mock(data=b"png"))
+                return mock.Mock(candidates=[mock.Mock(content=mock.Mock(parts=[part]))])
+
+        monkeypatch.setattr(image_gen.assets, "reference_images", lambda c: [])
+        image_gen.generate_scenes("k", ["a"] * 5, None, tmp_path, client=mock.Mock(models=_Models()),
+                                  character="GOC")
+        assert [image_gen.SHOT_DIRECTIVES[i] in asked[i] for i in range(5)] == [True] * 5
+
+    def test_body_motions_vary(self):
+        from src.video import renderer
+        assert len(set(renderer.BODY_MOTIONS)) >= 5
+        exprs = {renderer.motion_expr(m, 150) for m in renderer.BODY_MOTIONS}
+        assert len(exprs) == len(renderer.BODY_MOTIONS)
+        # 같은 이미지를 쓰는 연속 비트(BEAT_IMAGE_SLOT 1,1 / 2,2 …)는 움직임이 서로 다르다
+        motions = [renderer.BODY_MOTIONS[i % len(renderer.BODY_MOTIONS)] for i in range(8)]
+        assert all(motions[i] != motions[i + 1] for i in range(7))
+        assert renderer.HOOK_MIN_SEC == 2.0
+
+    def test_weekend_regex_no_false_positive(self):
+        """리뷰 v1.8.3: '오늘 장면·오늘 장마·오늘 장기전'은 막지 않고, '오늘은 시장'·'오늘 장이'는 막는다."""
+        hits = {label for label, pat in script_writer.WEEKEND_BANNED_PATTERNS
+                for t in ("오늘은 시장이 쉰다",) if pat.search(t)}
+        assert hits == {"오늘 시장"}
+        for ok in ("오늘 장면은 조용하다", "오늘 장마처럼 흐리다", "오늘 장기전의 시작"):
+            assert not any(p.search(ok) for _, p in script_writer.WEEKEND_BANNED_PATTERNS), ok
+        for bad in ("오늘 장이 조용했다", "오늘 장 마감 뒤", "오늘의 증시는", "오늘 장."):
+            assert any(p.search(bad) for _, p in script_writer.WEEKEND_BANNED_PATTERNS), bad
+
+    def test_f1_guides_no_today_market(self):
+        for profile in script_writer.CHARACTER_PROFILES.values():
+            assert "오늘 시장" not in profile["formats"]["F1"][1]
+
+    def test_calm_day_hooks_vary(self):
+        """리뷰 v1.8.3: 차분한 날 GOC 훅이 C 하나로 고정되지 않게 질문형(E)을 둔다."""
+        used: set[str] = set()
+        picked = []
+        for fmt in ("F1", "F2"):
+            t = hooks.select_hook_type(fmt, None, used, hooks.NO_VILLAIN_HOOK_TYPES, "낙관")
+            used.add(t)
+            picked.append(t)
+        assert picked == ["C", "E"]
+        assert hooks.HOOK_SPECS["E"]["sfx"] == "hook_c"          # 존재하는 효과음 파일 재사용

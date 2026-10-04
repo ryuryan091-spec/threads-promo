@@ -186,11 +186,13 @@ class TestHooks:
         assert hooks.select_hook_type("F3", "Bull Brute") == hooks.HOOK_D
 
     def test_issue(self):
+        # v1.8.3 빠른 훅: 8~14자(이전 12~18자)
         assert hooks.hook_issue("짧다", hooks.HOOK_A)
-        assert hooks.hook_issue("가" * 19, hooks.HOOK_A)
-        assert hooks.hook_issue("가" * 15, hooks.HOOK_A) is None
-        assert hooks.hook_issue("방어선이 무너지기 직전이다", hooks.HOOK_D)
-        assert hooks.hook_issue("[긴급] 방어선 붕괴 직전", hooks.HOOK_D) is None
+        assert hooks.hook_issue("가" * 15, hooks.HOOK_A)
+        assert hooks.hook_issue("가" * 14, hooks.HOOK_A) is None
+        assert hooks.hook_issue("가" * 8, hooks.HOOK_A) is None
+        assert hooks.hook_issue("방어선이 무너진다", hooks.HOOK_D)
+        assert hooks.hook_issue("[긴급] 방어선 위기", hooks.HOOK_D) is None
 
     def test_specs_complete(self):
         for t in hooks.HOOK_TYPES:
@@ -304,7 +306,9 @@ class TestTiming:
     def test_short_narration_stretched(self):
         t = renderer.plan_timing([2.5] + [4.0] * 8)
         assert renderer.TARGET_MIN_SEC <= t.total <= config.VIDEO_MAX_SEC
-        assert t.durations[0] == renderer.HOOK_MIN_SEC and t.tempo == 1.0
+        # v1.8.3: 훅 최소 2.0초 — 2.5초 낭독 + 여백이 그보다 길면 그 길이를 쓴다
+        assert t.durations[0] == max(renderer.HOOK_MIN_SEC, 2.5 + renderer.SEG_PAD_SEC) and t.tempo == 1.0
+        assert renderer.plan_timing([1.2] + [4.0] * 8).durations[0] == renderer.HOOK_MIN_SEC
 
     def test_long_narration_speeds_up(self):
         t = renderer.plan_timing([3.0] + [7.0] * 8)

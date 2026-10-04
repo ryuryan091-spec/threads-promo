@@ -16,7 +16,7 @@ from pathlib import Path
 from .. import config
 from . import assets
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.8.3: 장면별 구도·자세 지시, 참조 이미지는 외형만
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,15 @@ GOC_APPEARANCE = (
     "blue eyes, ornate white-and-gold armor, large white feathered wings, and dark red cape. "
     "Preserve the reference's equipment and left/right arrangement; do not invent a weapon."
 )
+# v1.8.3 운영 베타 C3: 5장이 모두 참조 이미지와 같은 정면 전신 자세로 나왔다.
+#   장면마다 다른 카메라·자세를 지시하고, 참조 이미지는 외형(얼굴·머리·갑옷·색)에만 쓰게 한다.
+SHOT_DIRECTIVES: tuple[str, ...] = (
+    "extreme close-up of the face and shoulders, intense eyes, shallow depth of field",
+    "very wide establishing shot, the character small in the frame against a vast sky and city",
+    "dynamic mid-action pose flying or leaping diagonally across the frame, motion blur, wind",
+    "view from behind over the shoulder, looking out over the scene, cape and hair blowing",
+    "dramatic low-angle shot from below, three-quarter view, strong rim light",
+)
 MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 
 
@@ -46,17 +55,27 @@ class ImageGenError(RuntimeError):
     """이미지를 한 장도 만들지 못했다."""
 
 
+def shot_directive(index: int | None) -> str:
+    if index is None:
+        return ""
+    return (f"Camera and pose for this image: {SHOT_DIRECTIVES[index % len(SHOT_DIRECTIVES)]}. "
+            "Do NOT use a static front-facing standing pose. ")
+
+
 def build_prompt(scene: str, villain: str | None, has_reference: bool,
-                 character: str = config.CHARACTER_EDT) -> str:
+                 character: str = config.CHARACTER_EDT, shot_index: int | None = None) -> str:
+    shot = shot_directive(shot_index)
     if character == config.CHARACTER_GOC:
         # Facebook 영상: GOC 단독. EDT·빌런·다른 인물을 그리지 않게 명시한다.
         return (
             "Vertical 9:16 comic-style illustration for a financial-market story called 'EDT Universe'. "
             f"{GOC_APPEARANCE} "
             f"Scene to depict from GOC's protective perspective: {scene or 'GOC assesses market risk.'} "
-            "GOC is the only character in the image: no other heroes, no villains, no animals, no crowds. "
+            + shot
+            + "GOC is the only character in the image: no other heroes, no villains, no animals, no crowds. "
             "High contrast manhwa shading, cinematic lighting, dynamic camera angle. "
-            + ("Use the provided reference as the definitive look of GOC. " if has_reference else "")
+            + ("Use the provided reference ONLY to keep GOC's identity (face, hair, armor, wings, colors); "
+               "do NOT copy the reference's pose, framing, camera angle or background. " if has_reference else "")
             + "CRITICAL: absolutely NO text, NO letters, NO words, NO numbers, NO captions, NO speech "
             "bubbles, NO signage, NO watermarks and NO logos of any kind. Exactly one continuous scene "
             "from one camera viewpoint, no split panels, no blank bands or empty margins."
@@ -65,8 +84,10 @@ def build_prompt(scene: str, villain: str | None, has_reference: bool,
         "Vertical 9:16 comic-style illustration for a financial-market story called 'EDT Universe'. "
         f"{HERO_APPEARANCE} {VILLAIN_APPEARANCE.get(villain, '')} "
         f"Scene to depict: {scene} "
-        "High contrast manhwa shading, cinematic lighting, dynamic camera angle. "
-        + ("Use the provided reference image(s) as the definitive look of the hero EDT. "
+        + shot
+        + "High contrast manhwa shading, cinematic lighting, dynamic camera angle. "
+        + ("Use the provided reference image(s) ONLY to keep the hero EDT's identity (face, fur, armor, "
+           "colors); do NOT copy the reference's pose, framing, camera angle or background. "
            if has_reference else "")
         + "CRITICAL: absolutely NO text, NO letters, NO words, NO numbers, NO captions, NO speech "
         "bubbles, NO signage, NO watermarks and NO logos of any kind. Exactly one continuous scene "
@@ -101,7 +122,7 @@ def generate_scenes(
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path | None] = []
     for idx, scene in enumerate(prompts):
-        prompt = build_prompt(scene, villain, bool(ref_parts), character)
+        prompt = build_prompt(scene, villain, bool(ref_parts), character, shot_index=idx)
         data = None
         for attempt in (1, 2):
             try:

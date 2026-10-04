@@ -21,7 +21,7 @@ from pathlib import Path
 from .. import config
 from . import assets
 
-VERSION = "1.0.2"   # v1.8.0 베타: concat 절대 경로 · 캐릭터별 표지 · 로고 배경 키잉
+VERSION = "1.1.0"   # v1.8.3: 빠른 훅(최소 2초)·비트별 카메라 움직임 다양화 · v1.8.0 베타 수정
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +31,10 @@ SR = config.AUDIO_SAMPLE_RATE
 # YouTube 렌더러 값
 KEN_BURNS_MAX_ZOOM = 1.12
 KEN_BURNS_SPEED = 0.0012
-HOOK_MIN_SEC = 3.0
+# v1.8.3 "변화": 본문 비트마다 카메라 움직임을 바꾼다(같은 이미지를 연속 두 비트에 써도 움직임이 다름).
+PAN_ZOOM = 1.18
+BODY_MOTIONS: tuple[str, ...] = ("zoom_in", "pan_right", "zoom_out", "pan_left", "tilt_up", "tilt_down")
+HOOK_MIN_SEC = 2.0              # v1.8.3 "빠른 훅": 3.0 → 2.0초(훅 8~14자 낭독 길이에 맞춤)
 HOOK_MAX_SEC = 8.0
 HOOK_PUNCH_START_ZOOM = 1.35
 HOOK_PUNCH_SPEED = 0.11
@@ -195,13 +198,31 @@ def _cover_crop() -> str:
     return f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
 
 
-def _body_video_filter(duration: float, caption_file: Path, zoom_in: bool, font: str | None) -> str:
+def motion_expr(motion: str, frames: int) -> tuple[str, str, str]:
+    """zoompan (z, x, y) 식. 알 수 없는 값은 zoom_in."""
+    center_x, center_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    progress = f"(on/{max(1, frames - 1)})"
+    if motion == "zoom_out":
+        return f"max({KEN_BURNS_MAX_ZOOM}-{KEN_BURNS_SPEED}*on,1.0)", center_x, center_y
+    if motion == "pan_right":
+        return f"{PAN_ZOOM}", f"(iw-iw/zoom)*{progress}", center_y
+    if motion == "pan_left":
+        return f"{PAN_ZOOM}", f"(iw-iw/zoom)*(1-{progress})", center_y
+    if motion == "tilt_up":
+        return f"{PAN_ZOOM}", center_x, f"(ih-ih/zoom)*(1-{progress})"
+    if motion == "tilt_down":
+        return f"{PAN_ZOOM}", center_x, f"(ih-ih/zoom)*{progress}"
+    return f"min(1+{KEN_BURNS_SPEED}*on,{KEN_BURNS_MAX_ZOOM})", center_x, center_y
+
+
+def _body_video_filter(duration: float, caption_file: Path, motion: str | bool, font: str | None) -> str:
     frames = max(1, int(duration * FPS))
-    zoom = (f"min(1+{KEN_BURNS_SPEED}*on,{KEN_BURNS_MAX_ZOOM})" if zoom_in
-            else f"max({KEN_BURNS_MAX_ZOOM}-{KEN_BURNS_SPEED}*on,1.0)")
+    if isinstance(motion, bool):   # 이전 호출 호환: True=zoom_in, False=zoom_out
+        motion = "zoom_in" if motion else "zoom_out"
+    zoom, x, y = motion_expr(motion, frames)
     return (
         f"{_cover_crop()},"
-        f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps={FPS},"
+        f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frames}:s={W}x{H}:fps={FPS},"
         f"drawtext={_font_opt(font)}textfile='{caption_file.as_posix()}':expansion=none:"
         f"fontcolor=white:fontsize={SUB_FONT_SIZE}:borderw=6:bordercolor=black:line_spacing=12:"
         f"x=(w-text_w)/2:y=h*{SUB_Y_RATIO}-text_h/2,format=yuv420p"
@@ -242,13 +263,13 @@ def _encode_args(duration: float) -> list[str]:
     ]
 
 
-def _render_scene(scene: SceneInput, duration: float, tempo: float, zoom_in: bool,
+def _render_scene(scene: SceneInput, duration: float, tempo: float, motion: bool | str,
                   out: Path, tmp: Path, font: str | None, log_path: Path) -> None:
     caption_file = tmp / f"{out.stem}.txt"
     wrap = HOOK_WRAP_CHARS if scene.is_hook else SUB_WRAP_CHARS
     caption_file.write_text(wrap_korean(scene.caption, wrap), encoding="utf-8")
     vf = (_hook_video_filter(duration, caption_file, font) if scene.is_hook
-          else _body_video_filter(duration, caption_file, zoom_in, font))
+          else _body_video_filter(duration, caption_file, motion, font))
     cmd = ["ffmpeg", "-y", "-loop", "1", "-t", f"{duration:.3f}", "-i", str(scene.image),
            "-i", str(scene.audio)]
     use_sfx = bool(scene.is_hook and scene.sfx)
@@ -322,10 +343,10 @@ def render(scenes: list[SceneInput], villain: str, out_path: Path, *,
     body_no = 0
     for idx, (scene, duration) in enumerate(zip(scenes, timing.durations, strict=True)):
         seg = tmp / f"seg_{idx:02d}.mp4"
-        zoom_in = body_no % 2 == 0
+        motion = BODY_MOTIONS[body_no % len(BODY_MOTIONS)]   # 비트별 카메라 움직임
         if not scene.is_hook:
             body_no += 1
-        _render_scene(scene, duration, timing.tempo, zoom_in, seg, tmp, font, log_path)
+        _render_scene(scene, duration, timing.tempo, motion, seg, tmp, font, log_path)
         segments.append(seg)
 
     outro = tmp / "seg_outro.mp4"

@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 import requests
@@ -16,7 +18,7 @@ import requests
 from .. import ai_writer, config, content, face_story, mood_source
 from . import hooks
 
-VERSION = "1.1.1"   # v1.8.2: max_tokens 상향·빈 응답 진단 · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
+VERSION = "1.2.0"   # v1.8.3: 결과 단정 금지·요일 맥락·주말 표현 검사·장면 다양화 · v1.8.2: max_tokens · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ CHARACTER_PROFILES: dict[str, dict] = {
         "forbidden_names": (config.CHARACTER_GOC,),
         "formats": {
             "F1": ("EDT 시장 서사",
-                   "호랑이 히어로 EDT 가 오늘 시장 분위기를 상징하는 빌런과 맞선다. "
+                   "호랑이 히어로 EDT 가 요즘 시장 분위기를 상징하는 빌런과 맞선다. "
                    "본문은 대결 장면 묘사와 화제 테마의 의미를 번갈아 말한다. 결말은 여운을 남긴다."),
             "F2": ("개념 해설",
                    "화제 테마 중 하나의 개념을 EDT 가 쉽게 풀어 준다. 정의 → 왜 지금 화제인지 → 일상 비유 순서. "
@@ -62,7 +64,7 @@ CHARACTER_PROFILES: dict[str, dict] = {
         "forbidden_names": (config.CHARACTER_EDT, *VILLAIN_KR.values()),
         "formats": {
             "F1": ("GOC 수호 서사",
-                   "GOC 가 오늘 시장 분위기를 높은 곳에서 내려다보며 자본을 지키는 자세를 이야기한다. "
+                   "GOC 가 요즘 시장 분위기를 높은 곳에서 내려다보며 자본을 지키는 자세를 이야기한다. "
                    "본문은 수호 장면 묘사와 화제 테마의 의미를 번갈아 말한다. 결말은 여운을 남긴다."),
             "F2": ("개념 해설",
                    "화제 테마 중 하나의 개념을 GOC 가 쉽게 풀어 준다. 정의 → 왜 지금 화제인지 → 일상 비유 순서. "
@@ -91,16 +93,22 @@ def system_prompt(character: str = config.CHARACTER_EDT) -> str:
 - 다음 이름은 쓰지 않습니다: {", ".join(profile["forbidden_names"])}
 - '여러분', 줄표(—)를 쓰지 않습니다.
 - 근거로 준 테마 밖의 사건을 지어내지 않습니다.
+- 근거 테마는 '요즘 화제'일 뿐 결과가 아닙니다. 시장·지표의 결과를 사실로 단정하지 않습니다
+  (금지 예: '고용 지표가 안정적으로 나왔다', '오늘 시장은 잔잔했다', '금리가 올랐다').
+  상황은 {character} 의 시선·태도·질문으로만 그립니다.
+- 훅은 오늘 분위기와 어긋나지 않게 씁니다(차분한 날에 경고·긴급처럼 쓰지 않습니다).
 
 # 출력
 JSON 하나만 출력합니다. 다른 텍스트 금지.
 {{"hook": "...", "body": ["...", ... 7개], "closing": "...",
   "image_prompts": ["영문 장면 묘사", ... 5개], "post_caption": "..."}}
-- hook: {hooks.HOOK_MIN_CHARS}~{hooks.HOOK_MAX_CHARS}자 한 문장
+- hook: {hooks.HOOK_MIN_CHARS}~{hooks.HOOK_MAX_CHARS}자 한 문장. 짧고 빠르게 — 첫 1~2초 안에 끝나는 말
 - body: 정확히 {BODY_BEATS}개, 각 {BODY_MIN_CHARS}~{BODY_MAX_CHARS}자, 말로 읽기 좋은 한 문장
 - closing: {CLOSING_MIN_CHARS}~{CLOSING_MAX_CHARS}자
 - 내레이션 전체(hook+body+closing) {TOTAL_MIN_CHARS}~{TOTAL_MAX_CHARS}자
-- image_prompts: 정확히 5개, 영어, 장면 묘사만(글자·숫자·로고 요구 금지){"" if profile["uses_villain"] else ", 등장인물은 GOC 한 명뿐"}
+- image_prompts: 정확히 5개, 영어, 장면 묘사만(글자·숫자·로고 요구 금지).
+  5장은 구도·자세·배경이 확연히 달라야 한다(예: 얼굴 클로즈업 / 아주 먼 원경 / 날아오르는 동작 /
+  뒷모습 / 낮은 각도 전신). 서 있는 정면 전신을 반복하지 않는다{"" if profile["uses_villain"] else ", 등장인물은 GOC 한 명뿐"}
 - post_caption: 게시글 설명 {CAPTION_MIN_CHARS}~{CAPTION_BODY_MAX}자, 담담한 말투, 질문으로 끝내지 않아도 됨
 """
 
@@ -165,8 +173,35 @@ def select_villain(mood: mood_source.Mood) -> str:
     return "Debt Titan"
 
 
+WEEKDAY_KR = ("월", "화", "수", "목", "금", "토", "일")
+# v1.8.3 운영 베타 C2: 일요일(휴장)에 "오늘 시장 … 잔잔했다"를 사실처럼 말했다. 주말에는 아래 표현을 기계적으로 막는다.
+#   한국·미국 공휴일 달력은 코드에 없다(추측해 넣지 않는다) — 주말(토·일)만 판정한다.
+#   단순 부분 문자열이면 '오늘 장면·오늘 장마'까지 걸려(리뷰 v1.8.3) 정규식으로 범위를 좁힌다.
+WEEKEND_BANNED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("오늘 시장", re.compile(r"오늘\s*(?:은|의)?\s*(?:시장|증시)")),
+    ("오늘 장", re.compile(r"오늘\s*장(?=$|[\s이은을에도의,.!?]|\s*마감)")),
+)
+
+
+def is_weekend(day: dt.date | None) -> bool:
+    return day is not None and day.weekday() >= 5
+
+
+def day_context(day: dt.date | None) -> str:
+    """대본 프롬프트의 날짜 맥락 한 줄. 날짜를 모르면 빈 문자열."""
+    if day is None:
+        return ""
+    label = f"{WEEKDAY_KR[day.weekday()]}요일"   # 숫자 금지 규칙이 있어 날짜 숫자는 넣지 않는다
+    if is_weekend(day):
+        return (f"# 오늘: {label} — 주말, 시장이 열리지 않는 날. '오늘 시장/오늘 증시/오늘 장' 표현 금지. "
+                "지난 한 주를 돌아보거나 다음 주를 준비하는 시선으로 쓴다.")
+    return (f"# 오늘: {label} — 아침 발행이라 오늘 장의 결과는 아직 없다. "
+            "결과를 말하지 말고 화제와 태도만 쓴다.")
+
+
 def _user_prompt(fmt: str, villain: str | None, hook_type: str, mood: mood_source.Mood,
-                 avoid_hooks: list[str], character: str = config.CHARACTER_EDT) -> str:
+                 avoid_hooks: list[str], character: str = config.CHARACTER_EDT,
+                 day: dt.date | None = None) -> str:
     name, guide = CHARACTER_PROFILES[character]["formats"][fmt]
     spec = hooks.HOOK_SPECS[hook_type]
     lines = [
@@ -176,6 +211,9 @@ def _user_prompt(fmt: str, villain: str | None, hook_type: str, mood: mood_sourc
         f"# 훅 유형: {spec['name']} — {spec['guide']} (예: {spec['example']})",
         mood.to_prompt_block() or "# 근거 없음 — 특정 사건을 지어내지 말고 시장을 보는 태도만 말한다.",
     ]
+    context = day_context(day)
+    if context:
+        lines.append(context)
     if avoid_hooks:
         lines.append("# 같은 날 이미 쓴 훅(겹치지 않게): " + " / ".join(avoid_hooks))
     return "\n".join(lines)
@@ -228,7 +266,8 @@ IMAGE_FORBIDDEN = {
 
 def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
              character: str = config.CHARACTER_EDT,
-             continuity: face_story.ContinuityRequest | None = None) -> list[str]:
+             continuity: face_story.ContinuityRequest | None = None,
+             day: dt.date | None = None) -> list[str]:
     """대본 JSON 위반 목록. 빈 목록이면 통과.
 
     used_captions: 같은 날 앞 편의 캡션(본문). 같으면 게시 단계 중복 검사에 걸려 그 편이 빠지므로 여기서 막는다.
@@ -269,6 +308,10 @@ def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
     for name in profile["forbidden_names"]:
         if any(name in t for t in texts):
             issues.append(f"{character} 영상에 다른 캐릭터 이름 '{name}' 포함")
+    if is_weekend(day):
+        for label, pattern in WEEKEND_BANNED_PATTERNS:
+            if any(pattern.search(t) for t in texts):
+                issues.append(f"주말인데 '{label}' 표현 — 휴장일에 오늘 시장을 말하지 않는다")
     for word in IMAGE_FORBIDDEN[character]:
         if any(word in p.lower() for p in prompts):
             issues.append(f"{character} 영상 이미지 프롬프트에 '{word}' 포함")
@@ -319,8 +362,9 @@ def write_script(
         raise ScriptError(f"알 수 없는 포맷: {fmt}")
     villain = select_villain(mood) if profile["uses_villain"] else None
     allowed = hooks.HOOK_TYPES if profile["uses_villain"] else hooks.NO_VILLAIN_HOOK_TYPES
-    hook_type = hooks.select_hook_type(fmt, villain, used_hook_types, allowed)
-    base_prompt = _user_prompt(fmt, villain, hook_type, mood, list(used_hooks or []), character)
+    hook_type = hooks.select_hook_type(fmt, villain, used_hook_types, allowed, mood.mood_word)
+    day = face_story.content_date(content_id)   # 회차 날짜(KST)는 content_id 에서만 온다
+    base_prompt = _user_prompt(fmt, villain, hook_type, mood, list(used_hooks or []), character, day)
     if continuity is not None:
         base_prompt += "\n\n" + continuity.prompt_block
     if extra_instruction:
@@ -334,7 +378,7 @@ def write_script(
             last = [str(exc)]
             log.warning("대본 생성 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS, exc)
             continue
-        last = validate(raw, hook_type, used_captions, character, continuity)
+        last = validate(raw, hook_type, used_captions, character, continuity, day)
         if not last:
             spec = hooks.HOOK_SPECS[hook_type]
             beats = [Beat(str(raw["hook"]).strip(), spec["tts_tone"], True, spec["sfx"])]
