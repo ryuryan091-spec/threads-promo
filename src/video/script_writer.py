@@ -16,7 +16,7 @@ import requests
 from .. import ai_writer, config, content, face_story, mood_source
 from . import hooks
 
-VERSION = "1.1.0"   # v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
+VERSION = "1.1.1"   # v1.8.2: max_tokens 상향·빈 응답 진단 · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
 
 log = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ def _user_prompt(fmt: str, villain: str | None, hook_type: str, mood: mood_sourc
 def _call_claude(api_key: str, user_prompt: str, character: str = config.CHARACTER_EDT) -> dict:
     payload = {
         "model": config.CLAUDE_MODEL,
-        "max_tokens": 1500,
+        "max_tokens": config.SHORTS_SCRIPT_MAX_TOKENS,
         "system": system_prompt(character),
         "messages": [{"role": "user", "content": user_prompt}],
     }
@@ -197,14 +197,22 @@ def _call_claude(api_key: str, user_prompt: str, character: str = config.CHARACT
                 "content-type": "application/json",
             },
             json=payload,
-            timeout=config.HTTP_TIMEOUT_SEC * 3,
+            timeout=config.SHORTS_SCRIPT_TIMEOUT_SEC,
         )
     except requests.RequestException as exc:
         raise ScriptError(f"Claude 호출 실패: {exc}") from exc
     if resp.status_code != 200:
         raise ScriptError(f"Claude API {resp.status_code}: {resp.text[:300]}")
     body = resp.json()
-    text = "".join(b.get("text", "") for b in body.get("content", []) if b.get("type") == "text")
+    blocks = body.get("content", []) or []
+    text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    if not text.strip():
+        # 운영 베타 2026-10-04: 원인 판별에 필요한 값(stop_reason·블록 종류·사용량)을 남긴다.
+        usage = body.get("usage") or {}
+        raise ScriptError(
+            f"text 블록 없음 — stop_reason={body.get('stop_reason')} "
+            f"blocks={[b.get('type') for b in blocks]} output_tokens={usage.get('output_tokens')} "
+            f"max_tokens={config.SHORTS_SCRIPT_MAX_TOKENS} model={body.get('model') or config.CLAUDE_MODEL}")
     try:
         return ai_writer._extract_json(text)
     except ai_writer.AiWriterError as exc:

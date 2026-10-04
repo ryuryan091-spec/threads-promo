@@ -87,3 +87,10 @@
 | B3 | 로고 PNG 가 RGBA 인데 배경이 불투명 마젠타 → 알파로 판단해 키잉 생략 | 아웃트로에 마젠타 상자 | 항상 마젠타 키잉 |
 | D1 | 레포에 src/src · tests/tests · scripts/scripts 잔존(v1.6 사본) | verify_repo 검사 12 FAIL, pytest 수집 오류(실행 경로는 정상) | 레포에서 삭제 필요(마스터) |
 | D2 | 자산이 assets/bgm·sfx·brand·reference 에 있음 — 코드는 assets/video/* 를 읽음 | BGM·효과음·로고·GOC 참조 이미지 전부 미사용 | assets/video/ 아래로 이동 필요(마스터) |
+
+## 6. v1.8.2 운영 베타 2차 (2026-10-04)
+| # | 발견 | 근거 | 조치 |
+|---|---|---|---|
+| B4 | 대본 생성 3회 모두 `JSON 형식이 아닙니다: `(빈 문자열) → build 종료코드 2 | 응답에 text 블록이 없었다. 공식 문서: Claude Sonnet 5 는 적응형 사고가 기본 켜짐(effort high), 사고 토큰은 max_tokens 에 포함 → 1500 에서 사고만으로 소진 가능 | max_tokens 8000 · 시간 제한 180초 · 빈 응답이면 stop_reason·블록 종류·output_tokens 를 오류에 남김. 사고 설정은 모델 기본값 유지(Sonnet 5.5 는 disabled 를 400 으로 거부 — 문서) |
+원인 확정 한계: 기존 코드가 응답 본문을 버려 stop_reason 을 볼 수 없었다. 다음 실행 로그에서 확인.
+영향 범위 주의: Threads CHAT(ai_writer, max_tokens 1000)도 같은 모델·같은 구조다. 실패 시 정적 문구로 폴백하므로 겉으로 드러나지 않을 수 있다 — 운영 로그 확인 필요(이번 패치 범위 밖).

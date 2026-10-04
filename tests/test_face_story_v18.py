@@ -1026,7 +1026,7 @@ class TestPublishRunner:
 class TestConfigAndWorkflow:
     def test_defaults_off(self):
         assert config.SAFETY_VARIABLE_DEFAULTS["FACE_STORY_ENABLED"] == "false"
-        assert config.VERSION == "1.8.1"
+        assert config.VERSION == "1.8.2"
         assert config.FACE_STORY_SCAN_ROWS > 10 >= 2
 
     def test_clamps(self, monkeypatch):
@@ -1288,3 +1288,38 @@ class TestBetaRelativeOutPath:
         assert g < 150 and b > 100                   # EDT 표지(초록)가 아니라 GOC 장면(파랑)
         lr, lg_, lb = px(1080 - 60 - 10, 60 + 5)     # 로고 영역 모서리 = 마젠타가 아니어야 함
         assert not (lr > 200 and lg_ < 80 and lb > 200)
+
+
+# ---------------------------------------------------------------------------
+# I. 운영 베타 2차 — 대본 응답에 text 블록이 없던 문제(v1.8.2)
+# ---------------------------------------------------------------------------
+
+
+class TestBetaScriptThinking:
+    def _resp(self, body):
+        r = mock.Mock(status_code=200)
+        r.json.return_value = body
+        return r
+
+    def test_payload_leaves_room_for_thinking(self, monkeypatch):
+        seen = {}
+
+        def fake_post(url, headers, json, timeout):
+            seen["json"], seen["timeout"] = json, timeout
+            return self._resp({"content": [{"type": "thinking", "thinking": "..."},
+                                           {"type": "text", "text": '{"hook": "x"}'}]})
+
+        monkeypatch.setattr(script_writer.requests, "post", fake_post)
+        assert script_writer._call_claude("k", "p", "GOC") == {"hook": "x"}
+        assert seen["json"]["max_tokens"] == config.SHORTS_SCRIPT_MAX_TOKENS >= 8000
+        assert seen["timeout"] == config.SHORTS_SCRIPT_TIMEOUT_SEC
+        assert "thinking" not in seen["json"]          # 사고 설정은 모델 기본값 유지(모델별 허용값이 다름)
+
+    def test_empty_text_reports_stop_reason(self, monkeypatch):
+        body = {"content": [{"type": "thinking", "thinking": "..."}], "stop_reason": "max_tokens",
+                "usage": {"output_tokens": 1500}, "model": "claude-sonnet-5"}
+        monkeypatch.setattr(script_writer.requests, "post", lambda *a, **k: self._resp(body))
+        with pytest.raises(script_writer.ScriptError) as info:
+            script_writer._call_claude("k", "p", "GOC")
+        msg = str(info.value)
+        assert "stop_reason=max_tokens" in msg and "'thinking'" in msg and "output_tokens=1500" in msg

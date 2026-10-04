@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.8.1"   # v1.8.1: 운영 베타 수정(렌더 concat 절대경로·GOC 아웃트로 표지·로고 키잉) · v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
+VERSION = "1.8.2"   # v1.8.2: 대본 max_tokens(사고 토큰 여유)·응답 진단 · v1.8.1: 운영 베타 수정(렌더 concat 절대경로·GOC 아웃트로 표지·로고 키잉) · v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
 # v1.6.0: 계정 보호(안전) 모드 — 킬 스위치·일일 예산·링크 리플 비율·워밍업·답글 축소
 # v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
 # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
@@ -694,6 +694,11 @@ SHORTS_TTS_MODEL = os.environ.get("SHORTS_TTS_MODEL", "").strip() or "gemini-3.1
 SHORTS_TTS_VOICE = os.environ.get("SHORTS_TTS_VOICE", "").strip() or "Charon"
 SHORTS_IMAGE_COUNT = 5            # 편당 생성 이미지 수(비트에 재사용)
 SHORTS_SCRIPT_ATTEMPTS = 3        # 대본 생성 최대 시도
+# v1.8.2 운영 베타: Claude Sonnet 5 는 적응형 사고(thinking)가 기본으로 켜져 있고(effort high), 사고 토큰도
+#   max_tokens 에 포함된다(공식 문서 Thinking · What's new in Claude Sonnet 5). 1500 이면 사고만으로 소진돼
+#   text 블록 없이 끝날 수 있다 → 사고 + 대본 JSON 이 함께 들어갈 여유를 둔다. 응답이 길어지므로 시간 제한도 늘린다.
+SHORTS_SCRIPT_MAX_TOKENS = 8000
+SHORTS_SCRIPT_TIMEOUT_SEC = 180
 SHORTS_TTS_ATTEMPTS = 2
 
 # 게시 시간대(KST)와 편간 간격
