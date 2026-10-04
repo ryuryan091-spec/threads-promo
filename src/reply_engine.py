@@ -24,6 +24,10 @@ v1.4.0 답글 고도화 (DESIGN_V14_REPLY.md)
      답글은 생략해도 손실이 작고 같은 사람에게 같은 말투가 반복되는 편이 더 눈에 띄므로 다르게 둔다.
   R7 시스템 프롬프트 정리: 길이 기준은 형식 블록 하나, 고정 판단 유보 문장 제거, 예시 추가.
 
+v1.6.0 (계정 보호 모드 S4)
+  외국어 댓글 정형 문구는 REPLY_CANNED_ENABLED(기본 false)일 때만 쓴다. false 면 외국어 댓글은
+  SKIP(답하지 않음)이다. 여러 사람에게 같은 정형 문구가 반복되는 것이 자동화 신호가 될 수 있어서다.
+
 무상태 중복 방지
   DB 가 없으므로 Threads API 로 판정한다.
   GET /{post-id}/conversation 이 반환하는 is_reply_owned_by_me 와 replied_to 를
@@ -46,9 +50,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from . import ai_writer, antibot, config, content, style
+from . import ai_writer, antibot, config, content, safety, style
 
-VERSION = "1.4.0"   # v1.4.0: 리액션 전략, 선택형 AI 생성, 대화 맥락, 답글 반복 린트, 외국어 문구 중복 회피
+VERSION = "1.5.0"   # v1.5.0: 외국어 정형 문구 기본 비활성(REPLY_CANNED_ENABLED)
+# v1.4.0: 리액션 전략, 선택형 AI 생성, 대화 맥락, 답글 반복 린트, 외국어 문구 중복 회피
 
 log = logging.getLogger(__name__)
 
@@ -245,6 +250,10 @@ def decide(
         )
 
     if not is_korean(text):
+        if not safety.canned_enabled():
+            return ReplyDecision(
+                comment, ReplyStrategy.SKIP, "비한국어 — 정형 문구 비활성(REPLY_CANNED_ENABLED=false)"
+            )
         return ReplyDecision(comment, ReplyStrategy.NON_KOREAN, "비한국어")
 
     if is_reaction(text):

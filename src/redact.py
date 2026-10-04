@@ -25,7 +25,8 @@ import os
 import re
 import traceback
 
-VERSION = "1.1.0"   # v1.1.0: 계정명 가림(mask_username, mask_mentions)
+VERSION = "1.2.0"   # v1.2.0: Facebook 페이지 토큰·Gemini 키 마스킹(v1.7.0 숏폼)
+# v1.1.0: 계정명 가림(mask_username, mask_mentions)
 
 MASK = "***"
 
@@ -37,16 +38,22 @@ SECRET_ENV_NAMES: tuple[str, ...] = (
     "GH_PAT_SECRETS_WRITE",
     "TELEGRAM_BOT_TOKEN",
     "NOTION_TOKEN",
+    # v1.7.0 숏폼
+    "FACE_PAGE_TOKEN",
+    "GEMINI_API_SUB_PAY_KEY",
 )
 _MIN_SECRET_LEN = 8
 
 # 형식 패턴. 실값을 모르는 경우(갱신 직후 새 토큰 등)를 덮는다.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\b(access_token|client_secret|th_refresh_token|fb_exchange_token)"
+    (re.compile(r"(?i)\b(access_token|client_secret|th_refresh_token|fb_exchange_token|key)"
                 r"=[^&\s'\"<>]+"), rf"\1={MASK}"),
     (re.compile(r"(?i)(\"?(?:access_token|client_secret)\"?\s*:\s*\")[^\"]+"), rf"\1{MASK}"),
     (re.compile(r"\bbot\d{6,}:[A-Za-z0-9_-]{20,}"), f"bot{MASK}"),
     (re.compile(r"\bTHAA[A-Za-z0-9_\-]{20,}"), f"THAA{MASK}"),
+    # v1.7.0: Facebook 페이지 토큰(EAA…)과 Google API 키(AIza…) 형식
+    (re.compile(r"\bEAA[A-Za-z0-9]{20,}"), f"EAA{MASK}"),
+    (re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}"), f"AIza{MASK}"),
     (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{10,}"), f"sk-ant-{MASK}"),
     (re.compile(r"\b(ghp|gho|github_pat)_[A-Za-z0-9_]{20,}"), rf"\1_{MASK}"),
     (re.compile(r"\b(ntn|secret)_[A-Za-z0-9]{20,}"), rf"\1_{MASK}"),

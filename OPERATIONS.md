@@ -536,3 +536,17 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. �
 | 이미지-본문 매칭 | 현재 날짜 기반 순환. 내용 연동 안 됨 |
 | 60일 비활성 | Public 레포는 60일간 레포 활동이 없으면 예약 워크플로가 자동 비활성화(GitHub 정책). 커밋이 60일 이상 없으면 Actions 탭에서 재활성화 확인 |
 | 인사이트 replies 지표 | 셀프 이어쓰기가 원글 replies 에 포함되는지 미확인. 포함된다면 대상 글(25%)에 +1 잡음 |
+
+---
+
+## v1.7.0 숏폼 (Facebook 릴스 · Threads 동영상) 운영 절차
+
+1. **P0 확인**: 레포에 `src/src`, `tests/tests`, `scripts/scripts` 가 없어야 한다(verify_repo 검사 12).
+2. **Secrets**: `FACE_PAGE_ID`, `FACE_PAGE_TOKEN`(장기 페이지 토큰), `GEMINI_API_SUB_PAY_KEY`.
+3. **Environment**: Settings › Environments › `meta-publish` 생성 → Required reviewers = 본인.
+4. **자산**: investment_comic_tube `assets/{bgm,sfx,brand,reference}` → 이 레포 `assets/video/` 같은 이름 폴더로 복사.
+5. **미리보기 단계**: Variables `SHORTS_BUILD_ENABLED=true`, `AUTOMATION_ENABLED=true`, `FACE_ENABLED=true`,
+   `FACE_RAMP_START=<오늘>` → Actions › Threads Shorts › Run workflow(dry_run). 텔레그램 미리보기 확인, publish 는 승인해도 DRY_RUN 이라 게시 없음.
+6. **실게시**: `DRY_RUN=false`. 매일 08:19 build 후 미리보기 → 승인 → 10~22시 사이 게시.
+7. **게시 후**: 앱에서 각 게시물 'AI 정보' 표시를 켠다.
+8. **즉시 정지**: `AUTOMATION_ENABLED=false` 또는 `FACE_ENABLED=false` / `SHORTS_THREADS_ENABLED=false`. 승인 거절(Reject)도 정지다.

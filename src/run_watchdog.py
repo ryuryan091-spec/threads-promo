@@ -14,11 +14,13 @@ import logging
 import sys
 from zoneinfo import ZoneInfo
 
-from . import antibot, chat_plan, config, notifier, token_manager, watchdog
+from . import antibot, chat_plan, config, notifier, safety, token_manager, watchdog
 from .env import load_settings
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.2.0"   # v1.2.0: 링크 셀프 리플라이 제외 답글 감시, 대화 조회 한도 설정화
+VERSION = "1.4.0"   # v1.4.0: 숏폼 동영상은 정기 발행 신선도에서 제외 — v1.7.0
+# v1.3.0: 계정 보호 모드 — 비활성·워밍업·예산 제한 중 오탐 방지
+# v1.2.0: 링크 셀프 리플라이 제외 답글 감시, 대화 조회 한도 설정화
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -65,8 +67,49 @@ def _collect_owned_reply_stamps(
     return stamps
 
 
+def publish_finding(
+    regular_posts: list[dict], now: dt.datetime, today: dt.date
+) -> watchdog.Finding:
+    """정기·이벤트 발행 신선도(v1.6.0: 비활성·예산 0·워밍업 첫 발행 전에는 OK + 사유)."""
+    exempt = safety.watch_publish_exempt(today)
+    if exempt:
+        return watchdog.Finding(watchdog.Severity.OK, "발행 판정 생략", exempt)
+    if not regular_posts and safety.warmup_state(today).active:
+        return watchdog.Finding(
+            watchdog.Severity.OK, "발행 이력 없음(워밍업)",
+            "워밍업 중이고 아직 정기 글이 없습니다 — 첫 정기 발행 전이면 정상입니다.",
+        )
+    return watchdog.check_publish_freshness(regular_posts, now)
+
+
+def chat_watch_reason(today: dt.date) -> str | None:
+    """CHAT 무발행 판정을 생략할 사유. None 이면 판정한다(v1.6.0).
+
+    일일 예산(정기 1 + CHAT)이 오늘 CHAT 목표보다 작으면 CHAT 이 0건이어도 이상이 아닐 수 있다
+    (정기 몫 예약·STORY 가 예산을 먼저 쓴다). 그때는 판정하지 않는다.
+    """
+    if not config.CHAT_ENABLED:
+        return "CHAT_ENABLED=false — 검사 생략"
+    blocked = safety.block_reason(safety.KIND_CHAT, today)
+    if blocked:
+        return blocked
+    if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
+        return "휴식일 — 검사 생략"
+    target = chat_plan.daily_target(today)
+    if target <= 0:
+        return "오늘 CHAT 목표 0건 — 검사 생략"
+    budget = safety.effective_post_budget(today)
+    if budget < 1 + target:
+        return (
+            f"DAILY_POST_BUDGET 적용값 {budget}건 < 정기 1 + CHAT 목표 {target}건 — "
+            "예산이 CHAT 을 제한하므로 무발행 판정 생략"
+        )
+    return None
+
+
 def run() -> int:
     log.info("[Watchdog] v%s 시작", VERSION)
+    log.info(safety.describe())
 
     settings = load_settings()
     now = dt.datetime.now(dt.UTC)
@@ -102,18 +145,20 @@ def run() -> int:
 
         # 정기·이벤트 발행 신선도는 CHAT 을 빼고 본다.
         # 섞으면 정기 파이프라인이 멈춰도 CHAT 이 가려 경보가 울리지 않는다.
-        regular_posts = [p for p in posts if not _is_chat_post(p)]
-        findings.append(watchdog.check_publish_freshness(regular_posts, now))
+        # v1.7.0: 숏폼 동영상도 뺀다. 섞으면 정기 발행이 멈춰도 영상이 신선도를 가린다.
+        regular_posts = [
+            p for p in posts
+            if not _is_chat_post(p) and not chat_plan.is_shorts_post(str(p.get("media_type") or ""))
+        ]
+        findings.append(publish_finding(regular_posts, now, today))
 
         chat_today = chat_plan.count_posts(
             posts, now, watchdog.parse_threads_timestamp
         ).chat_today
+        chat_skip = chat_watch_reason(today)
         findings.append(
             watchdog.check_chat_activity(
-                chat_today, now,
-                enabled=config.CHAT_ENABLED
-                and not antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS)
-                and chat_plan.daily_target(today) > 0,
+                chat_today, now, enabled=chat_skip is None, disabled_reason=chat_skip or "",
             )
         )
 
@@ -121,9 +166,14 @@ def run() -> int:
         findings.append(watchdog.check_quota(quota.used, quota.total))
 
         reply_stamps = _collect_owned_reply_stamps(client, posts)
+        reply_skip = (
+            "REPLY_ENABLED=false — 검사 생략" if not config.REPLY_ENABLED
+            else safety.block_reason(safety.KIND_REPLY, today)
+        )
         findings.append(
             watchdog.check_reply_activity(
-                reply_stamps, now, enabled=config.REPLY_ENABLED
+                reply_stamps, now, enabled=reply_skip is None,
+                disabled_reason=reply_skip or "",
             )
         )
 

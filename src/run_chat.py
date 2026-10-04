@@ -17,6 +17,9 @@ v1.5.0: CHAT 창 09:00~24:00(정기·이벤트 예약 구간 제외 CHAT 구역)
     하루 여러 번 같은 정형문이 나가면 그 자체가 봇 신호다.
   - 링크를 붙이지 않는다. 링크는 정기 발행 1건에만 둔다.
   - DRY_RUN 은 게이트 결과와 무관하게 생성문을 미리보기로 출력한다(검증용).
+  - v1.6.0 계정 보호 모드: 킬 스위치·워밍업이면 Claude·Threads 호출 없이 종료(dry_run 포함).
+    일일 예산(DAILY_POST_BUDGET)과 정기 몫 예약(safety.budget_block)을 게이트와 함께 본다.
+    계정·토큰 사용 불가 오류(S7)는 스윕에서도 삼키지 않고 종료코드 7 로 끝낸다.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from . import (
     content,
     mood_source,
     run_reply,
+    safety,
     style,
     watchdog,
 )
@@ -48,7 +52,8 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.5.0"   # v1.5.0: 시간대 맥락·시간대 소재. v1.2.0: 문체 축·반복 린트(연성)
+VERSION = "1.6.0"   # v1.6.0: 계정 보호 모드(킬 스위치·워밍업·일일 예산·회로 차단기)
+# v1.5.0: 시간대 맥락·시간대 소재. v1.2.0: 문체 축·반복 린트(연성)
 KST = ZoneInfo("Asia/Seoul")
 PILLAR_KEY = "CHAT"
 # 오늘 게시물(정기 1 + 셀프리플 제외 + CHAT ≤15 + 이벤트 ≤ EVENT_DAILY_CAP) 을 덮는 크기.
@@ -84,11 +89,13 @@ def _check_gate(
     *,
     enforce_gap: bool = True,
 ) -> tuple[str | None, int]:
-    """(보류 사유, 간격 대기 초). 사유가 None 이면 발행 가능."""
+    """(보류 사유, 간격 대기 초). 사유가 None 이면 발행 가능.
+
+    v1.6.0: CHAT 게이트를 통과해도 일일 예산(S2, 정기 몫 예약 포함)에 걸리면 보류한다.
+    """
     now = dt.datetime.now(dt.UTC)
-    counts = chat_plan.count_posts(
-        _today_posts(client, today), now, watchdog.parse_threads_timestamp
-    )
+    posts = _today_posts(client, today)
+    counts = chat_plan.count_posts(posts, now, watchdog.parse_threads_timestamp)
     log.info(
         "오늘 CHAT %d건 / 목표 %d건 / 선택 트리거 %s",
         counts.chat_today, chat_plan.daily_target(today),
@@ -97,6 +104,8 @@ def _check_gate(
     blocked = chat_plan.gate(
         today, now, trigger, counts, manual=manual, enforce_gap=enforce_gap
     )
+    if blocked is None:
+        blocked = safety.budget_block(safety.KIND_CHAT, posts, now)
     wait = chat_plan.gap_wait_seconds(counts, now)
     if blocked is None and not enforce_gap and wait > config.CHAT_MAX_GAP_WAIT_SEC:
         blocked = (
@@ -172,6 +181,10 @@ def _safe_sweep(client: ThreadsClient, settings: Settings) -> None:
     if not config.REPLY_ENABLED:
         log.info("REPLY_ENABLED=false — 답글 스윕 생략")
         return
+    blocked = safety.block_reason(safety.KIND_REPLY)
+    if blocked:
+        log.info("답글 스윕 생략 — %s", blocked)
+        return
     remaining = sweep_budget_sec(
         dt.datetime.now(dt.UTC), time.monotonic() - _RUN_STARTED
     )
@@ -182,7 +195,8 @@ def _safe_sweep(client: ThreadsClient, settings: Settings) -> None:
             budget_sec=max(0.0, remaining),
         )
     except (ThreadsApiError, ContainerNotReadyError) as exc:
-        if isinstance(exc, ThreadsApiError) and exc.is_blocked:
+        # v1.6.0(S7): 차단(200)뿐 아니라 토큰 무효(190/401)도 삼키지 않는다.
+        if safety.is_account_fatal(exc):
             raise
         log.warning("답글 스윕 실패 — CHAT 결과에는 영향 없음: %s", exc)
 
@@ -191,6 +205,12 @@ def run() -> int:
     global _RUN_STARTED
     _RUN_STARTED = time.monotonic()
     log.info("[ChatRun] v%s 시작", VERSION)
+
+    # v1.6.0(S1·S5): 킬 스위치·워밍업. 수동 dry_run 도 막는다(Claude 호출 없음).
+    blocked = safety.block_reason(safety.KIND_CHAT)
+    if blocked:
+        log.info("CHAT 생략 — %s", blocked)
+        return 0
 
     settings = load_settings()
     manual = _is_manual()
@@ -202,6 +222,7 @@ def run() -> int:
     today = dt.datetime.now(KST).date()
     if antibot.is_rest_day(today, config.PUBLISH_WEEKLY_REST_DAYS):
         return 0
+    log.info(safety.describe(today))
 
     trigger_raw = os.environ.get("TRIGGER", "").strip()
     trigger = chat_plan.trigger_number(trigger_raw)
@@ -243,6 +264,8 @@ def run() -> int:
     )
 
     recent_texts = client.get_recent_texts(config.CHAT_RECENT_FOR_DEDUP)
+    # v1.6.0(S7): 조회 실패를 삼키는 경로라도 차단기가 열렸으면 생성(Claude 호출) 전에 멈춘다.
+    safety.guard_write()
     # v1.5.0: 예약 실행은 트리거 예정 시각, 수동 실행은 현재 시각의 시간대.
     band = chat_plan.band_for(trigger, now)
     seed = chat_plan.seed_for(today, trigger, ai_writer.chat_seeds(band), band=band)
@@ -297,18 +320,10 @@ def main() -> int:
         log.error("설정 오류: %s", exc)
         return 2
     except ThreadsApiError as exc:
-        if exc.is_blocked:
-            log.error("API 접근 차단 (code=200) — 워크플로우를 비활성화하십시오.\n%s", exc)
-            _notify_safe(
-                "[Threads][최우선] API 접근 차단 (code=200)\n"
-                "developers.facebook.com 에서 계정·앱 상태를 확인하십시오.\n"
-                "해소 전까지 모든 워크플로우를 Disable 하십시오.\n"
-                f"{exc}"
-            )
-            return 7
-        hint = " (재인가 필요)" if exc.is_auth_error else ""
-        log.error("Threads API 오류%s: %s", hint, exc)
-        _notify_safe(f"[Threads Chat] API 오류{hint}\n{exc}")
+        if safety.is_account_fatal(exc):
+            return safety.handle_fatal(exc, "CHAT", _notify_safe)
+        log.error("Threads API 오류: %s", exc)
+        _notify_safe(f"[Threads Chat] API 오류\n{exc}")
         return 4
     except Exception as exc:  # noqa: BLE001 — 최상위 방어
         log.exception("예기치 못한 오류")

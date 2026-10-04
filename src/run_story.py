@@ -17,6 +17,9 @@ EDT 회차가 트래커에 올라오면 그 회차를 근거로 Threads 에 STOR
   2. 직전 발행과 최소 간격이 확보되었는가
   3. 오늘 이벤트 발행 상한을 넘지 않았는가
   4. 발행 쿼터 잔여가 있는가
+  5. (v1.6.0) 킬 스위치·워밍업(safety.block_reason) / 일일 예산·정기 몫 예약(safety.budget_block)
+     링크 셀프 리플라이는 LINK_REPLY_PCT 로 선택(main._link_reply). 계정·토큰 사용 불가 오류면
+     텍스트 폴백을 하지 않는다(S7).
 """
 
 from __future__ import annotations
@@ -34,12 +37,14 @@ from . import (
     content,
     insights,
     notion_source,
+    safety,
     watchdog,
 )
 from .env import MissingEnvError, Settings, load_settings
 from .main import (
     REPO_ROOT,
     _acquire_token,
+    _link_reply,
     _notify_safe,
     _preflight,
     _resolve_raw_base_url,
@@ -52,7 +57,9 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.3.0"   # v1.3.0: 곧 나갈 정기 글과의 최소 간격 게이트
+VERSION = "1.5.0"   # v1.5.0: 숏폼 동영상은 이벤트 간격·상한 집계에서 제외 — v1.7.0
+# v1.4.0: 계정 보호 모드(킬 스위치·워밍업·일일 예산·링크 리플 비율·회로 차단기)
+# v1.3.0: 곧 나갈 정기 글과의 최소 간격 게이트
 KST = ZoneInfo("Asia/Seoul")
 ASSETS_DIR = REPO_ROOT / "assets"
 # CHAT 도입 후 하루 게시물이 약 10건이다. 5건이면 정기 글이 보이지 않는다.
@@ -80,7 +87,10 @@ def _non_chat_stamps(posts: list[dict]) -> list[dt.datetime]:
     stamps: list[dt.datetime] = []
     for post in posts:
         parsed = watchdog.parse_threads_timestamp(str(post.get("timestamp", "")))
-        if parsed and not chat_plan.is_chat_post(parsed, str(post.get("media_type") or "")):
+        media_type = str(post.get("media_type") or "")
+        # v1.7.0: 숏폼 동영상(VIDEO)도 뺀다 — 정기·이벤트 간격·상한과 별개 채널
+        if parsed and not chat_plan.is_chat_post(parsed, media_type) \
+                and not chat_plan.is_shorts_post(media_type):
             stamps.append(parsed)
     return stamps
 
@@ -212,15 +222,23 @@ def _gate(
     if quota_remaining < 2:
         return f"발행 쿼터 잔여 {quota_remaining}건 — 부족합니다."
 
-    return None
+    # v1.6.0(S2): 일일 총량 예산 + 정기 발행 몫 예약.
+    return safety.budget_block(safety.KIND_STORY, posts, now)
 
 
 def run() -> int:
     log.info("[StoryEvent] v%s 시작", VERSION)
 
+    # v1.6.0(S1·S5): 킬 스위치·워밍업. Notion·Claude 호출 전에 본다.
+    blocked = safety.block_reason(safety.KIND_STORY)
+    if blocked:
+        log.info("이벤트 발행 생략 — %s", blocked)
+        return 0
+
     if not config.EVENT_STORY_ENABLED:
         log.info("EVENT_STORY_ENABLED=false — 종료")
         return 0
+    log.info(safety.describe())
 
     _preflight()
 
@@ -274,6 +292,8 @@ def run() -> int:
     episode_block = "\n".join(["# 방금 발행한 회차", *[f"- {e}" for e in episodes]])
 
     recent_texts = client.get_recent_texts(config.RECENT_POSTS_FOR_DEDUP)
+    # v1.6.0(S7): 조회 실패를 삼키는 경로라도 차단기가 열렸으면 생성(Claude 호출) 전에 멈춘다.
+    safety.guard_write()
 
     plan = content.build_plan(
         today,
@@ -330,6 +350,9 @@ def run() -> int:
             post_id = client.publish_image_post(image_url, plan.text, dry_run=False)
             log.info("본문 발행 완료 (이미지) post_id=%s", post_id)
         except (ContainerNotReadyError, ThreadsApiError) as exc:
+            # v1.6.0(S7): 계정·토큰 사용 불가 오류면 폴백(쓰기 재시도)하지 않는다.
+            if safety.is_account_fatal(exc):
+                raise
             log.error("이미지 발행 실패 — 텍스트 폴백: %s", exc)
             degrade_reasons.append(f"이미지 발행 실패: {str(exc)[:200]}")
             if not config.IMAGE_FALLBACK_TO_TEXT:
@@ -343,8 +366,7 @@ def run() -> int:
             + "\n".join(degrade_reasons[:3])
         )
 
-    reply_id = client.publish_self_reply(post_id, plan.reply_text, dry_run=False)
-    log.info("셀프 리플라이 발행 완료 reply_id=%s", reply_id)
+    _link_reply(client, post_id, plan.reply_text, dry_run=False)
     return 0
 
 
@@ -355,14 +377,8 @@ def main() -> int:
         log.error("설정 오류: %s", exc)
         return 2
     except ThreadsApiError as exc:
-        if exc.is_blocked:
-            log.error("API 접근 차단 (code=200) — 워크플로우를 비활성화하십시오.\n%s", exc)
-            _notify_safe(
-                "[Threads][최우선] API 접근 차단 (code=200)\n"
-                "developers.facebook.com 에서 계정·앱 상태를 확인하십시오.\n"
-                f"{exc}"
-            )
-            return 7
+        if safety.is_account_fatal(exc):
+            return safety.handle_fatal(exc, "이벤트 STORY", _notify_safe)
         log.error("Threads API 오류: %s", exc)
         _notify_safe(f"[Threads] 이벤트 발행 API 오류\n{exc}")
         return 4

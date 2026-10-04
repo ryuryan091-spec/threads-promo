@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 
 from . import chat_plan, config
 
-VERSION = "1.5.0"   # v1.5.0: CHAT 무발행 판정을 트리거 기회 수로(창 09:00~24:00)
+VERSION = "1.6.0"   # v1.6.0: 계정 보호 모드 — 비활성·워밍업·예산 제한 중 오탐 방지(사유 표시)
+# v1.5.0: CHAT 무발행 판정을 트리거 기회 수로(창 09:00~24:00)
 # v1.2.1: 신선도 목록 조회 25 → 40 (CHAT 트리거 15개). v1.2.0: 슬롯 공백 임계 산출
 
 log = logging.getLogger(__name__)
@@ -225,14 +226,17 @@ def check_reply_activity(
     *,
     enabled: bool,
     threshold_hours: float = REPLY_STALE_HOURS,
+    disabled_reason: str = "",
 ) -> Finding:
     """답글 엔진이 살아 있는지.
 
     답글은 대상 댓글이 없으면 나가지 않는 것이 정상이다.
     따라서 임계를 넉넉히 두고 WARN 까지만 올린다.
+    v1.6.0: disabled_reason — 킬 스위치·워밍업으로 꺼진 경우의 사유(없으면 REPLY_ENABLED 문구).
     """
     if not enabled:
-        return Finding(Severity.OK, "답글 비활성", "REPLY_ENABLED=false — 검사 생략")
+        return Finding(Severity.OK, "답글 비활성",
+                       disabled_reason or "REPLY_ENABLED=false — 검사 생략")
 
     if not owned_reply_stamps:
         return Finding(
@@ -253,15 +257,17 @@ def check_reply_activity(
 
 
 def check_chat_activity(
-    chat_today: int, now: dt.datetime, *, enabled: bool
+    chat_today: int, now: dt.datetime, *, enabled: bool, disabled_reason: str = ""
 ) -> Finding:
     """CHAT 이 켜져 있는데 오늘 한 건도 없으면 경고한다.
 
     CHAT 은 목표가 soft(cron 누락 허용)라 건수 미달은 경보하지 않는다. 0건만 본다.
     v1.5.0: 발행 기회가 CHAT_CHECK_MIN_DUE 번 이상 지났을 때만 판정한다(CHAT_CHECK_GRACE_MIN 주석).
+    v1.6.0: disabled_reason — 킬 스위치·워밍업·일일 예산 제한으로 판정을 생략한 사유.
     """
     if not enabled:
-        return Finding(Severity.OK, "CHAT 비활성", "CHAT_ENABLED=false — 검사 생략")
+        return Finding(Severity.OK, "CHAT 비활성",
+                       disabled_reason or "CHAT_ENABLED=false — 검사 생략")
 
     from zoneinfo import ZoneInfo
 

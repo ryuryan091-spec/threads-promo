@@ -26,7 +26,8 @@ from zoneinfo import ZoneInfo
 
 from . import ai_writer, chat_plan, config, content, watchdog
 
-VERSION = "1.5.0"   # v1.5.0: 이벤트 표 config 이동·예약 창 우선 복원. v1.3.0: 정기 슬롯 7개
+VERSION = "1.6.0"   # v1.6.0: 숏폼 동영상은 기둥 복원 대상 아님(SHORTS) — v1.7.0
+# v1.5.0: 이벤트 표 config 이동·예약 창 우선 복원. v1.3.0: 정기 슬롯 7개
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -52,6 +53,7 @@ PUBLISH_SLOTS = {hhmm: slot for slot, hhmm in config.PUBLISH_SLOT_TIMES.items()}
 EVENT_SLOTS = config.EVENT_SLOT_TIMES
 
 UNKNOWN = "판정불가"
+SHORTS = "SHORTS"   # v1.7.0 숏폼 동영상(Facebook·Threads 공용 영상). 기둥 가중치 대상 아님
 CHAT = "CHAT"   # 시장 잡담. CHAT 구역 + 형식으로 판정한다(chat_plan.is_chat_post).
 
 
@@ -185,6 +187,9 @@ def restore_pillar(posted_at: dt.datetime, media_type: str = "") -> str:
     CHAT 이 아니라 그 슬롯의 기둥이다. chat_plan.chat_zones 도 예약 구간을 빼고 산출하므로
     두 판정은 같은 결론을 낸다(순서는 그 불변식이 깨져도 예약 창이 이기게 하는 이중 장치).
     """
+    # v1.7.0: 숏폼 동영상(VIDEO)은 정기·이벤트 슬롯 창 안에 올라와도 그 기둥이 아니다.
+    if chat_plan.is_shorts_post(media_type):
+        return SHORTS
     disc = discriminator_from_timestamp(posted_at)
     if disc is None:
         return CHAT if chat_plan.is_chat_post(posted_at, media_type) else UNKNOWN
@@ -217,6 +222,7 @@ def aggregate(posts: list[PostStat]) -> list[PillarRow]:
         if key not in seen:
             seen.append(key)
     seen.append(CHAT)
+    seen.append(SHORTS)
     seen.append(UNKNOWN)
 
     return [rows[k] if k in rows else PillarRow(pillar=k) for k in seen]
@@ -257,14 +263,14 @@ def render_report(
     lines += ["", f"최근 {lookback_days}일 기둥별 (게시물 {total_posts}건)"]
     lines.append(f"  {'기둥':10s} {'발행':>4s} {'답글':>4s} {'좋아요':>5s} {'조회':>6s}")
     for row in rows:
-        if row.pillar in (UNKNOWN, CHAT) and row.posts == 0:
+        if row.pillar in (UNKNOWN, CHAT, SHORTS) and row.posts == 0:
             continue
         lines.append(
             f"  {row.pillar:10s} {row.posts:4d} {row.replies:4d} "
             f"{row.likes:5d} {row.views:6d}"
         )
 
-    ranked = [r for r in rows if r.posts and r.pillar != UNKNOWN]
+    ranked = [r for r in rows if r.posts and r.pillar not in (UNKNOWN, SHORTS)]
     if ranked:
         best = max(ranked, key=lambda r: r.reply_avg)
         lines += ["", f"답글 최다: {best.pillar} (평균 {best.reply_avg:.1f})"]

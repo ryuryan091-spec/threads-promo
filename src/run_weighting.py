@@ -18,7 +18,8 @@ from .env import MissingEnvError, load_settings
 from .run_insights import collect_post_stats
 from .threads_client import ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.2.0"   # v1.2.0: 클릭 기둥 배분 제거, 자동 결과는 PILLAR_ROTATION_AUTO
+VERSION = "1.3.0"   # v1.3.0: 숏폼 동영상(SHORTS) 가중치 제외 — v1.7.0
+# v1.2.0: 클릭 기둥 배분 제거, 자동 결과는 PILLAR_ROTATION_AUTO
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -56,7 +57,8 @@ def _scores(
     replies: dict[str, int] = defaultdict(int)
     for stat in stats:
         # CHAT 은 로테이션 기둥이 아니고 링크도 없다. 클릭 배분에서 제외한다.
-        if stat.pillar in (insights.UNKNOWN, insights.CHAT):
+        # v1.7.0: 숏폼 동영상(SHORTS)도 로테이션 기둥이 아니다.
+        if stat.pillar in (insights.UNKNOWN, insights.CHAT, insights.SHORTS):
             continue
         posts[stat.pillar] += 1
         replies[stat.pillar] += stat.replies

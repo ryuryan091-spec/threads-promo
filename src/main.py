@@ -6,7 +6,9 @@
   3) 발행 쿼터 확인 (DB 대신 API 조회)
   4) 날짜 기반 콘텐츠 선택 + 정책 린트
   5) 이미지 게시물 발행
-  6) 셀프 리플라이로 YouTube / X 링크 배치
+  6) 셀프 리플라이로 YouTube / X 링크 배치 (v1.6.0: LINK_REPLY_PCT 로 선택, 기본 0 = 달지 않음)
+
+v1.6.0 계정 보호 모드(safety): 킬 스위치(S1) → 일일 예산(S2) → 링크 리플 비율(S3) → 회로 차단기(S7).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from . import (
     facts,
     notifier,
     notion_source,
+    safety,
     token_manager,
 )
 from .env import MissingEnvError, Settings, load_settings
@@ -209,7 +212,18 @@ def refresh_and_persist(settings: Settings) -> str:
     return new_token
 
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"   # v1.2.0: 계정 보호 모드(킬 스위치·일일 예산·링크 리플 비율·회로 차단기)
+
+# v1.6.0(S2): 오늘 게시물 집계용 목록 크기.
+POSTS_TO_SCAN = safety.BUDGET_SCAN_POSTS
+
+
+def _budget_block(client: ThreadsClient) -> str | None:
+    """정기 발행의 일일 예산(S2) 판정. 서버 since 는 경계 해석이 문서에 없어 하루 앞당긴다."""
+    now = dt.datetime.now(dt.UTC)
+    today = now.astimezone(KST).date()
+    posts = client.get_my_posts(POSTS_TO_SCAN, since=today - dt.timedelta(days=1))
+    return safety.budget_block(safety.KIND_REGULAR, posts, now)
 
 
 def _slot_gate(today: dt.date) -> bool:
@@ -247,6 +261,12 @@ def _slot_gate(today: dt.date) -> bool:
 
 def run() -> int:
     log.info("[Publish] v%s 시작", VERSION)
+    # v1.6.0(S1): 킬 스위치는 설정 검사·토큰·Claude 호출보다 먼저 본다.
+    blocked = safety.block_reason(safety.KIND_REGULAR)
+    if blocked:
+        log.info("발행 생략 — %s", blocked)
+        return 0
+    log.info(safety.describe())
     _preflight()
     settings = load_settings()
     today = dt.datetime.now(KST).date()
@@ -272,10 +292,18 @@ def run() -> int:
     if quota.remaining < 2:  # 본문 1 + 셀프 리플라이 1
         raise RuntimeError(f"쿼터 부족 — 잔여 {quota.remaining}")
 
+    # v1.6.0(S2): 일일 예산. 생성(Claude 호출) 전에 막는다.
+    over = _budget_block(client)
+    if over:
+        log.info("발행 생략 — %s", over)
+        return 0
+
     recent_texts: list[str] = []
     if settings.can_generate and config.AI_ENABLED:
         recent_texts = client.get_recent_texts(config.RECENT_POSTS_FOR_DEDUP)
         log.info("중복 회피용 최근 글 %d건 확보", len(recent_texts))
+        # v1.6.0(S7): 조회 실패를 삼키는 경로라도 차단기가 열렸으면 생성(Claude 호출) 전에 멈춘다.
+        safety.guard_write()
     else:
         log.info("AI 생성 비활성 — 정적 텍스트 풀 사용")
 
@@ -313,6 +341,8 @@ def run() -> int:
     if settings.dry_run:
         log.info("DRY_RUN — 실제 발행하지 않습니다.\n--- 본문 ---\n%s\n--- 리플 ---\n%s",
                  plan.text, plan.reply_text)
+        log.info("링크 셀프 리플라이 비율 %d%% — 실제 부착 여부는 발행 후 post_id 해시로 정해집니다.",
+                 safety.effective_link_reply_pct())
         return 0
 
     # ------------------------------------------------------------------
@@ -331,6 +361,12 @@ def run() -> int:
     # 안티봇 — 매번 다른 시각에 발행되도록 랜덤 지연
     antibot.jitter_sleep(*config.ANTIBOT_PUBLISH_JITTER, label="발행 전")
 
+    # v1.6.0(S2): 지연 동안 다른 발행이 나갔을 수 있다. 직전에 다시 확인한다.
+    over = _budget_block(client)
+    if over:
+        log.info("지연 후 재검증에서 발행 생략 — %s", over)
+        return 0
+
     # ------------------------------------------------------------------
     # Tier 3 : 이미지가 없으면 텍스트 전용으로 발행한다.
     #   이미지 하나 때문에 그날 발행을 거르는 것이 더 큰 손해다.
@@ -342,6 +378,9 @@ def run() -> int:
             post_id = client.publish_image_post(image_url, plan.text, dry_run=settings.dry_run)
             log.info("본문 발행 완료 (이미지) post_id=%s", post_id)
         except (ContainerNotReadyError, ThreadsApiError) as exc:
+            # v1.6.0(S7): 계정·토큰 사용 불가 오류면 텍스트 폴백(=쓰기 재시도)을 하지 않는다.
+            if safety.is_account_fatal(exc):
+                raise
             # 컨테이너 처리 실패도 텍스트 폴백 대상이다.
             # 이미지 때문에 그날 발행을 통째로 잃는 것이 더 큰 손해다.
             log.error("이미지 발행 실패 — 텍스트 폴백으로 전환: %s", exc)
@@ -357,9 +396,24 @@ def run() -> int:
             + "\n".join(degrade_reasons[:3])
         )
 
-    reply_id = client.publish_self_reply(post_id, plan.reply_text, dry_run=settings.dry_run)
-    log.info("셀프 리플라이 발행 완료 reply_id=%s", reply_id)
+    _link_reply(client, post_id, plan.reply_text, dry_run=settings.dry_run)
     return 0
+
+
+def _link_reply(
+    client: ThreadsClient, post_id: str, reply_text: str, *, dry_run: bool = False
+) -> str | None:
+    """링크 셀프 리플라이(S3). LINK_REPLY_PCT 와 post_id 해시로 대상이면 단다. 아니면 None.
+
+    run_story 도 이 함수를 쓴다(중복 구현 금지).
+    """
+    if not safety.link_reply_selected(post_id):
+        log.info("링크 셀프 리플라이 생략 — LINK_REPLY_PCT 적용값 %d%% 대상 아님 (post_id=%s)",
+                 safety.effective_link_reply_pct(), post_id)
+        return None
+    reply_id = client.publish_self_reply(post_id, reply_text, dry_run=dry_run)
+    log.info("셀프 리플라이 발행 완료 reply_id=%s", reply_id)
+    return reply_id
 
 
 def _select_usable_image(plan, settings: Settings) -> tuple[str | None, list[str]]:
@@ -428,25 +482,13 @@ def main() -> int:
         _notify_safe(f"[Threads] 콘텐츠 정책 위반 — 발행 중단\n{exc}")
         return 3
     except ThreadsApiError as exc:
-        if exc.is_blocked:
-            # code 200 은 일시 오류가 아니다. 사람 조치 없이는 풀리지 않는다.
-            # 차단 상태에서 호출을 계속하면 판정이 강화되므로 즉시 멈춘다.
-            log.error(
-                "Threads API 접근이 차단되었습니다 (code=200).\n"
-                "개발자 계정 확인·앱 제한·권한 박탈을 점검하고, "
-                "해소 전까지 워크플로우를 비활성화하십시오.\n%s",
-                exc,
-            )
-            _notify_safe(
-                "[Threads][최우선] API 접근 차단 (code=200)\n"
-                "developers.facebook.com 에서 계정·앱 상태를 확인하십시오.\n"
-                "해소 전까지 모든 워크플로우를 Disable 하십시오.\n"
-                f"{exc}"
-            )
-            return 7
-        hint = " (재인가 필요: authorize -> 단기 -> 장수명)" if exc.is_auth_error else ""
-        log.error("Threads API 오류%s: %s", hint, exc)
-        _notify_safe(f"[Threads] 발행 실패{hint}\n{exc}")
+        if safety.is_account_fatal(exc):
+            # code 200(차단)·190/401(토큰 무효)은 일시 오류가 아니다. 사람 조치 없이는 풀리지 않는다.
+            # 이 상태에서 호출을 계속하면 판정이 강화될 수 있으므로 즉시 멈춘다(v1.6.0 S7: 190 포함).
+            # 토큰 무효면 재인가 필요: authorize -> 단기 -> 장수명.
+            return safety.handle_fatal(exc, "정기 발행", _notify_safe)
+        log.error("Threads API 오류: %s", exc)
+        _notify_safe(f"[Threads] 발행 실패\n{exc}")
         return 4
     except ContainerNotReadyError as exc:
         log.error("컨테이너 처리 실패: %s", exc)

@@ -23,6 +23,15 @@ v1.4.0 변경 (답글 고도화, DESIGN_V14_REPLY.md)
     같은 목록 앞 5건을 프롬프트 '# 이미 쓴 답글'로도 넘긴다.
   - 외국어 정형 문구: 같은 글 대화에서 내가 이미 쓴 문구(이번 실행 계획분 포함)는 다시 쓰지 않는다.
   - 발행 실패한 답글은 '이번 실행에서 만든 답글'에 넣지 않는다(실제로 보이지 않으므로).
+
+v1.6.0 변경 (계정 보호 모드, DESIGN_V16_SAFETY.md)
+  - 킬 스위치(AUTOMATION_ENABLED=false)·워밍업이면 sweep 이 조회·생성·발행 없이 0 을 돌려준다.
+  - 이어쓰기는 FOLLOWUP_ENABLED 에 더해 킬 스위치·워밍업에도 막힌다(safety.followups_allowed).
+  - 캡 기본값 축소(일 10 · 저자 1 · 스레드 2 · 실행당 2/3)는 config 에서 한다.
+  - 계정·토큰 사용 불가 오류(code 200 · 190 · HTTP 401)는 건별 실패로 넘기지 않고 즉시 전파한다.
+    같은 실행에서 다음 답글을 시도하지 않는다(S7).
+  - 링크 셀프 리플라이가 없는 글(LINK_REPLY_PCT=0)에서도 집계가 같다: 원글 직속 내 글은
+    링크 유무와 무관하게 댓글 응답 집계에서 빠지고, 이어쓰기는 '링크 없는 원글 직속 내 글'로 판정한다.
 """
 
 from __future__ import annotations
@@ -38,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import antibot, config, content, notifier, reply_engine, watchdog
+from . import antibot, config, content, notifier, reply_engine, safety, watchdog
 from .env import MissingEnvError, Settings, load_settings
 from .main import _acquire_token  # 토큰 확보 로직 재사용
 from .reply_engine import Comment, DialogueTurn, ReplyStrategy
@@ -49,7 +58,8 @@ from .threads_client import (
     fetch_user_id,
 )
 
-VERSION = "1.4.0"   # v1.4.0: 대화 맥락 사슬, 답글 반복 린트, 외국어 문구 중복 회피
+VERSION = "1.5.0"   # v1.5.0: 계정 보호 모드(킬 스위치·워밍업·이어쓰기 차단·회로 차단기)
+# v1.4.0: 대화 맥락 사슬, 답글 반복 린트, 외국어 문구 중복 회피
 KST = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
@@ -192,6 +202,12 @@ def sweep(
     now = now or dt.datetime.now(dt.UTC)
     today = now.astimezone(KST).date()
 
+    # v1.6.0(S1·S5): 킬 스위치·워밍업이면 조회도 하지 않는다.
+    blocked = safety.block_reason(safety.KIND_REPLY, today)
+    if blocked:
+        log.info("답글 스윕 생략 — %s", blocked)
+        return 0
+
     quota = client.get_reply_quota()
     log.info("답글 쿼터 %d/%d (잔여 %d)", quota.used, quota.total, quota.remaining)
     if quota.remaining < 1:
@@ -219,7 +235,7 @@ def sweep(
         try:
             raw_items = client.get_conversation(post_id, config.REPLY_SCAN_LIMIT)
         except ThreadsApiError as exc:
-            if exc.is_blocked:
+            if safety.is_account_fatal(exc):
                 raise
             log.warning("대화 조회 실패 post=%s: %s", post_id, exc)
             continue
@@ -233,11 +249,15 @@ def sweep(
         per_run_cap=per_run_cap, dry_run=dry_run, started=started, budget_sec=budget_sec,
     )
 
-    if allow_followup and config.FOLLOWUP_ENABLED and len(conversations) < len(my_post_ids):
+    # v1.6.0(S6): FOLLOWUP_ENABLED 에 더해 킬 스위치·워밍업도 본다.
+    followup_on = allow_followup and safety.followups_allowed(today)
+    if allow_followup and config.FOLLOWUP_ENABLED and not followup_on:
+        log.info("이어쓰기 생략 — %s", safety.block_reason(safety.KIND_FOLLOWUP, today))
+    if followup_on and len(conversations) < len(my_post_ids):
         # 조회 실패한 대화에 오늘 이어쓰기가 있으면 일일 상한 집계가 틀어진다. 보수적으로 쉰다.
         log.warning("대화 조회 실패 %d건 — 이번 실행은 이어쓰기를 하지 않습니다.",
                     len(my_post_ids) - len(conversations))
-    elif allow_followup and config.FOLLOWUP_ENABLED:
+    elif followup_on:
         _followups(
             client, settings, posts, conversations, now,
             dry_run=dry_run, started=started, budget_sec=budget_sec,
@@ -376,7 +396,8 @@ def _reply_to_comments(
         except (ThreadsApiError, ContainerNotReadyError) as exc:
             # v1.2.0: 컨테이너 대기 실패(ContainerNotReadyError)는 ThreadsApiError 계열이
             # 아니라 스윕 전체가 중단됐다. 건별 실패로 처리하고 다음 건을 계속한다.
-            if isinstance(exc, ThreadsApiError) and exc.is_blocked:
+            # v1.6.0(S7): 계정·토큰 사용 불가 오류는 건별 실패가 아니다. 즉시 전파(다음 건 시도 없음).
+            if safety.is_account_fatal(exc):
                 raise
             log.error("답글 발행 실패 %s: %s", decision.comment.id, exc)
             notifier.send(
@@ -500,7 +521,7 @@ def _followups(
             log.info("이어쓰기 발행 완료 %s -> %s", post_id, reply_id)
             done += 1
         except (ThreadsApiError, ContainerNotReadyError) as exc:
-            if isinstance(exc, ThreadsApiError) and exc.is_blocked:
+            if safety.is_account_fatal(exc):
                 raise
             log.error("이어쓰기 발행 실패 %s: %s", post_id, exc)
             notifier.send(
@@ -513,6 +534,12 @@ def _followups(
 
 def run() -> int:
     log.info("[ReplyEngine] v%s 시작", VERSION)
+
+    # v1.6.0(S1·S5): 킬 스위치·워밍업이면 토큰·Claude·Threads 호출 없이 종료.
+    blocked = safety.block_reason(safety.KIND_REPLY)
+    if blocked:
+        log.info("답글 실행 생략 — %s", blocked)
+        return 0
 
     if not config.REPLY_ENABLED:
         log.info("REPLY_ENABLED=false — 종료")
@@ -570,14 +597,8 @@ def main() -> int:
         log.error("설정 오류: %s", exc)
         return 2
     except ThreadsApiError as exc:
-        if exc.is_blocked:
-            log.error("API 접근 차단 (code=200) — 워크플로우를 비활성화하십시오.\n%s", exc)
-            _notify_safe(
-                "[Threads][최우선] API 접근 차단 (code=200)\n"
-                "developers.facebook.com 에서 계정·앱 상태를 확인하십시오.\n"
-                f"{exc}"
-            )
-            return 7
+        if safety.is_account_fatal(exc):
+            return safety.handle_fatal(exc, "답글", _notify_safe)
         log.error("Threads API 오류: %s", exc)
         _notify_safe(f"[Threads Reply] API 오류\n{exc}")
         return 4

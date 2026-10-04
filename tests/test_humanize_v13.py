@@ -252,10 +252,12 @@ class TestReplyCapsEnv:
         monkeypatch.setenv("X_TEST_BOOL", "no")
         assert config._bool_env("X_TEST_BOOL", True) is False
 
+    @pytest.mark.safety_defaults
     def test_defaults(self):
-        assert config.REPLY_DAILY_CAP == 40
-        assert config.REPLY_AUTHOR_DAILY_CAP == 3
-        assert config.REPLY_THREAD_AUTHOR_CAP == 4
+        # v1.6.0(S4): 안전 기본값으로 축소 40/3/4 → 10/1/2 (conftest legacy 프로필 미적용)
+        assert config.REPLY_DAILY_CAP == 10
+        assert config.REPLY_AUTHOR_DAILY_CAP == 1
+        assert config.REPLY_THREAD_AUTHOR_CAP == 2
         assert config.FOLLOWUP_ENABLED is False   # 새 발행 행위는 기본 비활성
         assert config.REPLY_DAILY_CAP < config.DAILY_REPLY_QUOTA
 

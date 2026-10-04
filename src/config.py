@@ -14,7 +14,9 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.5.0"   # v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
+VERSION = "1.7.0"   # v1.7.0: 60초 숏폼(Facebook 릴스 · Threads 동영상) — DESIGN_V17_SHORTS.md
+# v1.6.0: 계정 보호(안전) 모드 — 킬 스위치·일일 예산·링크 리플 비율·워밍업·답글 축소
+# v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
 # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
 
 
@@ -32,6 +34,60 @@ def _bool_env(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in ("true", "1", "yes")
+
+
+def _safe_int_env(name: str, default: int) -> int:
+    """v1.6.0 안전 키 전용 정수 Variable. 해석할 수 없는 값은 기본값(안전 쪽)으로 본다.
+
+    _int_env 는 잘못된 값에서 import 단계로 죽는다. 안전 키는 잘못 넣어도 자동화가
+    '덜' 움직이는 쪽으로만 기울어야 하므로 예외 대신 기본값을 쓴다(safety 가 경고를 남긴다).
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+# ---------------------------------------------------------------------------
+# 계정 보호(안전) 모드 (v1.6.0, DESIGN_V16_SAFETY.md)
+#   계정이 '봇 의심'으로 비활성화된 뒤 도입. 정책 판단은 src/safety.py 한 곳에서만 한다.
+#   여기는 값만 읽는다. 기본값은 모두 '덜 움직이는' 쪽이다.
+#   워크플로 기본값 식(vars.X || 'N')은 SAFETY_VARIABLE_DEFAULTS 와 같아야 한다(verify_repo 검사 11).
+# ---------------------------------------------------------------------------
+# S1 전역 킬 스위치. false 면 모든 쓰기 경로(정기·CHAT·STORY·댓글 답글·이어쓰기)가 아무것도 쓰지 않는다.
+AUTOMATION_ENABLED = _bool_env("AUTOMATION_ENABLED", False)
+# S2 KST 하루 자동 최상위 게시물 총량(정기 + CHAT + STORY 합산). 기능별 상한과 함께 작은 쪽이 적용된다.
+DAILY_POST_BUDGET = _safe_int_env("DAILY_POST_BUDGET", 2)
+# S3 링크 셀프 리플라이를 다는 게시물 비율(0~100). 게시물 ID 해시로 결정(무상태·멱등). 0 = 달지 않음.
+LINK_REPLY_PCT = _safe_int_env("LINK_REPLY_PCT", 0)
+# S5 워밍업 종료일(KST, YYYY-MM-DD, 그날 포함). 비우면 워밍업 없음. 형식이 틀리면 워밍업으로 본다.
+WARMUP_UNTIL = os.environ.get("WARMUP_UNTIL", "").strip()
+# S4 외국어 댓글 정형 문구. false 면 외국어 댓글은 답하지 않고 건너뛴다.
+REPLY_CANNED_ENABLED = _bool_env("REPLY_CANNED_ENABLED", False)
+
+# 워크플로 env 기본값 식의 기준값(문자열). 빈 문자열 = 기본값 없음(`${{ vars.X }}`).
+#   v1.6.0 답글 캡 기본값 축소(40/3/4/4/6 → 10/1/2/2/3)도 여기서 함께 검사한다.
+SAFETY_VARIABLE_DEFAULTS: dict[str, str] = {
+    "AUTOMATION_ENABLED": "false",
+    "DAILY_POST_BUDGET": "2",
+    "LINK_REPLY_PCT": "0",
+    "WARMUP_UNTIL": "",
+    "REPLY_CANNED_ENABLED": "false",
+    "REPLY_DAILY_CAP": "10",
+    "REPLY_AUTHOR_DAILY_CAP": "1",
+    "REPLY_THREAD_AUTHOR_CAP": "2",
+    "REPLY_PER_RUN_CAP": "2",
+    "REPLY_SCHEDULED_RUN_CAP": "3",
+    # v1.7.0 숏폼. Facebook 전용 값은 FACE_ 접두(마스터 지시 2026-10-04: Threads 와 공유하지 않는 값).
+    "SHORTS_BUILD_ENABLED": "false",
+    "SHORTS_THREADS_ENABLED": "false",
+    "FACE_ENABLED": "false",
+    "FACE_RAMP_START": "",
+    "FACE_DAILY_MAX": "3",
+}
 
 
 YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "").strip()
@@ -70,12 +126,14 @@ DAILY_REPLY_QUOTA = 1000
 #   X Reply Engine 운영 결정사항 이식: 내 글 댓글만, 좋아요 미사용,
 #   외국어는 무응답이 아니라 한국어 정형 문구.
 #   v1.4.0: 선택형 질문은 정형 문구 폐지 → AI 생성(어느 쪽도 고르지 않는 지시). 리액션 전략 신설.
+#   v1.6.0: 외국어 정형 문구는 REPLY_CANNED_ENABLED=true 일 때만(기본 false = 외국어 댓글 건너뜀).
 # ---------------------------------------------------------------------------
 REPLY_ENABLED = os.environ.get("REPLY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 REPLY_MAX_LEN = 200                 # 답글 본문 상한
 # v1.3.0: 상수 → Variable. 기본 20→40, 저자 2→3 (답글 확대). API 한도 1000과 별개.
-REPLY_DAILY_CAP = _int_env("REPLY_DAILY_CAP", 40)
-REPLY_AUTHOR_DAILY_CAP = _int_env("REPLY_AUTHOR_DAILY_CAP", 3)
+# v1.6.0: 기본 40→10, 저자 3→1 (계정 보호 모드 S4). Variables 로 덮어쓸 수 있다.
+REPLY_DAILY_CAP = _int_env("REPLY_DAILY_CAP", 10)
+REPLY_AUTHOR_DAILY_CAP = _int_env("REPLY_AUTHOR_DAILY_CAP", 1)
 # CHAT 도입으로 하루 게시물이 약 10건이 된다. 5개면 반나절치만 보므로
 # 최근 REPLY_SCAN_HOURS 시간 안의 글을 최대 REPLY_SCAN_POSTS 개까지 본다.
 # v1.4.0: 20 → 40. 24시간 최악 = 정기 7 + CHAT 15 + 이벤트 4 = 26건이 20을 넘는다.
@@ -87,11 +145,13 @@ REPLY_SCAN_LIMIT = 100              # 글당 조회할 댓글 수 (v1.2.0: 25→
 CONVERSATION_PAGE_SIZE = 25
 CONVERSATION_MAX_PAGES = 4
 # 실행 횟수가 하루 10회 이상으로 늘어나므로 실행당 상한을 따로 둔다(몰아 달기 방지).
-REPLY_PER_RUN_CAP = int(os.environ.get("REPLY_PER_RUN_CAP", "4"))
+# v1.6.0: 4 → 2 (S4). 빈 값은 기본값(_int_env).
+REPLY_PER_RUN_CAP = _int_env("REPLY_PER_RUN_CAP", 2)
 # v1.2.0: reply.yml(예약 3슬롯) 실행당 상한. 답글 사이 지연 최대 150초 × (6-1) = 12.5분 +
 # 생성 시간이 timeout-minutes(20) 안에 들어오게 잡는다. 이전에는 일일 캡 20을 그대로 써서
 # 최악 47.5분으로 timeout 을 넘었다.
-REPLY_SCHEDULED_RUN_CAP = int(os.environ.get("REPLY_SCHEDULED_RUN_CAP", "6"))
+# v1.6.0: 6 → 3 (S4).
+REPLY_SCHEDULED_RUN_CAP = _int_env("REPLY_SCHEDULED_RUN_CAP", 3)
 # v1.2.0: 스윕 시간 예산(초). 다음 답글의 최악 소요(지연 최대 + 컨테이너 대기 최대 + 생성 여유)가
 # 예산을 넘기면 새 답글을 시작하지 않는다. 컨테이너 IN_PROGRESS 대기(최대 300초)가 겹쳐도
 # job timeout 을 넘지 않게 하는 장치. reply.yml timeout 30분 - 준비·여유 5분 = 25분.
@@ -107,8 +167,8 @@ CHAT_JOB_BUDGET_SEC = 20 * 60
 #   차이가 없어 넣지 않았다(DESIGN_V15_CHAT_WINDOW.md).
 CHAT_SWEEP_NEXT_TRIGGER_MARGIN_SEC = 60
 # 한 원글 스레드에서 같은 사람과 주고받는 답글 누적 상한(핑퐁 방지, 기간 무관).
-# v1.3.0: 상수 → Variable, 기본 3→4.
-REPLY_THREAD_AUTHOR_CAP = _int_env("REPLY_THREAD_AUTHOR_CAP", 4)
+# v1.3.0: 상수 → Variable, 기본 3→4. v1.6.0: 4→2 (S4).
+REPLY_THREAD_AUTHOR_CAP = _int_env("REPLY_THREAD_AUTHOR_CAP", 2)
 
 # v1.3.0: 예약 답글 실행 시작 전 랜덤 지연(초). 슬롯 시각에 답글이 몰려 찍히는 패턴 제거.
 #   reply.yml timeout 40분 = 지연 최대 10분 + 스윕 예산 25분 + 준비 여유.
@@ -585,3 +645,69 @@ REPLY_LENGTH_WEIGHTS_BY_KIND: dict[str, tuple[tuple[str, int], ...]] = {
     "normal": (("tiny", 35), ("one", 65)),
 }
 REPLY_ASK_PCT = 35   # 되묻기를 허용하는 비율(%). 보통·긴 댓글에만 적용. 나머지 범주는 되묻지 않는다.
+
+
+# ---------------------------------------------------------------------------
+# v1.7.0 60초 숏폼 (DESIGN_V17_SHORTS.md)
+#   Facebook 전용 값은 FACE_ 접두. 영상 파이프라인 공통 값은 SHORTS_ 접두.
+#   기본값은 모두 '움직이지 않음'. 판정은 safety.py · shorts_plan.py 에서 한다.
+# ---------------------------------------------------------------------------
+# 영상 생성(대본·이미지·TTS·렌더) 허용. Meta 쓰기와 무관하므로 킬 스위치와 별개로 둔다.
+SHORTS_BUILD_ENABLED = _bool_env("SHORTS_BUILD_ENABLED", False)
+# Threads 동영상 게시 허용(계정 하루 총량 DAILY_POST_BUDGET 안에서만, 하루 최대 1편).
+SHORTS_THREADS_ENABLED = _bool_env("SHORTS_THREADS_ENABLED", False)
+# Facebook 페이지 릴스 게시 허용.
+FACE_ENABLED = _bool_env("FACE_ENABLED", False)
+# Facebook 자동 게시 시작일(KST, YYYY-MM-DD). 비우면 0편(램프 미시작). 형식 오류도 0편(안전 측).
+FACE_RAMP_START = os.environ.get("FACE_RAMP_START", "").strip()
+# Facebook 하루 릴스 상한(램프 최종 단계). 해석 불가 값은 기본값.
+FACE_DAILY_MAX = _safe_int_env("FACE_DAILY_MAX", 3)
+# 램프: (시작일부터 경과 주 수 상한(미만), 하루 편수). 마지막 단계는 FACE_DAILY_MAX 로 제한.
+#   W1~W2 1편 · W3~W6 2편 · W7~ 3편. 수치는 판단값(Meta 비공개) — DESIGN_V17_SHORTS.md §1.
+FACE_RAMP_STEPS: tuple[tuple[int, int], ...] = ((2, 1), (6, 2), (10_000, 3))
+
+FACE_GRAPH_BASE = "https://graph.facebook.com/v25.0"          # Reels API 공식 예시 버전
+FACE_RUPLOAD_BASE = "https://rupload.facebook.com/video-upload/v25.0"
+FACE_REELS_LIST_LIMIT = 25
+FACE_STATUS_POLL_SEC = 20
+FACE_STATUS_MAX_SEC = 600
+
+# 영상 규격 — Facebook 릴스·Threads 공통으로 만족하는 값
+VIDEO_WIDTH = 1080
+VIDEO_HEIGHT = 1920
+VIDEO_FPS = 30
+AUDIO_SAMPLE_RATE = 48_000        # Facebook 릴스 요구(48kHz). YouTube 렌더러(44.1kHz)와 다름
+AUDIO_BITRATE = "128k"
+VIDEO_MIN_SEC = 55.0
+VIDEO_MAX_SEC = 60.0
+VIDEO_MAX_BYTES = 200 * 1024 * 1024
+
+# 생성 모델 — 기본값은 investment_comic_tube 운영 모델(healthcheck EXPECTED_MODELS 로 확인한 값).
+#   다른 모델로 바꿀 때는 Variables 로만 바꾼다(추측한 모델 ID 를 코드에 넣지 않는다).
+SHORTS_IMAGE_MODEL = os.environ.get("SHORTS_IMAGE_MODEL", "").strip() or "gemini-3.1-flash-image"
+SHORTS_TTS_MODEL = os.environ.get("SHORTS_TTS_MODEL", "").strip() or "gemini-3.1-flash-tts-preview"
+SHORTS_TTS_VOICE = os.environ.get("SHORTS_TTS_VOICE", "").strip() or "Charon"
+SHORTS_IMAGE_COUNT = 5            # 편당 생성 이미지 수(비트에 재사용)
+SHORTS_SCRIPT_ATTEMPTS = 3        # 대본 생성 최대 시도
+SHORTS_TTS_ATTEMPTS = 2
+
+# 게시 시간대(KST)와 편간 간격
+SHORTS_PUBLISH_WINDOW = ("10:00", "22:00")
+SHORTS_FIRST_JITTER_MIN = (5, 40)
+SHORTS_GAP_MIN = (120, 200)
+SHORTS_GAP_FLOOR_MIN = 90       # 남은 시간에 맞추려 간격을 줄일 때의 하한(미만이면 뒤 편을 뺀다)
+SHORTS_JOB_BUDGET_MIN = 330       # publish job timeout(350분) 안에서 대기·업로드에 쓰는 상한
+SHORTS_WEEKLY_REST_DAYS = _int_env("SHORTS_WEEKLY_REST_DAYS", 1)
+SHORTS_REST_SALT = "shorts-rest"
+
+# Threads 동영상
+MEDIA_TYPE_VIDEO = "VIDEO"
+CONTAINER_WAIT_VIDEO_SEC = 60
+CONTAINER_POLL_MAX_VIDEO_SEC = 600
+SHORTS_MEDIA_BRANCH = "shorts-media"
+
+# 캡션 끝에 붙이는 AI 사용 고지(Meta AI 표시 의무 — 앱 수동 표시와 병행)
+SHORTS_AI_NOTICE = "AI 음성과 AI 이미지로 제작했습니다."
+SHORTS_CAPTION_MAX_LEN = 300
+# 숏폼 대사·자막에서 추가로 허용하는 영문 단어(캐릭터 이름). CHAT 허용목록에 더한다.
+SHORTS_EXTRA_LATIN: tuple[str, ...] = ("EDT",)

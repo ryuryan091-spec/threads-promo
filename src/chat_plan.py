@@ -33,7 +33,8 @@ from zoneinfo import ZoneInfo
 
 from . import config
 
-VERSION = "1.5.0"   # v1.5.0: 창 09:00~24:00 · 예약 구간 제외 CHAT 구역 · 시간대(band) 소재
+VERSION = "1.6.0"   # v1.6.0: 숏폼 동영상(VIDEO) 판별 is_shorts_post — v1.7.0
+# v1.5.0: 창 09:00~24:00 · 예약 구간 제외 CHAT 구역 · 시간대(band) 소재
 # v1.4.0: 트리거 15개·평일 5~15건·간격 10분·지연 30~300초 (상수는 config)
 
 log = logging.getLogger(__name__)
@@ -219,6 +220,15 @@ def is_chat_post(posted_at: dt.datetime, media_type: str = "") -> bool:
     if not is_chat_time(posted_at):
         return False
     return not media_type or media_type == CHAT_MEDIA_TYPE
+
+
+# v1.7.0 숏폼: Threads 동영상 게시물. 정기·이벤트·CHAT 어느 쪽도 VIDEO 를 올리지 않으므로
+#   media_type 이 VIDEO 면 숏폼이다. 정기·이벤트 판정(신선도·간격·기둥 복원·정기 몫 예약)에서 뺀다.
+SHORTS_MEDIA_TYPE = "VIDEO"
+
+
+def is_shorts_post(media_type: str = "") -> bool:
+    return media_type == SHORTS_MEDIA_TYPE
 
 
 def is_chat_post_dict(post: dict, parse) -> bool:

@@ -278,17 +278,30 @@ def lint_chat(text: str) -> None:
     잡담은 '오늘 시장'을 말하므로 REG-03(수치·전망)·REG-04(기업·인물) 경계에
     가장 가깝다. 모델 지시만으로는 보장되지 않으므로 발행 직전에 기계적으로 막는다.
     """
+    _lint_market_text(text, max_len=config.CHAT_TEXT_MAX_LEN, label="CHAT 본문")
+
+
+def lint_shorts(text: str, *, max_len: int, label: str) -> None:
+    """v1.7.0 숏폼 대사·자막·캡션 검사. CHAT 과 같은 규칙(REG-03·REG-04·링크·영문 허용목록).
+
+    차이는 캐릭터 이름(config.SHORTS_EXTRA_LATIN, 예: EDT)만 영문으로 더 허용한다는 것.
+    """
+    _lint_market_text(text, max_len=max_len, label=label, extra_latin=config.SHORTS_EXTRA_LATIN)
+
+
+def _lint_market_text(
+    text: str, *, max_len: int, label: str, extra_latin: tuple[str, ...] = ()
+) -> None:
+    """시장을 말하는 생성문 공통 검사. 위반 시 ContentPolicyError."""
     lint(text)
 
-    if len(text) > config.CHAT_TEXT_MAX_LEN:
-        raise ContentPolicyError(
-            f"CHAT 본문 {len(text)}자 — 상한 {config.CHAT_TEXT_MAX_LEN}자 초과"
-        )
+    if len(text) > max_len:
+        raise ContentPolicyError(f"{label} {len(text)}자 — 상한 {max_len}자 초과")
 
     if _DIGIT.search(text):
-        raise ContentPolicyError("CHAT 본문에 숫자 포함 (REG-03)")
+        raise ContentPolicyError(f"{label}에 숫자 포함 (REG-03)")
 
-    check_no_links(text, label="CHAT 본문")
+    check_no_links(text, label=label)
 
     hit_forecast = [t for t in config.CHAT_FORECAST_TERMS if t in text]
     if hit_forecast:
@@ -301,7 +314,7 @@ def lint_chat(text: str) -> None:
         raise ContentPolicyError(f"기업·인물명 검출 (REG-04): {hit_entity}")
 
     # 영문 단어는 허용목록(Fed, FOMC, CPI 등)만 통과. 티커·영문 기업명을 막는다.
-    allow = {a.upper() for a in config.CHAT_THEME_ALLOWLIST}
+    allow = {a.upper() for a in (*config.CHAT_THEME_ALLOWLIST, *extra_latin)}
     foreign = [w for w in _LATIN_WORD.findall(text) if w.upper() not in allow]
     if foreign:
         raise ContentPolicyError(f"허용목록 밖 영문 단어 검출: {foreign}")

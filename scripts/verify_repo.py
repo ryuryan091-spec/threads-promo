@@ -18,6 +18,7 @@
   8. 정기·이벤트 cron 과 코드 상수
   9. CHAT 계획 변수 일치
  10. 판정 창 겹침 · CHAT 구역 · 트리거 위치 (v1.5.0 규칙)
+ 11. 계정 보호(안전) 모드 변수 일치 (v1.6.0: 워크플로 env 기본값 식 ↔ config 기본값)
 """
 
 from __future__ import annotations
@@ -31,7 +32,9 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.5.0"   # v1.5.0: 검사 10 — 예약 창 상호 겹침·CHAT 구역·트리거 위치
+VERSION = "1.7.0"   # v1.7.0: 숏폼 파일·진입점 · 검사 12 폴더 중첩
+# v1.6.0: 검사 11 — 안전 모드 변수 워크플로·config 기본값 일치
+# v1.5.0: 검사 10 — 예약 창 상호 겹침·CHAT 구역·트리거 위치
 # v1.4.0: style 모듈, 판정 창 겹침 검사(10)
 
 REQUIRED_MODULES = [
@@ -39,7 +42,11 @@ REQUIRED_MODULES = [
     "main", "mood_source", "notifier", "notion_source", "redact", "reply_engine", "style",
     "insights", "run_chat", "run_insights", "run_refresh", "run_reply", "run_story",
     "run_watchdog", "run_weighting", "threads_client", "weighting",
-    "token_manager", "watchdog",
+    "token_manager", "watchdog", "safety",
+    # v1.7.0 숏폼
+    "shorts_plan", "face_client", "media_host", "run_shorts_build", "run_shorts_publish",
+    "video.assets", "video.hooks", "video.script_writer", "video.image_gen", "video.tts",
+    "video.renderer", "video.validator",
 ]
 
 REQUIRED_FILES = [
@@ -57,6 +64,7 @@ REQUIRED_FILES = [
     ".github/workflows/verify_token.yml",
     ".github/workflows/reply_audit.yml",   # v1.4.0 답글 감사(읽기 전용)
     "scripts/reply_audit.py",
+    ".github/workflows/shorts.yml",        # v1.7.0 숏폼
 ]
 
 # 워크플로우가 실행하는 모듈
@@ -69,7 +77,12 @@ WORKFLOW_ENTRYPOINTS = {
     ".github/workflows/token_refresh.yml": "src.run_refresh",
     ".github/workflows/insights.yml": "src.run_insights",
     ".github/workflows/weighting.yml": "src.run_weighting",
+    ".github/workflows/shorts.yml": "src.run_shorts_build",
 }
+# 한 워크플로가 두 모듈을 실행하는 경우(v1.7.0 shorts.yml: build job · publish job)
+EXTRA_ENTRYPOINTS: tuple[tuple[str, str], ...] = (
+    (".github/workflows/shorts.yml", "src.run_shorts_publish"),
+)
 
 
 def _ok(msg: str) -> None:
@@ -140,7 +153,7 @@ def check_workflows() -> int:
 def check_entrypoints() -> int:
     print("\n4. 워크플로우 진입점")
     failed = 0
-    for rel, module in WORKFLOW_ENTRYPOINTS.items():
+    for rel, module in (*WORKFLOW_ENTRYPOINTS.items(), *EXTRA_ENTRYPOINTS):
         path = REPO_ROOT / rel
         if not path.exists():
             _fail(f"{rel} 없음")
@@ -237,7 +250,7 @@ CANON_DRY_RUN = (
     "${{ github.event_name == 'workflow_dispatch' && "
     "(inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}"
 )
-DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml")
+DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml", "shorts.yml")
 
 
 def _load_yaml(name: str) -> dict:
@@ -426,6 +439,118 @@ def check_classify_windows() -> int:
     return failed
 
 
+# v1.6.0: 워크플로별로 반드시 넘겨야 하는 안전 모드 변수.
+#   쓰기 경로(publish·chat·story·reply)는 킬 스위치·워밍업을, 예산을 쓰는 곳은 DAILY_POST_BUDGET 을,
+#   링크 셀프 리플라이를 다는 곳은 LINK_REPLY_PCT 를, 답글 판정을 하는 곳은 REPLY_CANNED_ENABLED 를 본다.
+#   watchdog 은 오탐 방지에, golive_check 는 표시에, reply_audit 은 재판정에 쓴다.
+SAFETY_WORKFLOW_KEYS: dict[str, tuple[str, ...]] = {
+    "publish.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "LINK_REPLY_PCT", "WARMUP_UNTIL"),
+    "story.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "LINK_REPLY_PCT", "WARMUP_UNTIL"),
+    "chat.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "WARMUP_UNTIL", "REPLY_CANNED_ENABLED",
+                 "REPLY_PER_RUN_CAP", "REPLY_DAILY_CAP", "REPLY_AUTHOR_DAILY_CAP",
+                 "REPLY_THREAD_AUTHOR_CAP"),
+    "reply.yml": ("AUTOMATION_ENABLED", "WARMUP_UNTIL", "REPLY_CANNED_ENABLED",
+                  "REPLY_SCHEDULED_RUN_CAP", "REPLY_DAILY_CAP", "REPLY_AUTHOR_DAILY_CAP",
+                  "REPLY_THREAD_AUTHOR_CAP"),
+    "watchdog.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "WARMUP_UNTIL"),
+    "golive_check.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "LINK_REPLY_PCT",
+                         "WARMUP_UNTIL", "REPLY_CANNED_ENABLED", "REPLY_DAILY_CAP",
+                         "REPLY_AUTHOR_DAILY_CAP", "REPLY_THREAD_AUTHOR_CAP",
+                         "REPLY_PER_RUN_CAP", "REPLY_SCHEDULED_RUN_CAP"),
+    "reply_audit.yml": ("REPLY_CANNED_ENABLED", "REPLY_AUTHOR_DAILY_CAP", "REPLY_THREAD_AUTHOR_CAP"),
+    # v1.7.0 숏폼: 생성 판단(build)과 게시 판단(publish) 모두 킬 스위치·채널 스위치·램프를 본다.
+    "shorts.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "WARMUP_UNTIL", "SHORTS_BUILD_ENABLED",
+                   "SHORTS_THREADS_ENABLED", "FACE_ENABLED", "FACE_RAMP_START", "FACE_DAILY_MAX"),
+}
+
+
+def safety_expr(key: str, default: str) -> str:
+    """워크플로 env 표준 식. 기본값이 빈 문자열이면 기본값 없이 넘긴다."""
+    if default:
+        return f"${{{{ vars.{key} || '{default}' }}}}"
+    return f"${{{{ vars.{key} }}}}"
+
+
+def _config_default_strings() -> dict[str, str]:
+    """config 가 환경변수 없이 import 될 때의 값(문자열). 현재 환경을 건드리지 않고 되돌린다."""
+    from src import config
+
+    keys = tuple(config.SAFETY_VARIABLE_DEFAULTS)
+    saved = {k: os.environ.pop(k) for k in keys if k in os.environ}
+    try:
+        fresh = importlib.reload(config)
+        out: dict[str, str] = {}
+        for key in keys:
+            value = getattr(fresh, key)
+            out[key] = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        return out
+    finally:
+        os.environ.update(saved)
+        importlib.reload(config)
+
+
+def check_safety_env_consistency() -> int:
+    """v1.6.0 안전 모드 변수.
+
+    a. config.SAFETY_VARIABLE_DEFAULTS 가 config 의 실제 기본값과 같다.
+    b. SAFETY_WORKFLOW_KEYS 의 워크플로가 해당 키를 env 로 넘긴다.
+    c. 모든 워크플로에서 이 키들의 식이 표준 식(같은 기본값)이다. 기본값이 다르면 Variable 미설정 시
+       워크플로마다 다른 값으로 돌아 '안전 기본값'이 깨진다(검사 9 와 같은 이유).
+    """
+    print("\n11. 계정 보호(안전) 모드 변수 일치 (워크플로 ↔ config 기본값)")
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("  [SKIP] pyyaml 미설치")
+        return 0
+
+    from src import config
+
+    failed = 0
+    table = dict(config.SAFETY_VARIABLE_DEFAULTS)
+    actual = _config_default_strings()
+    mismatch = {k: (table[k], actual[k]) for k in table if table[k] != actual[k]}
+    if mismatch:
+        _fail(f"config.SAFETY_VARIABLE_DEFAULTS ≠ config 기본값 {mismatch}")
+        failed += 1
+    else:
+        _ok(f"config 기본값 {len(table)}개 = SAFETY_VARIABLE_DEFAULTS")
+
+    for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+        merged: dict[str, str] = {}
+        for env in _step_envs(_load_yaml(path.name)):
+            merged.update({k: str(v).strip() for k, v in env.items() if k in table})
+        missing = [k for k in SAFETY_WORKFLOW_KEYS.get(path.name, ()) if k not in merged]
+        wrong = {k: v for k, v in merged.items() if v != safety_expr(k, table[k])}
+        if missing:
+            _fail(f"{path.name} — 누락 {missing}")
+            failed += 1
+        if wrong:
+            _fail(f"{path.name} — 표준 식과 다름 {wrong}")
+            failed += 1
+        if merged and not missing and not wrong:
+            _ok(f"{path.name} — 안전 모드 변수 {len(merged)}개 표준 식")
+    return failed
+
+
+# v1.7.0: 배포 위치 결함(2026-10 확인 — v1.6.0 이 src/src · tests/tests · scripts/scripts 에 들어가
+#   워크플로가 구버전을 실행) 재발 방지. 같은 이름 폴더가 중첩되면 FAIL.
+NESTED_GUARD_DIRS = ("src", "tests", "scripts", ".github")
+
+
+def check_nested_dirs() -> int:
+    print("\n12. 폴더 중첩 (부분 업로드로 새 코드가 엉뚱한 경로에 들어가는 사고 방지)")
+    failed = 0
+    for name in NESTED_GUARD_DIRS:
+        nested = REPO_ROOT / name / name
+        if nested.exists():
+            _fail(f"{name}/{name}/ 가 있습니다 — 새 파일이 실행 경로 밖에 있습니다. 상위로 옮기고 삭제하십시오")
+            failed += 1
+    if not failed:
+        _ok(f"중첩 폴더 없음 ({', '.join(NESTED_GUARD_DIRS)})")
+    return failed
+
+
 def main() -> int:
     print(f"[VerifyRepo] v{VERSION}")
     print(f"경로: {REPO_ROOT}")
@@ -441,6 +566,8 @@ def main() -> int:
     total += check_slot_constants()
     total += check_chat_env_consistency()
     total += check_classify_windows()
+    total += check_safety_env_consistency()
+    total += check_nested_dirs()
 
     print("\n" + "=" * 52)
     if total:

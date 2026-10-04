@@ -22,6 +22,10 @@
   C10 Claude 웹 검색 (옵션 --web-search, 검색 1회 과금)
   C11 뉴스 RSS 수신 (MOOD_RSS_URLS 설정 시)
   C12 Notion 회차 조회 (NOTION_TOKEN 설정 시)
+  C13 계정 보호(안전) 모드 적용값 (v1.6.0, DESIGN_V16_SAFETY.md)
+      자동화 on/off · 일일 예산 · 링크 리플 비율 · 워밍업 · 답글 캡 · 정형 문구.
+      AUTOMATION_ENABLED=true 이면서 LINK_REPLY_PCT>0 · REPLY_DAILY_CAP>10 · DAILY_POST_BUDGET>3 이면
+      안전 프로필 초과로 WARN 한다(FAIL 아님 — 선택은 운영자 몫).
 """
 
 from __future__ import annotations
@@ -45,12 +49,14 @@ from src import (  # noqa: E402
     config,
     mood_source,
     notion_source,
+    safety,
     token_manager,
 )
 from src.redact import redact  # noqa: E402
 from src.threads_client import ThreadsApiError, ThreadsClient, fetch_user_id  # noqa: E402
 
-VERSION = "1.2.0"   # v1.2.0: 답글 캡·셀프 이어쓰기 점검
+VERSION = "1.3.0"   # v1.3.0: 계정 보호 모드 적용값(C13)
+# v1.2.0: 답글 캡·셀프 이어쓰기 점검
 KST = ZoneInfo("Asia/Seoul")
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
@@ -158,6 +164,44 @@ def check_variables(r: Report) -> None:
         r.add("C2", "PILLAR_ROTATION_AUTO", FAIL if issues else OK,
               f"무시됨 — {issues}" if issues else f"자동 조절 로테이션 {list(parsed_auto)}")
     r.add("C2", "적용 로테이션", OK, ",".join(ai_writer.active_rotation()))
+
+
+def check_safety(r: Report) -> None:
+    """C13 계정 보호(안전) 모드 적용값(v1.6.0). 사실만 표시하고, 안전 프로필 초과는 WARN."""
+    today = dt.datetime.now(KST).date()
+    p = safety.profile(today)
+    r.add("C13", "AUTOMATION_ENABLED", OK,
+          "true — 쓰기 경로 동작" if p.automation
+          else "false — 모든 쓰기 경로가 Threads 쓰기·Claude 호출 없이 종료(읽기 전용 워크플로만 동작)")
+    w = p.warmup
+    if w.invalid:
+        r.add("C13", "WARMUP_UNTIL", WARN, f"{w.raw!r} 날짜 형식 아님 → 워밍업으로 적용(안전 측)")
+    elif w.until is None:
+        r.add("C13", "WARMUP_UNTIL", OK, "미설정 — 워밍업 없음")
+    else:
+        r.add("C13", "WARMUP_UNTIL", OK,
+              f"{w.until.isoformat()} — {'워밍업 중' if w.active else '종료'}"
+              + (" (정기 1건/일만, 링크·답글·이어쓰기·CHAT·STORY 중지)" if w.active else ""))
+    r.add("C13", "DAILY_POST_BUDGET", OK,
+          f"설정 {p.budget_raw} → 적용 {p.budget} (정기+CHAT+STORY 합산, 정기 몫 1건 예약)")
+    r.add("C13", "LINK_REPLY_PCT", OK, f"설정 {p.link_pct_raw} → 적용 {p.link_pct}%")
+    r.add("C13", "답글 캡", OK,
+          f"일 {config.REPLY_DAILY_CAP} · 저자 {config.REPLY_AUTHOR_DAILY_CAP} · "
+          f"스레드 {config.REPLY_THREAD_AUTHOR_CAP} · 실행당 {config.REPLY_PER_RUN_CAP}"
+          f"/{config.REPLY_SCHEDULED_RUN_CAP} · 답글 {'허용' if p.replies else '중지'}")
+    r.add("C13", "REPLY_CANNED_ENABLED", OK,
+          f"{p.canned} — " + ("외국어 댓글에 정형 문구" if p.canned else "외국어 댓글은 건너뜀"))
+    r.add("C13", "기능별 적용", OK,
+          f"CHAT {'허용' if p.chat else '중지'} · STORY {'허용' if p.story else '중지'} · "
+          f"이어쓰기 {'허용' if p.followups else '중지'}")
+    over = safety.safe_profile_warnings()
+    if over:
+        r.add("C13", "안전 프로필", WARN,
+              "AUTOMATION_ENABLED=true 에서 안전 프로필 초과: " + ", ".join(over)
+              + " (링크 0% · 답글 일 10 · 예산 3 이하가 안전 프로필)")
+    else:
+        r.add("C13", "안전 프로필", OK,
+              "범위 안" if p.automation else "자동화 꺼짐 — 해당 없음")
 
 
 def check_token_expiry(r: Report) -> None:
@@ -299,6 +343,7 @@ def main() -> int:
     r = Report()
     check_env(r)
     check_variables(r)
+    check_safety(r)
     check_token_expiry(r)
     check_threads(r)
     check_claude(r, web_search=args.web_search)

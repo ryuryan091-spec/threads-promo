@@ -16,10 +16,12 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import config
+from . import config, safety
 from .redact import redact
 
-VERSION = "1.2.0"   # v1.2.0: 대화 조회 페이지네이션
+VERSION = "1.4.0"   # v1.4.0: 동영상 컨테이너(VIDEO) — v1.7.0 숏폼
+# v1.3.0: 회로 차단기(S7) — 계정·토큰 사용 불가 오류 뒤 쓰기 금지·재시도 없음
+# v1.2.0: 대화 조회 페이지네이션
 
 log = logging.getLogger(__name__)
 
@@ -90,8 +92,15 @@ def _request(method: str, url: str, *, params: dict[str, Any]) -> dict[str, Any]
 
         error = ThreadsApiError(resp.status_code, resp.text, code=code)
 
+        # v1.6.0(S7): 계정·토큰 사용 불가 오류는 상태 코드와 무관하게 재시도하지 않고 차단기를 연다.
+        #   이후 이 실행의 쓰기(_create_container·publish)는 guard_write 에서 같은 오류로 멈춘다.
+        #   호출자가 조회 오류를 삼켜도(get_recent_texts 등) 쓰기가 새지 않게 하는 장치다.
+        if safety.is_account_fatal(error):
+            safety.trip(error)
+            raise error
+
         # 인증 오류와 4xx는 재시도해도 동일하므로 즉시 중단한다.
-        if error.is_auth_error or 400 <= resp.status_code < 500:
+        if 400 <= resp.status_code < 500:
             raise error
 
         last_error = error
@@ -425,6 +434,16 @@ class ThreadsClient:
             }
         )
 
+    def create_video_container(self, video_url: str, text: str) -> str:
+        """동영상 게시물 컨테이너(v1.7.0 숏폼). video_url 은 Threads 가 직접 내려받는 공개 URL."""
+        return self._create_container(
+            {
+                "media_type": config.MEDIA_TYPE_VIDEO,
+                "video_url": video_url,
+                "text": text,
+            }
+        )
+
     def create_text_container(self, text: str) -> str:
         """텍스트 전용 게시물 컨테이너. 이미지 폴백 시 사용한다."""
         return self._create_container(
@@ -444,6 +463,7 @@ class ThreadsClient:
         )
 
     def _create_container(self, fields: dict[str, Any]) -> str:
+        safety.guard_write()   # v1.6.0(S7): 차단기가 열렸으면 쓰지 않는다
         payload = dict(fields)
         payload["access_token"] = self._token
         data = _request(
@@ -473,14 +493,21 @@ class ThreadsClient:
         )
 
     def wait_until_ready(
-        self, container_id: str, initial_wait_sec: int, *, dry_run: bool = False
+        self,
+        container_id: str,
+        initial_wait_sec: int,
+        *,
+        dry_run: bool = False,
+        max_wait_sec: int | None = None,
     ) -> None:
         """컨테이너가 FINISHED 가 될 때까지 대기한다.
 
         Meta 는 생성 직후 평균 30초 대기를 권장한다. 즉시 발행하면
         code=24 (Media Not Found) 가 발생한다.
         상태 조회는 1분 간격, 총 5분을 넘기지 않는다.
+        v1.4.0: 동영상은 처리 시간이 길어 max_wait_sec 로 상한을 따로 준다(기본은 기존 5분).
         """
+        poll_max = config.CONTAINER_POLL_MAX_SEC if max_wait_sec is None else max_wait_sec
         if dry_run:
             log.info("DRY_RUN — 컨테이너 대기를 건너뜁니다.")
             return
@@ -511,19 +538,20 @@ class ThreadsClient:
                     "생성 후 24시간이 지났습니다."
                 )
 
-            if waited >= config.CONTAINER_POLL_MAX_SEC:
+            if waited >= poll_max:
                 raise ContainerNotReadyError(
                     f"컨테이너가 {waited}초 안에 준비되지 않았습니다 "
                     f"(id={container_id}, 마지막 상태={status})."
                 )
 
-            remaining = config.CONTAINER_POLL_MAX_SEC - waited
+            remaining = poll_max - waited
             interval = min(config.CONTAINER_POLL_INTERVAL_SEC, remaining)
             time.sleep(interval)
             waited += interval
 
     def publish(self, creation_id: str) -> str:
         """컨테이너는 생성 후 24시간이면 만료되므로 즉시 발행한다."""
+        safety.guard_write()   # v1.6.0(S7)
         data = _request(
             "POST",
             f"{config.THREADS_API_BASE}/{self._user_id}/threads_publish",
@@ -540,6 +568,17 @@ class ThreadsClient:
         container_id = self.create_image_container(image_url, text)
         self.wait_until_ready(
             container_id, config.CONTAINER_WAIT_IMAGE_SEC, dry_run=dry_run
+        )
+        return self.publish(container_id)
+
+    def publish_video_post(self, video_url: str, text: str, *, dry_run: bool = False) -> str:
+        """동영상 발행(v1.7.0). 처리 대기 상한은 CONTAINER_POLL_MAX_VIDEO_SEC."""
+        container_id = self.create_video_container(video_url, text)
+        self.wait_until_ready(
+            container_id,
+            config.CONTAINER_WAIT_VIDEO_SEC,
+            dry_run=dry_run,
+            max_wait_sec=config.CONTAINER_POLL_MAX_VIDEO_SEC,
         )
         return self.publish(container_id)
 

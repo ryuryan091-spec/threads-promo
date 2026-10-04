@@ -1,0 +1,3 @@
+# assets/video/reference
+
+investment_comic_tube 의 assets/reference 파일을 복사해 둔다. 비어 있으면 해당 연출 없이 동작한다(opt-in).

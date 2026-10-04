@@ -129,12 +129,15 @@ class TestChatErrorMapping:
         assert code == 7
         assert not client.publish_text_post.called
 
-    def test_auth_error_returns_4_with_hint(self):
+    def test_auth_error_returns_7_with_hint(self):
+        # v1.6.0(S7): 토큰 무효(code=190)도 계정 사용 불가로 보고 회로 차단 → 종료코드 7 (이전 4).
         client = _client()
         client.get_my_posts.side_effect = AUTH
         code, _, notify = _run(client)
-        assert code == 4
+        assert code == 7
         assert "재인가" in notify.call_args.args[0]
+        assert notify.call_count == 1
+        assert not client.publish_text_post.called
 
     def test_publish_failure_returns_4(self):
         client = _client()
