@@ -6,7 +6,7 @@
   bgm/       bgm_<빌런슬러그>_*.{mp3,m4a,wav,aac,ogg,mp4} · bgm_common*
   sfx/       hook_a ~ hook_d
   brand/     logo.* = 오버레이 전용, 나머지 이미지 = 아웃트로 표지 후보
-  reference/ 캐릭터 외형 참조 이미지(이미지 생성 요청에 함께 넣는다)
+  reference/edt/ · reference/goc/  캐릭터별 외형 참조 이미지(이미지 생성 요청에 함께 넣는다)
 """
 
 from __future__ import annotations
@@ -77,5 +77,6 @@ def find_cover(*, rng: random.Random | None = None, root: Path | None = None) ->
     return rng.choice(covers) if covers else None
 
 
-def reference_images(*, root: Path | None = None) -> list[Path]:
-    return _files("reference", IMAGE_EXTENSIONS, root)
+def reference_images(character: str = "EDT", *, root: Path | None = None) -> list[Path]:
+    """캐릭터별 참조 이미지(reference/<캐릭터 소문자>/). 다른 캐릭터 참조가 섞이지 않게 폴더를 나눈다."""
+    return _files(f"reference/{character.lower()}", IMAGE_EXTENSIONS, root)

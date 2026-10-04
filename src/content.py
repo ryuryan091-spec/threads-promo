@@ -281,12 +281,15 @@ def lint_chat(text: str) -> None:
     _lint_market_text(text, max_len=config.CHAT_TEXT_MAX_LEN, label="CHAT 본문")
 
 
-def lint_shorts(text: str, *, max_len: int, label: str) -> None:
+def lint_shorts(
+    text: str, *, max_len: int, label: str, extra_latin: tuple[str, ...] | None = None
+) -> None:
     """v1.7.0 숏폼 대사·자막·캡션 검사. CHAT 과 같은 규칙(REG-03·REG-04·링크·영문 허용목록).
 
-    차이는 캐릭터 이름(config.SHORTS_EXTRA_LATIN, 예: EDT)만 영문으로 더 허용한다는 것.
+    차이는 캐릭터 이름(기본 config.SHORTS_EXTRA_LATIN = EDT, GOC 영상은 GOC)만 영문으로 더 허용한다는 것.
     """
-    _lint_market_text(text, max_len=max_len, label=label, extra_latin=config.SHORTS_EXTRA_LATIN)
+    extra = config.SHORTS_EXTRA_LATIN if extra_latin is None else extra_latin
+    _lint_market_text(text, max_len=max_len, label=label, extra_latin=extra)
 
 
 def _lint_market_text(

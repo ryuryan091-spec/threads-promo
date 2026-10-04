@@ -75,6 +75,7 @@ class PlannedVideo:
     index: int               # 0부터
     fmt: str                 # F1 | F2 | F3
     channels: tuple[str, ...]
+    character: str = config.CHARACTER_EDT   # Facebook 에 가는 편은 GOC(config.FACE_CHARACTER)
 
 
 def _seed(today: dt.date, salt: str) -> int:
@@ -112,12 +113,16 @@ def daily_plan(today: dt.date) -> list[PlannedVideo]:
             channels.append(CHANNEL_FACE)
         if idx == 0 and threads_ok:
             channels.append(CHANNEL_THREADS)
+        # 마스터 결정 2026-10-04: Facebook 영상에는 GOC 만 등장한다. Facebook 과 Threads 에 함께 가는
+        #   첫 편도 Facebook 규칙을 따른다(같은 영상). Threads 단독 편만 EDT.
+        character = config.FACE_CHARACTER if CHANNEL_FACE in channels else config.CHARACTER_EDT
         plan.append(
             PlannedVideo(
                 content_id=f"sv-{today.strftime('%Y%m%d')}-{idx + 1}",
                 index=idx,
                 fmt=fmt,
                 channels=tuple(channels),
+                character=character,
             )
         )
     return plan

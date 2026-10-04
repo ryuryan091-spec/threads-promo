@@ -235,7 +235,8 @@ def _audio_chain(duration: float, tempo: float, sfx: bool) -> str:
 
 def _encode_args(duration: float) -> list[str]:
     return [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-maxrate", config.VIDEO_MAXRATE, "-bufsize", config.VIDEO_BUFSIZE, "-pix_fmt", "yuv420p",
         "-r", str(FPS), "-c:a", "aac", "-b:a", config.AUDIO_BITRATE, "-ar", str(SR), "-ac", "2",
         "-t", f"{duration:.3f}",
     ]

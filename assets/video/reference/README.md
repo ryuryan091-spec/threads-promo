@@ -1,3 +1,5 @@
 # assets/video/reference
 
-investment_comic_tube 의 assets/reference 파일을 복사해 둔다. 비어 있으면 해당 연출 없이 동작한다(opt-in).
+캐릭터별 외형 참조 이미지. 하위 폴더를 나눈다(다른 캐릭터 참조가 섞이면 외형이 섞인다).
+- edt/ : EDT 참조(Threads 단독 영상)
+- goc/ : GOC 참조(Facebook 영상 — GOC 단독)

@@ -52,12 +52,50 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
     script = script_writer.write_script(
         claude_key, content_id=item.content_id, fmt=item.fmt, mood=mood,
         used_hook_types=used_types, used_hooks=used_hooks, used_captions=used_captions,
+        character=item.character,
     )
     (work / "script.json").write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2),
                                       encoding="utf-8")
     images = image_gen.generate_scenes(gemini_key, list(script.image_prompts), script.villain,
-                                       work / "images")
+                                       work / "images", character=item.character)
     usable = [p for p in images if p]
+    video = work / "video.mp4"
+    try:
+        timing = _voice_and_render(script, images, usable, gemini_key, work, video)
+    except renderer.RenderLengthError as exc:
+        # 점검 2026-10-04: 낭독이 길어 60초에 못 넣으면 대본만 1회 다시 만든다(이미지는 재사용 — 비용 절감).
+        log.warning("길이 초과 — 대본을 짧게 1회 재생성합니다: %s", exc)
+        script = script_writer.write_script(
+            claude_key, content_id=item.content_id, fmt=item.fmt, mood=mood,
+            used_hook_types=used_types, used_hooks=used_hooks, used_captions=used_captions,
+            extra_instruction=(f"직전 대본은 낭독하면 60초를 넘었다({exc}). 내레이션 합계를 "
+                               f"{script_writer.TOTAL_MIN_CHARS}자에 가깝게 줄이고 훅은 짧게 쓴다."),
+            character=item.character,
+        )
+        (work / "script.json").write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2),
+                                          encoding="utf-8")
+        timing = _voice_and_render(script, images, usable, gemini_key, work, video)
+    issues = validator.check(video)
+    if issues:
+        raise renderer.RenderError(f"규격 검사 실패: {issues}")
+    used_types.add(script.hook_type)
+    used_hooks.append(script.beats[0].narration)
+    return {
+        "content_id": item.content_id,
+        "character": item.character,
+        "fmt": item.fmt,
+        "channels": list(item.channels),
+        "caption": script.caption,
+        "video": f"{item.content_id}/video.mp4",
+        "villain": script.villain,
+        "hook_type": script.hook_type,
+        "duration": timing.total,
+        "images_ok": len(usable),
+    }
+
+
+def _voice_and_render(script, images, usable, gemini_key: str, work: Path, video: Path):
+    """TTS → 장면 조립 → 렌더. 길이 초과면 RenderLengthError 를 그대로 올린다."""
     lines = [b.narration for b in script.beats]
     audios = tts.synthesize(gemini_key, lines, [b.tone for b in script.beats], work / "audio")
     scenes = []
@@ -68,24 +106,7 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
             image=image, audio=audios[idx], caption=beat.narration, is_hook=beat.is_hook,
             sfx=renderer.assets.find_sfx(beat.sfx) if beat.is_hook else None,
         ))
-    video = work / "video.mp4"
-    timing = renderer.render(scenes, script.villain, video)
-    issues = validator.check(video)
-    if issues:
-        raise renderer.RenderError(f"규격 검사 실패: {issues}")
-    used_types.add(script.hook_type)
-    used_hooks.append(script.beats[0].narration)
-    return {
-        "content_id": item.content_id,
-        "fmt": item.fmt,
-        "channels": list(item.channels),
-        "caption": script.caption,
-        "video": f"{item.content_id}/video.mp4",
-        "villain": script.villain,
-        "hook_type": script.hook_type,
-        "duration": timing.total,
-        "images_ok": len(usable),
-    }
+    return renderer.render(scenes, script.villain, video)
 
 
 def run() -> int:
@@ -118,7 +139,7 @@ def run() -> int:
         return 3
 
     log.info("오늘 계획 %d편: %s", len(plan),
-             ", ".join(f"{p.content_id}({p.fmt}→{'/'.join(p.channels)})" for p in plan))
+             ", ".join(f"{p.content_id}({p.character} {p.fmt}→{'/'.join(p.channels)})" for p in plan))
     first = chat_plan.source_for(today, None, config.CHAT_SOURCE_MODE)
     mood = mood_source.collect(first, api_key=claude_key, today=today, now=now.astimezone(dt.UTC))
     log.info("근거 소스=%s 테마=%s 분위기=%s", mood.source, ",".join(mood.themes) or "-", mood.mood_word or "-")
@@ -144,8 +165,9 @@ def run() -> int:
     for entry in manifest["items"]:
         notifier.send_video(
             bot, chat, base / entry["video"],
-            f"[Shorts 미리보기] {entry['content_id']} {entry['fmt']} → {'/'.join(entry['channels'])}\n"
-            f"{entry['caption']}\n\n승인: Actions › Threads Shorts › Review deployments",
+            f"[Shorts 미리보기] {entry['content_id']} {entry.get('character', '')} {entry['fmt']} → "
+            f"{'/'.join(entry['channels'])}\n"
+            f"{entry['caption']}\n\n승인: Actions › 📘🧵 Meta Shorts › Review deployments",
         )
     if manifest["failed"]:
         _notify("[Shorts] 일부 영상 생성 실패\n" + "\n".join(

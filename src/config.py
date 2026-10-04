@@ -680,7 +680,10 @@ AUDIO_SAMPLE_RATE = 48_000        # Facebook 릴스 요구(48kHz). YouTube 렌�
 AUDIO_BITRATE = "128k"
 VIDEO_MIN_SEC = 55.0
 VIDEO_MAX_SEC = 60.0
-VIDEO_MAX_BYTES = 200 * 1024 * 1024
+# GitHub 는 100MiB 넘는 파일 push 를 거부한다(Threads 공개 URL 경로). 렌더 비트레이트 상한(6Mbps)으로 60초 ≈ 45MB 이하.
+VIDEO_MAX_BYTES = 95 * 1024 * 1024
+VIDEO_MAXRATE = "6M"
+VIDEO_BUFSIZE = "12M"
 
 # 생성 모델 — 기본값은 investment_comic_tube 운영 모델(healthcheck EXPECTED_MODELS 로 확인한 값).
 #   다른 모델로 바꿀 때는 Variables 로만 바꾼다(추측한 모델 ID 를 코드에 넣지 않는다).
@@ -696,7 +699,9 @@ SHORTS_PUBLISH_WINDOW = ("10:00", "22:00")
 SHORTS_FIRST_JITTER_MIN = (5, 40)
 SHORTS_GAP_MIN = (120, 200)
 SHORTS_GAP_FLOOR_MIN = 90       # 남은 시간에 맞추려 간격을 줄일 때의 하한(미만이면 뒤 편을 뺀다)
-SHORTS_JOB_BUDGET_MIN = 330       # publish job timeout(350분) 안에서 대기·업로드에 쓰는 상한
+# publish job timeout(350분) − 준비 여유(약 5분) − 마지막 편 최악 소요(FB 업로드 10 + 처리 10 + Threads 약 15분)
+#   마지막 편 "시작"이 이 안에 들어오면 job 이 끝까지 돈다(점검 2026-10-04: 330 → 300).
+SHORTS_JOB_BUDGET_MIN = 300
 SHORTS_WEEKLY_REST_DAYS = _int_env("SHORTS_WEEKLY_REST_DAYS", 1)
 SHORTS_REST_SALT = "shorts-rest"
 
@@ -711,3 +716,7 @@ SHORTS_AI_NOTICE = "AI 음성과 AI 이미지로 제작했습니다."
 SHORTS_CAPTION_MAX_LEN = 300
 # 숏폼 대사·자막에서 추가로 허용하는 영문 단어(캐릭터 이름). CHAT 허용목록에 더한다.
 SHORTS_EXTRA_LATIN: tuple[str, ...] = ("EDT",)
+# 캐릭터(마스터 결정 2026-10-04): Facebook 영상에는 GOC 만 등장한다. Facebook 에 안 가는 영상(Threads 단독)은 EDT.
+CHARACTER_EDT = "EDT"
+CHARACTER_GOC = "GOC"
+FACE_CHARACTER = CHARACTER_GOC

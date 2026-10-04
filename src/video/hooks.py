@@ -67,16 +67,29 @@ VILLAIN_PREFERRED_HOOK = {
 FORMAT_PREFERRED_HOOK = {"F2": HOOK_C, "F3": HOOK_D}
 
 
-def select_hook_type(fmt: str, villain: str, avoid: set[str] | None = None) -> str:
-    """훅 유형 선택. avoid(같은 날 이미 쓴 유형)와 겹치면 다음 유형으로 민다."""
-    chosen = FORMAT_PREFERRED_HOOK.get(fmt) or VILLAIN_PREFERRED_HOOK.get(villain, HOOK_A)
+# GOC 영상에는 빌런이 등장하지 않으므로 빌런 대결형(B)을 쓰지 않는다.
+NO_VILLAIN_HOOK_TYPES: tuple[str, ...] = (HOOK_A, HOOK_C, HOOK_D)
+
+
+def select_hook_type(
+    fmt: str,
+    villain: str | None,
+    avoid: set[str] | None = None,
+    allowed: tuple[str, ...] = HOOK_TYPES,
+) -> str:
+    """훅 유형 선택. avoid(같은 날 이미 쓴 유형)와 겹치면 다음 유형으로 민다. allowed 밖 유형은 고르지 않는다."""
+    chosen = FORMAT_PREFERRED_HOOK.get(fmt) or VILLAIN_PREFERRED_HOOK.get(villain or "", HOOK_A)
     used = avoid or set()
     idx = HOOK_TYPES.index(chosen)
+    picked = None
     for step in range(len(HOOK_TYPES)):
         candidate = HOOK_TYPES[(idx + step) % len(HOOK_TYPES)]
-        if candidate not in used:
-            chosen = candidate
+        if candidate in allowed and candidate not in used:
+            picked = candidate
             break
+    if picked is None:   # 허용 유형을 이미 다 썼으면 중복을 허용한다(허용 범위는 지킨다)
+        picked = next(t for t in HOOK_TYPES[idx:] + HOOK_TYPES[:idx] if t in allowed)
+    chosen = picked
     log.info("훅 유형 %s(%s) fmt=%s villain=%s", chosen, HOOK_SPECS[chosen]["name"], fmt, villain)
     return chosen
 

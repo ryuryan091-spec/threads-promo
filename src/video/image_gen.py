@@ -32,6 +32,13 @@ VILLAIN_APPEARANCE = {
     "Chaos Reaper": "Villain: Chaos Reaper, a shadowy scythe-wielding storm entity made of jagged dark energy.",
     "Bull Brute": "Villain: Bull Brute, a hulking overheated bull-like brute radiating red-hot steam.",
 }
+# GOC 외형·지시문은 investment_comic_tube image_generator.py 의 GOC 트랙 문구와 같다.
+GOC_APPEARANCE = (
+    "Guardian of Capital (GOC), the capital-protection heroine. "
+    "Use the supplied reference as the exact design: human face and human ears, long blonde hair, "
+    "blue eyes, ornate white-and-gold armor, large white feathered wings, and dark red cape. "
+    "Preserve the reference's equipment and left/right arrangement; do not invent a weapon."
+)
 MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 
 
@@ -39,7 +46,21 @@ class ImageGenError(RuntimeError):
     """이미지를 한 장도 만들지 못했다."""
 
 
-def build_prompt(scene: str, villain: str, has_reference: bool) -> str:
+def build_prompt(scene: str, villain: str | None, has_reference: bool,
+                 character: str = config.CHARACTER_EDT) -> str:
+    if character == config.CHARACTER_GOC:
+        # Facebook 영상: GOC 단독. EDT·빌런·다른 인물을 그리지 않게 명시한다.
+        return (
+            "Vertical 9:16 comic-style illustration for a financial-market story called 'EDT Universe'. "
+            f"{GOC_APPEARANCE} "
+            f"Scene to depict from GOC's protective perspective: {scene or 'GOC assesses market risk.'} "
+            "GOC is the only character in the image: no other heroes, no villains, no animals, no crowds. "
+            "High contrast manhwa shading, cinematic lighting, dynamic camera angle. "
+            + ("Use the provided reference as the definitive look of GOC. " if has_reference else "")
+            + "CRITICAL: absolutely NO text, NO letters, NO words, NO numbers, NO captions, NO speech "
+            "bubbles, NO signage, NO watermarks and NO logos of any kind. Exactly one continuous scene "
+            "from one camera viewpoint, no split panels, no blank bands or empty margins."
+        )
     return (
         "Vertical 9:16 comic-style illustration for a financial-market story called 'EDT Universe'. "
         f"{HERO_APPEARANCE} {VILLAIN_APPEARANCE.get(villain, '')} "
@@ -64,14 +85,15 @@ def _extract_image(response) -> bytes | None:
 
 
 def generate_scenes(
-    api_key: str, prompts: list[str], villain: str, out_dir: Path, *, client=None
+    api_key: str, prompts: list[str], villain: str | None, out_dir: Path, *, client=None,
+    character: str = config.CHARACTER_EDT,
 ) -> list[Path | None]:
     """장면마다 1장. 실패한 장면은 None(렌더러가 다른 장면 이미지로 대체). 전부 실패면 ImageGenError."""
     from google import genai
     from google.genai import types
 
     client = client or genai.Client(api_key=api_key)
-    refs = assets.reference_images()
+    refs = assets.reference_images(character)
     ref_parts = [
         types.Part.from_bytes(data=p.read_bytes(), mime_type=MIME.get(p.suffix.lower(), "image/png"))
         for p in refs
@@ -79,7 +101,7 @@ def generate_scenes(
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path | None] = []
     for idx, scene in enumerate(prompts):
-        prompt = build_prompt(scene, villain, bool(ref_parts))
+        prompt = build_prompt(scene, villain, bool(ref_parts), character)
         data = None
         for attempt in (1, 2):
             try:
@@ -100,7 +122,8 @@ def generate_scenes(
         path.write_bytes(data)
         paths.append(path)
     ok = sum(1 for p in paths if p)
-    log.info("이미지 생성 %d/%d 모델=%s 참조=%d", ok, len(prompts), config.SHORTS_IMAGE_MODEL, len(refs))
+    log.info("이미지 생성 %d/%d 캐릭터=%s 모델=%s 참조=%d", ok, len(prompts), character,
+             config.SHORTS_IMAGE_MODEL, len(refs))
     if ok == 0:
         raise ImageGenError("장면 이미지를 한 장도 만들지 못했습니다")
     return paths

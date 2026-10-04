@@ -33,34 +33,62 @@ CAPTION_BODY_MAX = 200
 VILLAINS = ("Debt Titan", "Chaos Reaper", "Bull Brute")
 VILLAIN_KR = {"Debt Titan": "뎁트타이탄", "Chaos Reaper": "카오스리퍼", "Bull Brute": "불브루트"}
 
-FORMAT_GUIDES = {
-    "F1": (
-        "EDT 시장 서사",
-        "호랑이 히어로 EDT 가 오늘 시장 분위기를 상징하는 빌런과 맞선다. "
-        "본문은 대결 장면 묘사와 화제 테마의 의미를 번갈아 말한다. 결말은 여운을 남긴다.",
-    ),
-    "F2": (
-        "개념 해설",
-        "화제 테마 중 하나의 개념을 EDT 가 쉽게 풀어 준다. 정의 → 왜 지금 화제인지 → 일상 비유 순서. "
-        "가르치려 들지 말고 옆에서 설명하듯.",
-    ),
-    "F3": (
-        "이번 주 관전 포인트",
-        "화제 테마들 가운데 이번 주에 지켜볼 흐름을 EDT 가 짚는다. 날짜·수치는 쓰지 않는다. "
-        "무엇을 볼지만 말하고 어떻게 될지는 말하지 않는다.",
-    ),
+# 캐릭터별 설정. Facebook 영상은 GOC 만 등장(마스터 결정 2026-10-04), Threads 단독 영상은 EDT.
+#   GOC 외형 묘사는 investment_comic_tube image_generator.py GOC 트랙 문구와 같은 내용이다.
+CHARACTER_PROFILES: dict[str, dict] = {
+    config.CHARACTER_EDT: {
+        "intro": ("주인공은 'EDT' — 체인소를 든 의인화 호랑이 히어로. 빌런: 뎁트타이탄(금리·부채 압박), "
+                  "카오스리퍼(변동성·공포), 불브루트(과열된 상승)."),
+        "uses_villain": True,
+        "forbidden_names": (config.CHARACTER_GOC,),
+        "formats": {
+            "F1": ("EDT 시장 서사",
+                   "호랑이 히어로 EDT 가 오늘 시장 분위기를 상징하는 빌런과 맞선다. "
+                   "본문은 대결 장면 묘사와 화제 테마의 의미를 번갈아 말한다. 결말은 여운을 남긴다."),
+            "F2": ("개념 해설",
+                   "화제 테마 중 하나의 개념을 EDT 가 쉽게 풀어 준다. 정의 → 왜 지금 화제인지 → 일상 비유 순서. "
+                   "가르치려 들지 말고 옆에서 설명하듯."),
+            "F3": ("이번 주 관전 포인트",
+                   "화제 테마들 가운데 이번 주에 지켜볼 흐름을 EDT 가 짚는다. 날짜·수치는 쓰지 않는다. "
+                   "무엇을 볼지만 말하고 어떻게 될지는 말하지 않는다."),
+        },
+    },
+    config.CHARACTER_GOC: {
+        "intro": ("주인공은 'GOC'(Guardian of Capital) — 자본을 지키는 수호자 히로인. 금발에 푸른 눈, "
+                  "흰색과 금색의 장식 갑옷, 커다란 흰 깃털 날개, 짙은 붉은 망토. "
+                  "이 영상에는 GOC 혼자만 등장한다. EDT 와 빌런(뎁트타이탄·카오스리퍼·불브루트)은 "
+                  "이름도 모습도 나오지 않는다. 싸움이 아니라 지키고 살피는 시선으로 말한다."),
+        "uses_villain": False,
+        "forbidden_names": (config.CHARACTER_EDT, *VILLAIN_KR.values()),
+        "formats": {
+            "F1": ("GOC 수호 서사",
+                   "GOC 가 오늘 시장 분위기를 높은 곳에서 내려다보며 자본을 지키는 자세를 이야기한다. "
+                   "본문은 수호 장면 묘사와 화제 테마의 의미를 번갈아 말한다. 결말은 여운을 남긴다."),
+            "F2": ("개념 해설",
+                   "화제 테마 중 하나의 개념을 GOC 가 쉽게 풀어 준다. 정의 → 왜 지금 화제인지 → 일상 비유 순서. "
+                   "가르치려 들지 말고 옆에서 설명하듯."),
+            "F3": ("이번 주 관전 포인트",
+                   "화제 테마들 가운데 이번 주에 지켜볼 흐름을 GOC 가 짚는다. 날짜·수치는 쓰지 않는다. "
+                   "무엇을 볼지만 말하고 어떻게 될지는 말하지 않는다."),
+        },
+    },
 }
+# 하위 호환(기존 참조): EDT 포맷 안내
+FORMAT_GUIDES = CHARACTER_PROFILES[config.CHARACTER_EDT]["formats"]
 
-SYSTEM_PROMPT = f"""당신은 60초 세로 숏폼의 한국어 내레이션 작가입니다.
-주인공은 'EDT' — 체인소를 든 의인화 호랑이 히어로. 빌런: 뎁트타이탄(금리·부채 압박),
-카오스리퍼(변동성·공포), 불브루트(과열된 상승).
+
+def system_prompt(character: str = config.CHARACTER_EDT) -> str:
+    profile = CHARACTER_PROFILES[character]
+    return f"""당신은 60초 세로 숏폼의 한국어 내레이션 작가입니다.
+{profile["intro"]}
 
 # 절대 규칙 (어기면 폐기됩니다)
 - 숫자(아라비아 숫자)를 쓰지 않습니다. 가격·지수·퍼센트·날짜 모두 금지.
 - 실존 기업·인물·브랜드·티커를 쓰지 않습니다.
 - 매수·매도·목표가·종목추천 등 투자 조언, 시장 방향 예측(오른다/떨어진다)을 쓰지 않습니다.
 - 링크·해시태그·@계정·이모지를 쓰지 않습니다.
-- 영문은 EDT 와 다음 단어만 허용: {", ".join(config.CHAT_THEME_ALLOWLIST)}
+- 영문은 {character} 와 다음 단어만 허용: {", ".join(config.CHAT_THEME_ALLOWLIST)}
+- 다음 이름은 쓰지 않습니다: {", ".join(profile["forbidden_names"])}
 - '여러분', 줄표(—)를 쓰지 않습니다.
 - 근거로 준 테마 밖의 사건을 지어내지 않습니다.
 
@@ -72,9 +100,12 @@ JSON 하나만 출력합니다. 다른 텍스트 금지.
 - body: 정확히 {BODY_BEATS}개, 각 {BODY_MIN_CHARS}~{BODY_MAX_CHARS}자, 말로 읽기 좋은 한 문장
 - closing: {CLOSING_MIN_CHARS}~{CLOSING_MAX_CHARS}자
 - 내레이션 전체(hook+body+closing) {TOTAL_MIN_CHARS}~{TOTAL_MAX_CHARS}자
-- image_prompts: 정확히 5개, 영어, 장면 묘사만(글자·숫자·로고 요구 금지)
+- image_prompts: 정확히 5개, 영어, 장면 묘사만(글자·숫자·로고 요구 금지){"" if profile["uses_villain"] else ", 등장인물은 GOC 한 명뿐"}
 - post_caption: 게시글 설명 {CAPTION_MIN_CHARS}~{CAPTION_BODY_MAX}자, 담담한 말투, 질문으로 끝내지 않아도 됨
 """
+
+
+SYSTEM_PROMPT = system_prompt(config.CHARACTER_EDT)
 
 
 class ScriptError(RuntimeError):
@@ -93,16 +124,18 @@ class Beat:
 class Script:
     content_id: str
     fmt: str
-    villain: str
+    villain: str | None                # GOC 영상은 None(빌런 없음)
     hook_type: str
     beats: tuple[Beat, ...]
     image_prompts: tuple[str, ...]
     caption: str                       # AI 고지 포함 최종 캡션
     themes: tuple[str, ...] = field(default_factory=tuple)
+    character: str = config.CHARACTER_EDT
 
     def to_dict(self) -> dict:
         return {
             "content_id": self.content_id,
+            "character": self.character,
             "fmt": self.fmt,
             "villain": self.villain,
             "hook_type": self.hook_type,
@@ -128,14 +161,14 @@ def select_villain(mood: mood_source.Mood) -> str:
     return "Debt Titan"
 
 
-def _user_prompt(fmt: str, villain: str, hook_type: str, mood: mood_source.Mood,
-                 avoid_hooks: list[str]) -> str:
-    name, guide = FORMAT_GUIDES[fmt]
+def _user_prompt(fmt: str, villain: str | None, hook_type: str, mood: mood_source.Mood,
+                 avoid_hooks: list[str], character: str = config.CHARACTER_EDT) -> str:
+    name, guide = CHARACTER_PROFILES[character]["formats"][fmt]
     spec = hooks.HOOK_SPECS[hook_type]
     lines = [
         f"# 포맷: {name}",
         guide,
-        f"# 오늘의 빌런: {VILLAIN_KR[villain]}",
+        f"# 오늘의 빌런: {VILLAIN_KR[villain]}" if villain else "# 빌런 없음 — GOC 혼자 등장",
         f"# 훅 유형: {spec['name']} — {spec['guide']} (예: {spec['example']})",
         mood.to_prompt_block() or "# 근거 없음 — 특정 사건을 지어내지 말고 시장을 보는 태도만 말한다.",
     ]
@@ -144,11 +177,11 @@ def _user_prompt(fmt: str, villain: str, hook_type: str, mood: mood_source.Mood,
     return "\n".join(lines)
 
 
-def _call_claude(api_key: str, user_prompt: str) -> dict:
+def _call_claude(api_key: str, user_prompt: str, character: str = config.CHARACTER_EDT) -> dict:
     payload = {
         "model": config.CLAUDE_MODEL,
         "max_tokens": 1500,
-        "system": SYSTEM_PROMPT,
+        "system": system_prompt(character),
         "messages": [{"role": "user", "content": user_prompt}],
     }
     try:
@@ -174,11 +207,21 @@ def _call_claude(api_key: str, user_prompt: str) -> dict:
         raise ScriptError(str(exc)) from exc
 
 
-def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None) -> list[str]:
+# 이미지 프롬프트(영문)에서 막을 다른 캐릭터 표현. GOC 영상에 EDT·호랑이·빌런이 그려지지 않게 한다.
+IMAGE_FORBIDDEN = {
+    config.CHARACTER_EDT: ("goc", "guardian of capital"),
+    config.CHARACTER_GOC: ("edt", "tiger", "chainsaw", *(v.lower() for v in VILLAINS)),
+}
+
+
+def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
+             character: str = config.CHARACTER_EDT) -> list[str]:
     """대본 JSON 위반 목록. 빈 목록이면 통과.
 
     used_captions: 같은 날 앞 편의 캡션(본문). 같으면 게시 단계 중복 검사에 걸려 그 편이 빠지므로 여기서 막는다.
+    character: 다른 캐릭터 이름(대사·캡션)과 다른 캐릭터 묘사(이미지 프롬프트)를 막는다.
     """
+    profile = CHARACTER_PROFILES[character]
     issues: list[str] = []
     hook = str(raw.get("hook", "")).strip()
     body = [str(x).strip() for x in (raw.get("body") or [])]
@@ -205,6 +248,13 @@ def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None) -
         issues.append(f"캡션 {len(caption)}자 — {CAPTION_MIN_CHARS}~{CAPTION_BODY_MAX}자 필요")
     if caption and caption in (used_captions or set()):
         issues.append("캡션이 같은 날 다른 편과 같음")
+    texts = [hook, *body, closing, caption]
+    for name in profile["forbidden_names"]:
+        if any(name in t for t in texts):
+            issues.append(f"{character} 영상에 다른 캐릭터 이름 '{name}' 포함")
+    for word in IMAGE_FORBIDDEN[character]:
+        if any(word in p.lower() for p in prompts):
+            issues.append(f"{character} 영상 이미지 프롬프트에 '{word}' 포함")
 
     for label, line, max_len in (
         [("훅", hook, hooks.HOOK_MAX_CHARS)]
@@ -214,7 +264,8 @@ def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None) -
         if not line:
             continue
         try:
-            content.lint_shorts(line, max_len=max(max_len, len(line)), label=label)
+            content.lint_shorts(line, max_len=max(max_len, len(line)), label=label,
+                                extra_latin=(character,))
         except content.ContentPolicyError as exc:
             issues.append(f"{label} 정책 위반: {exc}")
     return issues
@@ -234,23 +285,34 @@ def write_script(
     used_hook_types: set[str] | None = None,
     used_hooks: list[str] | None = None,
     used_captions: set[str] | None = None,
+    extra_instruction: str = "",
+    character: str = config.CHARACTER_EDT,
 ) -> Script:
-    """대본 생성. 검증 실패 시 위반 사유를 붙여 재시도. 소진하면 ScriptError."""
-    if fmt not in FORMAT_GUIDES:
+    """대본 생성. 검증 실패 시 위반 사유를 붙여 재시도. 소진하면 ScriptError.
+
+    extra_instruction: 렌더 길이 초과 등 앞 단계 실패 사유(재생성 지시)를 프롬프트 끝에 붙인다.
+    """
+    if character not in CHARACTER_PROFILES:
+        raise ScriptError(f"알 수 없는 캐릭터: {character}")
+    profile = CHARACTER_PROFILES[character]
+    if fmt not in profile["formats"]:
         raise ScriptError(f"알 수 없는 포맷: {fmt}")
-    villain = select_villain(mood)
-    hook_type = hooks.select_hook_type(fmt, villain, used_hook_types)
-    base_prompt = _user_prompt(fmt, villain, hook_type, mood, list(used_hooks or []))
+    villain = select_villain(mood) if profile["uses_villain"] else None
+    allowed = hooks.HOOK_TYPES if profile["uses_villain"] else hooks.NO_VILLAIN_HOOK_TYPES
+    hook_type = hooks.select_hook_type(fmt, villain, used_hook_types, allowed)
+    base_prompt = _user_prompt(fmt, villain, hook_type, mood, list(used_hooks or []), character)
+    if extra_instruction:
+        base_prompt += f"\n\n# 추가 지시(앞 시도 실패)\n{extra_instruction}"
     prompt = base_prompt
     last: list[str] = []
     for attempt in range(1, config.SHORTS_SCRIPT_ATTEMPTS + 1):
         try:
-            raw = _call_claude(api_key, prompt)
+            raw = _call_claude(api_key, prompt, character)
         except ScriptError as exc:
             last = [str(exc)]
             log.warning("대본 생성 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS, exc)
             continue
-        last = validate(raw, hook_type, used_captions)
+        last = validate(raw, hook_type, used_captions, character)
         if not last:
             spec = hooks.HOOK_SPECS[hook_type]
             beats = [Beat(str(raw["hook"]).strip(), spec["tts_tone"], True, spec["sfx"])]
@@ -258,8 +320,8 @@ def write_script(
             beats.append(Beat(str(raw["closing"]).strip()))
             if used_captions is not None:
                 used_captions.add(str(raw["post_caption"]).strip())
-            log.info("대본 생성 완료 id=%s fmt=%s 빌런=%s 훅=%s 시도=%d",
-                     content_id, fmt, villain, hook_type, attempt)
+            log.info("대본 생성 완료 id=%s 캐릭터=%s fmt=%s 빌런=%s 훅=%s 시도=%d",
+                     content_id, character, fmt, villain or "-", hook_type, attempt)
             return Script(
                 content_id=content_id,
                 fmt=fmt,
@@ -269,6 +331,7 @@ def write_script(
                 image_prompts=tuple(str(p).strip() for p in raw["image_prompts"]),
                 caption=build_caption(str(raw["post_caption"])),
                 themes=mood.themes,
+                character=character,
             )
         log.warning("대본 검증 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS,
                     json.dumps(last, ensure_ascii=False))

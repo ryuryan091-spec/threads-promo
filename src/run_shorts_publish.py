@@ -121,9 +121,14 @@ def run() -> int:
     log.info(safety.describe())
     base = Path(_env("SHORTS_OUT_DIR") or "out/shorts")
     now = dt.datetime.now(KST)
-    items = fresh_items(load_manifest(base), now.date())
+    manifest = load_manifest(base)
+    items = fresh_items(manifest, now.date())
     if not items:
         log.info("게시할 오늘 영상 없음")
+        if manifest.get("items"):
+            # 늦은 승인으로 지난 날짜 영상만 남은 경우. 조용히 끝나면 원인을 알 수 없다.
+            _notify("[Shorts] 승인 시점이 지나 게시하지 않았습니다(지난 날짜 영상) — "
+                    + ", ".join(str(i.get("content_id")) for i in manifest["items"]))
         return 0
 
     face_reason = safety.face_block_reason()
@@ -173,10 +178,29 @@ def run() -> int:
     return FAIL_EXIT_CODE if failed else 0
 
 
+def face_fatal_message(exc: FaceApiError) -> str:
+    """Facebook 계정·토큰 오류 알림. Threads 재인가 안내가 섞이지 않게 따로 만든다."""
+    kind = ("페이지 토큰 무효·만료 (code=190 / HTTP 401) — 장기 페이지 토큰 재발급 후 FACE_PAGE_TOKEN 교체"
+            if exc.is_auth_error else
+            "권한·접근 문제 (code=200) — 페이지 역할(CREATE_CONTENT)·앱 권한(pages_manage_posts 등) 확인")
+    return (
+        f"[Facebook][최우선] 숏폼 게시 — {kind}\n"
+        "이번 실행의 쓰기를 즉시 멈췄습니다(재시도 없음).\n"
+        "해소 전까지 Variables FACE_ENABLED=false 로 두십시오.\n"
+        f"{exc}"
+    )
+
+
 def main() -> int:
     try:
         return run()
     except (FaceApiError, ThreadsApiError) as exc:
+        if safety.is_account_fatal(exc) and isinstance(exc, FaceApiError):
+            safety.trip(exc)
+            msg = face_fatal_message(exc)
+            log.error(msg)
+            _notify(msg)
+            return safety.FATAL_EXIT_CODE
         if safety.is_account_fatal(exc):
             return safety.handle_fatal(exc, "숏폼 게시", _notify)
         log.exception("게시 실패")

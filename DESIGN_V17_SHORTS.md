@@ -4,7 +4,7 @@
 |---|---|
 | 버전 | config 1.7.0 · safety 1.1.0 · threads_client 1.4.0 · notifier 1.2.0 · redact 1.2.0 · verify_repo 1.7.0 · 신규 모듈 1.0.0 |
 | 워크플로 | `.github/workflows/shorts.yml` (build → publish, publish 는 environment `meta-publish` 승인 필수) |
-| 테스트 | `tests/test_shorts_v17.py` (85건, 실제 ffmpeg 렌더 E2E · 기존 파이프라인 상호작용 포함) |
+| 테스트 | `tests/test_shorts_v17.py` (103건, 실제 ffmpeg 렌더 E2E · 기존 파이프라인 상호작용 · 점검 반영 · GOC 단독 포함) |
 | 선행 | P0 — v1.6.0 이 `src/src` · `tests/tests` · `scripts/scripts` 에 들어가 있던 배포 위치 결함 수정(이 패키지에 반영). verify_repo 검사 12 로 재발 방지 |
 
 ## 1. 원칙
@@ -31,6 +31,14 @@ shorts.yml (KST 08:19)
 | 14~41일 | 2 |
 | 42일~ | 3 (FACE_DAILY_MAX 로 상한) |
 Threads 는 하루 최대 1편, DAILY_POST_BUDGET(계정 합산) 안에서만. 숏폼은 비정기 글로 분류(정기 몫 예약 존중).
+
+## 3-1. 캐릭터 (마스터 결정 2026-10-04)
+| 대상 | 캐릭터 | 규칙 |
+|---|---|---|
+| Facebook 에 가는 편(첫 편이 Threads 에도 가면 그 편 포함) | **GOC 단독** | 빌런 없음 · 빌런 대결형 훅(B) 미사용 · 대사·캡션에 EDT·빌런 이름 금지 · 이미지 프롬프트에 edt/tiger/chainsaw/빌런명 금지 · 이미지 지시 "GOC is the only character" · 참조 이미지 `assets/video/reference/goc/` · BGM 공통곡 |
+| Threads 단독 편 | EDT | 기존 EDT 서사(빌런 대결) · 대사·캡션에 GOC 금지 · 참조 `assets/video/reference/edt/` |
+GOC 외형 문구는 investment_comic_tube image_generator.py GOC 트랙 문구와 같다.
+확정(2026-10-04, A안): Facebook·Threads 공통 첫 편은 GOC — Threads 에도 같은 GOC 영상이 나간다. Threads 전용 EDT 편은 만들지 않는다(추가 생성 비용 없음).
 
 ## 4. 포맷
 F1 EDT 시장 서사(항상 첫 편) · F2 개념 해설 · F3 이번 주 관전 포인트. 같은 날 훅 유형·캡션 중복 금지.
@@ -77,7 +85,17 @@ SHORTS_THREADS_ENABLED=true 일 때만 생기는 문제이며 아래처럼 VIDEO
 
 차등 검증: v1.6 트리와 같은 입력으로 린트 3,137건×3, CHAT 판정·기둥 복원 2,472건, 예산·예약 3,000건, 마스킹·컨테이너 대기·알림 결과가 전부 동일(VIDEO 미포함 입력). 기존 테스트 1,155건은 파일 변경 없이 그대로 통과.
 
-## 10. 미결
+## 10. 점검 반영 (2026-10-04, 독립 코드 리뷰)
+| # | 결함 | 수정 |
+|---|---|---|
+| R1 | 워크플로 단위 concurrency — 승인 대기 중인 실행이 다음 날 build 까지 막음 | job 단위 그룹(build / publish), publish 는 cancel-in-progress: true. 지난 날짜만 남으면 알림 |
+| R2 | job 예산 330분에 마지막 편 업로드·처리 시간 미포함 → 350분 timeout 초과 가능 | 300분으로 축소(마지막 편 최악 35분 + 준비 5분 여유) |
+| R3 | 용량 상한 200MB > GitHub push 상한 100MiB | 95MB + 비트레이트 상한 6Mbps(60초 ≈ 45MB, 텔레그램 50MB 안) |
+| R4 | Facebook 토큰 오류에 Threads 재인가 문구 | Facebook 전용 알림(FACE_PAGE_TOKEN 교체·페이지 권한 확인) |
+| R5 | 길이 초과(RenderLengthError) 시 대본 재생성 없음 | 대본만 1회 재생성(이미지 재사용) |
+| R6 | GitHub 설치 토큰(ghs_) 마스킹 패턴 없음 | 패턴 추가 |
+
+## 11. 미결
 | # | 항목 |
 |---|---|
 | V1 | 페이지 토큰으로 릴스 3단계 실게시 확인 |

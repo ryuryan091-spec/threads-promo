@@ -55,7 +55,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bEAA[A-Za-z0-9]{20,}"), f"EAA{MASK}"),
     (re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}"), f"AIza{MASK}"),
     (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{10,}"), f"sk-ant-{MASK}"),
-    (re.compile(r"\b(ghp|gho|github_pat)_[A-Za-z0-9_]{20,}"), rf"\1_{MASK}"),
+    (re.compile(r"\b(ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}"), rf"\1_{MASK}"),
     (re.compile(r"\b(ntn|secret)_[A-Za-z0-9]{20,}"), rf"\1_{MASK}"),
 )
 
