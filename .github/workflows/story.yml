@@ -1,4 +1,4 @@
-name: Threads Story Event
+name: 🧵 Threads Story Event
 
 # EDT 회차가 트래커에 올라오면 그 회차를 근거로 STORY 를 발행한다.
 # 신규 판정은 created_time 시간창(무상태). 대부분의 실행은 즉시 종료된다.

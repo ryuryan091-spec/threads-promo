@@ -1,4 +1,4 @@
-name: Threads Reply Audit
+name: 🧵 Threads Reply Audit
 
 # v1.4.0 답글 감사. 읽기 전용 — Threads 에 아무것도 쓰지 않는다(GET 만, Claude 호출 없음).
 # 스케줄 없음. 수동 실행만.

@@ -1,4 +1,4 @@
-name: Threads Insights
+name: 🧵 Threads Insights
 
 # 인사이트 수집. 읽기 전용이며 Threads 에 아무것도 쓰지 않는다.
 # 발행과 완전히 독립되어 있어 실패해도 발행을 막지 않는다.

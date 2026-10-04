@@ -1,4 +1,4 @@
-name: Build Auth URL
+name: 🧵 Build Auth URL
 
 # 인가(Authorization Window) URL을 정확히 조립해 출력한다.
 # 손으로 만들면 줄바꿈 / URL 인코딩 / 꺾쇠 미제거로 실패하므로 자동화한다.

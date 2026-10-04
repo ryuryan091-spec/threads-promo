@@ -1,4 +1,4 @@
-name: Verify Token
+name: 🧵 Verify Token
 
 # 사용자 토큰 생성기로 발급받은 토큰을 검증하고,
 # THREADS_USER_ID 를 조회해 Secret 에 기록한다.

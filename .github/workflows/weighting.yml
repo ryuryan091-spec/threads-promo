@@ -1,4 +1,4 @@
-name: Threads Weighting
+name: 🧵 Threads Weighting
 
 # 기둥 비중 자동 조절 판정. 기본 비활성.
 # 활성화해도 안전장치 7종을 모두 통과해야 실제로 조정된다.

@@ -1,4 +1,4 @@
-name: Threads Reply
+name: 🧵 Threads Reply
 
 # 내 글에 달린 댓글에 자동 답글 (+ v1.3.0 셀프 이어쓰기, FOLLOWUP_ENABLED).
 # v1.1.0: 모든 슬롯을 실행한다. 오전(09~12시)은 chat.yml 이 실행마다 답글 스윕을 수행한다.

@@ -1,4 +1,4 @@
-name: Threads Go-Live Check
+name: 🧵 Threads Go-Live Check
 
 # live 전환 전 점검. 읽기 전용 — Threads 에 아무것도 쓰지 않는다.
 # 스케줄 없음. 수동 실행만.

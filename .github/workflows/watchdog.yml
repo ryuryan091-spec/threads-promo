@@ -1,4 +1,4 @@
-name: Threads Watchdog
+name: 🧵 Threads Watchdog
 
 # 파이프라인이 조용히 멈춘 것을 감지한다.
 # 발행 워크플로우는 '실행됐는데 실패한 것'만 알린다.

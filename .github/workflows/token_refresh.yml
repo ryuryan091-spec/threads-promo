@@ -1,4 +1,4 @@
-name: Threads Token Refresh
+name: 🧵 Threads Token Refresh
 
 # 토큰 갱신 전용. 매일 확인하되 만료 임계(D-10)에서만 실제로 갱신한다.
 #

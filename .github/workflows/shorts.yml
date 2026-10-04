@@ -1,0 +1,140 @@
+name: 📘🧵 Meta Shorts (Facebook · Threads)
+
+# v1.7.0 60초 숏폼 — Facebook 페이지 릴스 + Threads 동영상 (DESIGN_V17_SHORTS.md)
+#   build   : 영상 생성 + 텔레그램 미리보기. Meta 쓰기 없음.
+#   publish : environment 'meta-publish' 승인(마스터) 뒤에만 실행. 그날 분량을 시간대 안에서 간격을 두고 게시.
+# build cron KST 08:19 — 정각·반각 회피, CHAT 첫 트리거(09:04)와 45분 간격.
+# Facebook 전용 값은 FACE_ 접두(Threads 와 공유하지 않는 값).
+
+"on":
+  schedule:
+    - cron: "19 23 * * *"     # KST 08:19
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        options: [dry_run, live]
+        default: dry_run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threads-shorts
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      has_items: ${{ steps.manifest.outputs.has_items }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # 기본 러너 이미지(ubuntu-24.04)에는 ffmpeg·한글 폰트가 없다(runner-images 목록 확인).
+      - name: Install ffmpeg and Korean font
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+
+      - run: pip install -r requirements.txt
+
+      - name: Build shorts
+        env:
+          AUTOMATION_ENABLED: ${{ vars.AUTOMATION_ENABLED || 'false' }}
+          WARMUP_UNTIL: ${{ vars.WARMUP_UNTIL }}
+          SHORTS_BUILD_ENABLED: ${{ vars.SHORTS_BUILD_ENABLED || 'false' }}
+          SHORTS_THREADS_ENABLED: ${{ vars.SHORTS_THREADS_ENABLED || 'false' }}
+          FACE_ENABLED: ${{ vars.FACE_ENABLED || 'false' }}
+          FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
+          FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
+          SHORTS_WEEKLY_REST_DAYS: ${{ vars.SHORTS_WEEKLY_REST_DAYS || '1' }}
+          SHORTS_IMAGE_MODEL: ${{ vars.SHORTS_IMAGE_MODEL }}
+          SHORTS_TTS_MODEL: ${{ vars.SHORTS_TTS_MODEL }}
+          SHORTS_TTS_VOICE: ${{ vars.SHORTS_TTS_VOICE }}
+          CLAUDE_AI_KEY: ${{ secrets.CLAUDE_AI_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+          GEMINI_API_SUB_PAY_KEY: ${{ secrets.GEMINI_API_SUB_PAY_KEY }}
+          CHAT_SOURCE_MODE: ${{ vars.CHAT_SOURCE_MODE || 'mix' }}
+          MOOD_RSS_URLS: ${{ vars.MOOD_RSS_URLS }}
+          MOOD_WEB_MAX_USES: ${{ vars.MOOD_WEB_MAX_USES || '2' }}
+          X_URL: ${{ vars.X_URL }}
+          YOUTUBE_URL: ${{ vars.YOUTUBE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          SHORTS_OUT_DIR: out/shorts
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
+        run: python -m src.run_shorts_build
+
+      - name: Manifest
+        id: manifest
+        if: always()
+        run: |
+          if [ -f out/shorts/manifest.json ] && python -c "import json,sys; sys.exit(0 if json.load(open('out/shorts/manifest.json'))['items'] else 1)"; then
+            echo "has_items=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_items=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.manifest.outputs.has_items == 'true'
+        with:
+          name: shorts
+          path: |
+            out/shorts/manifest.json
+            out/shorts/*/video.mp4
+            out/shorts/*/script.json
+          retention-days: 3
+
+  publish:
+    needs: build
+    if: needs.build.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    # 승인 게이트: Settings › Environments › meta-publish › Required reviewers = 마스터
+    environment: meta-publish
+    # 편간 대기(최대 SHORTS_JOB_BUDGET_MIN=330분) + 업로드·처리 대기
+    timeout-minutes: 350
+    permissions:
+      contents: write   # Threads 동영상 공개 URL 용 shorts-media 브랜치 강제 푸시
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shorts
+          path: out/shorts
+
+      - name: Publish shorts
+        env:
+          AUTOMATION_ENABLED: ${{ vars.AUTOMATION_ENABLED || 'false' }}
+          DAILY_POST_BUDGET: ${{ vars.DAILY_POST_BUDGET || '2' }}
+          WARMUP_UNTIL: ${{ vars.WARMUP_UNTIL }}
+          SHORTS_THREADS_ENABLED: ${{ vars.SHORTS_THREADS_ENABLED || 'false' }}
+          FACE_ENABLED: ${{ vars.FACE_ENABLED || 'false' }}
+          FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
+          FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
+          FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
+          FACE_PAGE_TOKEN: ${{ secrets.FACE_PAGE_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
+          PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+          SHORTS_OUT_DIR: out/shorts
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
+        run: python -m src.run_shorts_publish
