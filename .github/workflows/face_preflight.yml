@@ -1,0 +1,43 @@
+name: 📘 Facebook Preflight
+
+# v1.8.6 Facebook 숏폼 사전 점검 — 읽기 전용(DESIGN_V18_FACE_STORY.md §10.5).
+# Facebook·Notion 에 아무것도 쓰지 않는다(GET · Notion 질의만). 스케줄 없음, 수동 실행만.
+# 결과는 Actions 요약(Summary)에 표로 남는다. FAIL 이 있으면 실패로 끝난다.
+# 안전 모드 변수 식은 shorts.yml 과 같다(verify_repo 검사 11).
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Facebook Preflight
+        env:
+          AUTOMATION_ENABLED: ${{ vars.AUTOMATION_ENABLED || 'false' }}
+          SHORTS_BUILD_ENABLED: ${{ vars.SHORTS_BUILD_ENABLED || 'false' }}
+          FACE_ENABLED: ${{ vars.FACE_ENABLED || 'false' }}
+          FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
+          FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
+          FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
+          SHORTS_WEEKLY_REST_DAYS: ${{ vars.SHORTS_WEEKLY_REST_DAYS || '1' }}
+          # 정기 실행(schedule)의 DRY_RUN 식과 같다(shorts.yml)
+          DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+          FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
+          FACE_PAGE_TOKEN: ${{ secrets.FACE_PAGE_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          FACE_NOTION_DB_ID: ${{ secrets.FACE_NOTION_DB_ID }}
+        run: python scripts/face_preflight.py
