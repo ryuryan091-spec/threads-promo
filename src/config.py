@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.8.3"   # v1.8.3: 빠른 훅·분위기 훅·휴장일 표현·장면/움직임 다양화 · v1.8.2: 대본 max_tokens(사고 토큰 여유)·응답 진단 · v1.8.1: 운영 베타 수정(렌더 concat 절대경로·GOC 아웃트로 표지·로고 키잉) · v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
+VERSION = "1.8.5"   # v1.8.5: 대본 문체 검사 오탐 축소·마지막 시도 경고 통과·대본 호출 사용량 로그 · v1.8.4: 빠른 훅 낭독·이미지 7장 교차 배치·3인칭 통일·전언형 암시 금지 · v1.8.3: 빠른 훅·분위기 훅·휴장일 표현·장면/움직임 다양화 · v1.8.2: 대본 max_tokens(사고 토큰 여유)·응답 진단 · v1.8.1: 운영 베타 수정(렌더 concat 절대경로·GOC 아웃트로 표지·로고 키잉) · v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
 # v1.6.0: 계정 보호(안전) 모드 — 킬 스위치·일일 예산·링크 리플 비율·워밍업·답글 축소
 # v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
 # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
@@ -692,7 +692,8 @@ VIDEO_BUFSIZE = "12M"
 SHORTS_IMAGE_MODEL = os.environ.get("SHORTS_IMAGE_MODEL", "").strip() or "gemini-3.1-flash-image"
 SHORTS_TTS_MODEL = os.environ.get("SHORTS_TTS_MODEL", "").strip() or "gemini-3.1-flash-tts-preview"
 SHORTS_TTS_VOICE = os.environ.get("SHORTS_TTS_VOICE", "").strip() or "Charon"
-SHORTS_IMAGE_COUNT = 5            # 편당 생성 이미지 수(비트에 재사용)
+# v1.8.4 Q2-b(마스터 승인): 5 → 7장. 같은 그림이 12~14초 이어지던 문제(운영 베타) 해소. 장당 약 $0.067 추가.
+SHORTS_IMAGE_COUNT = 7            # 편당 생성 이미지 수(비트에 재사용)
 SHORTS_SCRIPT_ATTEMPTS = 3        # 대본 생성 최대 시도
 # v1.8.2 운영 베타: Claude Sonnet 5 는 적응형 사고(thinking)가 기본으로 켜져 있고(effort high), 사고 토큰도
 #   max_tokens 에 포함된다(공식 문서 Thinking · What's new in Claude Sonnet 5). 1500 이면 사고만으로 소진돼

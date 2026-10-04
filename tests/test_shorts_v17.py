@@ -209,14 +209,14 @@ def _valid_raw(hook="방어선이 뚫리기 직전이다"):
         "EDT 는 묵직한 체인소를 고쳐 쥐고 흔들리는 숨을 조용히 고르고 있습니다",
         "지금 중요한 건 큰 소리가 아니라 끝까지 버티는 자세라고 그는 말합니다",
         "물가와 고용 이야기가 같은 날 한꺼번에 겹치면서 시장의 소음이 커집니다",
-        "흔들릴수록 내가 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫습니다",
+        "흔들릴수록 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫다고 그는 본다",
         "마침내 사슬 하나가 끊어지면서 그 틈 사이로 빛이 조금씩 새어 나옵니다",
     ]
     return {
         "hook": hook,
         "body": body,
         "closing": "오늘 싸움은 끝나지 않았습니다 내일 다시 봅니다",
-        "image_prompts": ["tiger hero facing chains"] * 5,
+        "image_prompts": ["tiger hero facing chains"] * config.SHORTS_IMAGE_COUNT,
         "post_caption": "금리 이야기로 시끄러운 하루였습니다. 소음보다 자세를 보자는 이야기를 EDT 와 함께 정리했습니다.",
     }
 
@@ -320,7 +320,8 @@ class TestTiming:
 
     def test_hook_too_long(self):
         with pytest.raises(renderer.RenderLengthError):
-            renderer.plan_timing([9.5] + [4.0] * 8)
+            # v1.8.4: 훅은 최대 1.25배 추가 가속되므로 상한(8초)을 넘기려면 더 긴 훅이 필요하다
+            renderer.plan_timing([11.0] + [4.0] * 8)
 
     def test_wrap(self):
         out = renderer.wrap_korean("금리라는 무게가 다시 시장 어깨를 누르고 있습니다", 13)
@@ -336,7 +337,7 @@ class TestTiming:
 class TestRenderE2E:
     def test_render_and_validate(self, tmp_path, cfg):
         imgs = []
-        for i in range(5):
+        for i in range(config.SHORTS_IMAGE_COUNT):
             p = tmp_path / f"img{i}.png"
             subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
                             f"color=c=0x{i*40:02x}3366:s=1024x1536", "-frames:v", "1", str(p)], check=True)
@@ -880,7 +881,7 @@ class TestInspectionFixes:
 
         def fake_write(key, **kw):
             scripts.append(kw.get("extra_instruction", ""))
-            return mock.Mock(image_prompts=("a",) * 5, villain="Debt Titan", hook_type="B",
+            return mock.Mock(image_prompts=("a",) * 5, villain="Debt Titan", hook_type="B", warnings=(),
                              caption="c", beats=[mock.Mock(narration="훅입니다", tone="", is_hook=True, sfx="")],
                              to_dict=lambda: {})
 
@@ -919,10 +920,10 @@ def _goc_raw(hook="시장에 경고등이 켜졌다"):
         "지키는 일은 크게 외치는 일이 아니라 끝까지 자리를 지키는 일입니다",
         "지금 중요한 건 큰 소리가 아니라 끝까지 버티는 자세라고 그녀는 말합니다",
         "물가와 고용 이야기가 같은 날 한꺼번에 겹치면서 시장의 소음이 커집니다",
-        "흔들릴수록 내가 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫습니다",
+        "흔들릴수록 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫다고 그녀는 본다",
         "날개를 접은 GOC 는 아직 지켜야 할 것이 남았다며 다시 앞을 바라봅니다",
     ]
-    raw["image_prompts"] = ["guardian heroine watching a city from a wall at dusk"] * 5
+    raw["image_prompts"] = ["guardian heroine watching a city from a wall at dusk"] * config.SHORTS_IMAGE_COUNT
     raw["post_caption"] = "금리 이야기로 무거웠던 하루를 GOC 의 시선으로 정리했습니다. 소음보다 자세를 보자는 이야기입니다."
     return raw
 
@@ -1030,7 +1031,7 @@ class TestGocOnlyOnFacebook:
 
         def fake_write(key, **kw):
             got["script_char"] = kw.get("character")
-            return mock.Mock(image_prompts=("a",) * 5, villain=None, hook_type="A", caption="c",
+            return mock.Mock(image_prompts=("a",) * 5, villain=None, hook_type="A", caption="c", warnings=(),
                              beats=[mock.Mock(narration="훅입니다", tone="", is_hook=True, sfx="")],
                              to_dict=lambda: {})
 

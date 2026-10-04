@@ -486,11 +486,11 @@ def _goc_raw():
             "지키는 일은 크게 외치는 일이 아니라 끝까지 자리를 지키는 일입니다",
             "지금 중요한 건 큰 소리가 아니라 끝까지 버티는 자세라고 그녀는 말합니다",
             "물가와 고용 이야기가 같은 날 한꺼번에 겹치면서 시장의 소음이 커집니다",
-            "흔들릴수록 내가 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫습니다",
+            "흔들릴수록 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫다고 그녀는 본다",
             "날개를 접은 GOC 는 아직 지켜야 할 것이 남았다며 다시 앞을 바라봅니다",
         ],
         "closing": "오늘도 성벽은 그대로 서 있습니다",
-        "image_prompts": ["guardian heroine watching a city from a wall at dusk"] * 5,
+        "image_prompts": ["guardian heroine watching a city from a wall at dusk"] * config.SHORTS_IMAGE_COUNT,
         "post_caption": "금리 이야기로 무거웠던 하루를 GOC 의 시선으로 정리했습니다. 소음보다 자세를 보자는 이야기입니다.",
     }
 
@@ -1026,7 +1026,7 @@ class TestPublishRunner:
 class TestConfigAndWorkflow:
     def test_defaults_off(self):
         assert config.SAFETY_VARIABLE_DEFAULTS["FACE_STORY_ENABLED"] == "false"
-        assert config.VERSION == "1.8.3"
+        assert config.VERSION == "1.8.5"
         assert config.FACE_STORY_SCAN_ROWS > 10 >= 2
 
     def test_clamps(self, monkeypatch):
@@ -1446,3 +1446,254 @@ class TestBetaContentFixes:
             picked.append(t)
         assert picked == ["C", "E"]
         assert hooks.HOOK_SPECS["E"]["sfx"] == "hook_c"          # 존재하는 효과음 파일 재사용
+
+
+# ---------------------------------------------------------------------------
+# K. 운영 베타 4차 — 훅 낭독 가속 · 이미지 7장 교차 · 3인칭 · 전언형 금지 (v1.8.4)
+# ---------------------------------------------------------------------------
+
+
+class TestBetaQualityV184:
+    def test_hook_tones_all_fast(self):
+        assert all(spec["tts_tone"].startswith("빠르고 또렷하게") for spec in hooks.HOOK_SPECS.values())
+
+    def test_hook_tempo_applies_only_when_long(self):
+        from src.video import renderer
+        slow = renderer.plan_timing([3.0] + [5.0] * 8)
+        assert slow.hook_tempo == round(3.0 / renderer.HOOK_FAST_SEC, 4)          # 1.2배 → 2.5초
+        assert slow.durations[0] == round(max(renderer.HOOK_MIN_SEC,
+                                              3.0 / slow.hook_tempo + renderer.SEG_PAD_SEC), 3)
+        beta = renderer.plan_timing([3.4] + [5.0] * 8)            # 운영 베타 사례(훅 낭독 약 3.4초)
+        assert beta.hook_tempo == renderer.HOOK_TEMPO_MAX and beta.durations[0] < 3.4
+        assert slow.scene_tempo(True) > slow.scene_tempo(False) == slow.tempo
+        fast = renderer.plan_timing([1.8] + [5.0] * 8)
+        assert fast.hook_tempo == 1.0 and fast.scene_tempo(True) == fast.tempo
+        capped = renderer.plan_timing([5.0] + [5.0] * 8)
+        assert capped.hook_tempo == renderer.HOOK_TEMPO_MAX
+        assert renderer.TARGET_MIN_SEC <= slow.total <= config.VIDEO_MAX_SEC
+
+    def test_render_passes_scene_tempo(self, monkeypatch, tmp_path):
+        from src.video import renderer
+        seen = []
+        monkeypatch.setattr(renderer, "find_kr_font", lambda: "/f.ttc")
+        monkeypatch.setattr(renderer, "probe_duration", lambda p: 3.4 if "h" in p.name else 5.0)
+        monkeypatch.setattr(renderer, "_render_scene",
+                            lambda scene, dur, tempo, motion, out, tmp, font, log: seen.append((scene.is_hook, tempo)))
+        monkeypatch.setattr(renderer, "_render_outro", lambda *a, **k: None)
+        monkeypatch.setattr(renderer, "_run", lambda cmd, log: None)
+        monkeypatch.setattr(renderer.assets, "find_bgm", lambda *a, **k: None)
+        scenes = [renderer.SceneInput(tmp_path / "i.png", tmp_path / ("h.wav" if i == 0 else f"b{i}.wav"),
+                                      "x", i == 0, None) for i in range(9)]
+        try:
+            renderer.render(scenes, None, tmp_path / "out" / "v.mp4")
+        except Exception:  # noqa: BLE001 — 뒤 단계(파일 없음)는 이 테스트 범위 밖
+            pass
+        hook_tempo = [t for h, t in seen if h][0]
+        body_tempo = {t for h, t in seen if not h}
+        assert len(body_tempo) == 1 and hook_tempo > body_tempo.pop()
+
+    def test_image_slots_interleaved(self):
+        slots = script_writer.BEAT_IMAGE_SLOT
+        assert config.SHORTS_IMAGE_COUNT == 7
+        assert len(slots) == script_writer.BEAT_COUNT and set(slots) == set(range(config.SHORTS_IMAGE_COUNT))
+        assert all(slots[i] != slots[i + 1] for i in range(len(slots) - 1))   # 비트마다 그림이 바뀐다
+
+    def test_seven_distinct_shot_directives(self):
+        from src.video import image_gen
+        assert len(set(image_gen.SHOT_DIRECTIVES)) == config.SHORTS_IMAGE_COUNT
+        sp = script_writer.system_prompt("GOC")
+        assert f"정확히 {config.SHORTS_IMAGE_COUNT}개" in sp
+
+    def test_first_person_rejected_quotes_allowed(self):
+        raw = _goc_raw()
+        raw["body"][4] = "낮게 내려와 거리의 불빛을 하나하나 눈에 담는 것 그것이 나의 일이다"
+        issues = script_writer.validate(raw, hooks.HOOK_C, character="GOC")
+        assert any("본문5 1인칭" in i for i in issues)
+        raw["body"][4] = "GOC 는 낮게 내려와 \"지키는 것이 나의 일이다\" 하고 조용히 말한다"
+        assert not any("1인칭" in i for i in script_writer.validate(raw, hooks.HOOK_C, character="GOC"))
+        raw["body"][4] = "빛나는 거리 위로 내일의 바람이 천천히 불어오기 시작하는 밤입니다"
+        assert not any("1인칭" in i for i in script_writer.validate(raw, hooks.HOOK_C, character="GOC"))
+
+    def test_hearsay_rejected(self):
+        for line in ("지난주 고용 소식에 연준의 선택이 가볍게 느껴졌다는 이야기가 들린다",
+                     "반도체 실적 소식에 어깨가 가벼워졌다는 말이 들려온다 요즘 거리마다",
+                     "국채 시장 쪽에서 조용한 소식이 들려온다 바람이 잦아드는 밤에"):   # v1.8.5: '~다고 한다'는 범위 밖
+            raw = _goc_raw()
+            raw["body"][2] = line
+            issues = script_writer.validate(raw, hooks.HOOK_C, character="GOC")
+            assert any("전언형" in i for i in issues), line
+        raw = _goc_raw()
+        assert not any("전언형" in i for i in script_writer.validate(raw, hooks.HOOK_C, character="GOC"))
+
+    def test_system_prompt_rules(self):
+        sp = script_writer.system_prompt("GOC")
+        assert "전해 들은 말로 시장 반응" in sp and "3인칭 관찰자" in sp
+        assert "결과를 정리하지 말고" in script_writer.day_context(dt.date(2026, 10, 4))
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# L. v1.8.5 사전 점검 — 문체 검사 오탐 축소 · 마지막 시도 경고 통과 · 사용량 로그
+# ─────────────────────────────────────────────────────────────────────────────
+class TestL_StyleRulePrecheck:
+    # 반드시 잡아야 하는 문장(운영 베타 실제 위반 + 대표형)
+    FIRST_PERSON_TRUE = (
+        "그것이 나의 일이다",
+        "나는 알고 있다 이 거리가 다시 밝아진다는 것을",
+        "내가 지켜야 할 것은 사람들의 하루다",
+        "오늘도 나를 기다리는 불빛이 있다",
+        "저는 조용히 거리를 내려다봅니다",
+    )
+    # 걸리면 안 되는 문장(동사 '나다'·낱말 안)
+    FIRST_PERSON_FALSE = (
+        "빛이 나는 거리 위로 바람이 분다",
+        "소리가 나는 쪽으로 GOC 가 고개를 돌린다",
+        "생각이 나는 대로 발걸음을 옮긴다",
+        "땀이 나도 GOC 는 멈추지 않는다",
+        "빛나는 거리 위로 내일의 바람이 분다",
+        "빛이  나는 거리",                      # 공백 두 칸
+    )
+    HEARSAY_TRUE = (
+        "가볍게 느껴졌다는 이야기가 들린다",
+        "어깨가 가벼워졌다는 말이 들려온다",
+        "멀리서 조용한 소식이 들려온다",
+        "곧 바뀐다는 소문이 돈다",
+        "그렇게 끝났다는 후문",
+    )
+    HEARSAY_FALSE = (
+        "GOC 는 끝까지 거리를 지키겠다고 한다",
+        "GOC 는 서두르지 않겠다고 한다",
+        "새로운 소식이 나온다 해도 GOC 는 흔들리지 않는다",
+        "바람 소리가 들린다 GOC 가 고개를 든다",
+    )
+
+    def test_first_person_pattern(self):
+        for line in self.FIRST_PERSON_TRUE:
+            assert script_writer.FIRST_PERSON_PATTERN.search(line), line
+        for line in self.FIRST_PERSON_FALSE:
+            assert not script_writer.FIRST_PERSON_PATTERN.search(line), line
+
+    def test_hearsay_pattern(self):
+        for line in self.HEARSAY_TRUE:
+            assert script_writer.HEARSAY_PATTERN.search(line), line
+        for line in self.HEARSAY_FALSE:
+            assert not script_writer.HEARSAY_PATTERN.search(line), line
+
+    def test_sentence_start_first_person_still_caught(self):
+        # 문장 시작 '나는'은 앞에 '이/가 '가 없으므로 1인칭으로 잡는다
+        assert script_writer.FIRST_PERSON_PATTERN.search("나는 이 거리를 지킨다")
+        assert script_writer.FIRST_PERSON_PATTERN.search("오늘도, 나도 함께 걷는다")
+        # 실제 운영 대본(10/04)의 1인칭 — '도' 뒤의 '나는'은 놓치면 안 된다
+        assert script_writer.FIRST_PERSON_PATTERN.search("다음 한 주에도 나는 이 자리에서 조용히 지켜볼 것이다")
+        assert script_writer.FIRST_PERSON_PATTERN.search("결이 있다는 걸, 나는 조용히 알고 있다")
+
+    def test_split_issues(self):
+        issues = ["본문2 1인칭 서술 — x", "본문3 전언형 암시('…') — y", "본문1 3자 — 20~40자 필요",
+                  "주말인데 '오늘 시장' 표현 — z"]
+        hard, soft = script_writer.split_issues(issues)
+        assert soft == issues[:2] and hard == issues[2:]
+
+    def _raw_with(self, idx, line):
+        raw = _goc_raw()
+        raw["body"][idx] = line
+        return raw
+
+    def test_soft_only_final_attempt_passes_with_warning(self, monkeypatch):
+        bad = self._raw_with(4, "낮게 내려와 거리의 불빛을 하나하나 눈에 담는 것 그것이 나의 일이다")
+        calls = []
+
+        def fake(api_key, prompt, character="EDT"):
+            calls.append(prompt)
+            return bad
+
+        monkeypatch.setattr(script_writer, "_call_claude", fake)
+        mood = mood_source.Mood("rss", ("금리",), "관망")
+        s = script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1", mood=mood, character="GOC")
+        assert len(calls) == config.SHORTS_SCRIPT_ATTEMPTS          # 앞 시도는 재시도했다
+        assert s.warnings and all("1인칭" in w for w in s.warnings)
+        assert s.to_dict()["warnings"] == list(s.warnings)
+
+    def test_soft_violation_retried_before_final(self, monkeypatch):
+        bad = self._raw_with(4, "낮게 내려와 거리의 불빛을 하나하나 눈에 담는 것 그것이 나의 일이다")
+        seq = [bad, _goc_raw()]
+
+        def fake(api_key, prompt, character="EDT"):
+            return seq.pop(0)
+
+        monkeypatch.setattr(script_writer, "_call_claude", fake)
+        mood = mood_source.Mood("rss", ("금리",), "관망")
+        s = script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1", mood=mood, character="GOC")
+        assert s.warnings == () and "warnings" not in s.to_dict()
+
+    def test_soft_fallback_survives_later_api_failure(self, monkeypatch):
+        # 리뷰 v1.8.5: 2회차가 문체 위반만, 3회차가 API 실패여도 편을 버리지 않는다(2회차 결과 사용)
+        soft_raw = self._raw_with(4, "낮게 내려와 거리의 불빛을 하나하나 눈에 담는 것 그것이 나의 일이다")
+        hard_raw = self._raw_with(0, "짧다")
+        seq = [hard_raw, soft_raw, script_writer.ScriptError("Claude API 529: overloaded")]
+
+        def fake(api_key, prompt, character="EDT"):
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        monkeypatch.setattr(script_writer, "_call_claude", fake)
+        mood = mood_source.Mood("rss", ("금리",), "관망")
+        used = set()
+        s = script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1", mood=mood,
+                                       character="GOC", used_captions=used)
+        assert s.warnings and "나의 일이다" in s.beats[5].narration
+        assert used == {soft_raw["post_caption"].strip()}           # 쓰인 캡션만 기록
+
+    def test_first_soft_candidate_kept(self, monkeypatch):
+        a = self._raw_with(4, "낮게 내려와 거리의 불빛을 하나하나 눈에 담는 것 그것이 나의 일이다")
+        b = self._raw_with(2, "반도체 실적 소식에 어깨가 가벼워졌다는 말이 들려온다 요즘 거리마다")
+        seq = [a, b, b]
+        monkeypatch.setattr(script_writer, "_call_claude", lambda *a_, **k: seq.pop(0))
+        mood = mood_source.Mood("rss", ("금리",), "관망")
+        s = script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1", mood=mood, character="GOC")
+        assert all("1인칭" in w for w in s.warnings)
+
+    def test_hard_violation_still_raises(self, monkeypatch):
+        # 소프트 + 하드(주말 '오늘 시장')가 함께 남으면 끝까지 막는다
+        bad = self._raw_with(4, "그것이 나의 일이다 오늘 시장은 조용히 숨을 고르는 하루였다고")
+
+        def fake(api_key, prompt, character="EDT"):
+            return bad
+
+        monkeypatch.setattr(script_writer, "_call_claude", fake)
+        mood = mood_source.Mood("rss", ("금리",), "관망")
+        with pytest.raises(script_writer.ScriptError):
+            script_writer.write_script("k", content_id="sv-20261004-1", fmt="F1", mood=mood, character="GOC")
+
+    def test_usage_logged_on_success(self, monkeypatch, caplog):
+        class R:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"content": [{"type": "text", "text": '{"hook": "x"}'}],
+                        "usage": {"input_tokens": 1200, "output_tokens": 3400}, "stop_reason": "end_turn"}
+
+        monkeypatch.setattr(script_writer.requests, "post", lambda *a, **k: R())
+        with caplog.at_level("INFO", logger=script_writer.log.name):
+            assert script_writer._call_claude("k", "p", "GOC") == {"hook": "x"}
+        assert "output_tokens=3400" in caplog.text and "input_tokens=1200" in caplog.text
+
+    def test_preview_caption(self):
+        from src import run_shorts_build as rb
+        entry = {"content_id": "sv-20261005-1", "character": "GOC", "fmt": "F1", "channels": ["face"],
+                 "caption": "가" * 990, "video": "sv-20261005-1/video.mp4",
+                 "script_warnings": ["본문5 1인칭 서술 — 3인칭 관찰자로 쓴다"]}
+        text = rb.preview_caption(entry)
+        assert "⚠ 문체 검토 필요" in text[:1000]                       # 텔레그램 1000자 절단에도 보인다
+        assert text.index("⚠") < text.index("가" * 10)
+        many = dict(entry, caption=script_writer.build_caption("가" * script_writer.CAPTION_BODY_MAX),
+                    script_warnings=[f"본문{i} 1인칭 서술 — " + "x" * 300 for i in range(1, 18)])
+        text = rb.preview_caption(many)
+        assert len(text) < 1000 and "외 14건" in text
+        assert text.endswith("승인: Actions › 📘🧵 Meta Shorts › Review deployments")
+        assert text.count("\n- 본문") == rb.PREVIEW_WARN_MAX
+        plain = rb.preview_caption({k: v for k, v in entry.items() if k != "script_warnings"})
+        assert "⚠" not in plain and plain.startswith("[Shorts 미리보기] sv-20261005-1 GOC F1 → face\n가")
+        assert plain.endswith("승인: Actions › 📘🧵 Meta Shorts › Review deployments")

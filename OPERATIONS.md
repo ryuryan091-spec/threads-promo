@@ -595,3 +595,7 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. �
 - 사람이 Notion 에서 요약·떡밥을 고쳐도 된다. 읽을 때 다시 린트하고 위반 값은 버린다.
 
 Variables: `FACE_STORY_ENABLED`(기본 false) · `FACE_STORY_LOOKBACK`(3, 1~5) · `FACE_THREAD_MAX_EPISODES`(5, 2~10) / Secrets: `FACE_NOTION_DB_ID` · `NOTION_TOKEN`(기존)
+
+### v1.8.5 대본 문체 경고
+- 미리보기에 "⚠ 문체 검토 필요"가 보이면 1인칭·전언형 표현이 남은 대본이다. 영상을 보고 괜찮으면 승인하고, 아니면 Reject 한다(해당 편만 게시되지 않는다).
+- 재시도 비용은 build 로그의 `대본 호출 사용량 … output_tokens=` 와 `대본 생성 완료 … 시도=N 문체경고=M` 으로 확인한다.

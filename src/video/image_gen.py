@@ -16,7 +16,7 @@ from pathlib import Path
 from .. import config
 from . import assets
 
-VERSION = "1.1.0"   # v1.8.3: 장면별 구도·자세 지시, 참조 이미지는 외형만
+VERSION = "1.2.0"   # v1.8.4: 구도 7종 · v1.8.3: 장면별 구도·자세 지시, 참조는 외형만
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +47,8 @@ SHOT_DIRECTIVES: tuple[str, ...] = (
     "dynamic mid-action pose flying or leaping diagonally across the frame, motion blur, wind",
     "view from behind over the shoulder, looking out over the scene, cape and hair blowing",
     "dramatic low-angle shot from below, three-quarter view, strong rim light",
+    "side profile medium shot, walking or gliding forward with determination, background in soft focus",
+    "top-down bird's-eye view from high above, the character seen from overhead against the landscape",
 )
 MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 

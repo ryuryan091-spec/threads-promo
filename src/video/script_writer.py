@@ -18,14 +18,16 @@ import requests
 from .. import ai_writer, config, content, face_story, mood_source
 from . import hooks
 
-VERSION = "1.2.0"   # v1.8.3: 결과 단정 금지·요일 맥락·주말 표현 검사·장면 다양화 · v1.8.2: max_tokens · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
+VERSION = "1.4.0"   # v1.8.5: 1인칭·전언형 오탐 축소·마지막 시도 문체 경고 통과·호출 사용량 로그 · v1.8.4: 이미지 7장·교차 배치·3인칭·전언형 금지 · v1.8.3: 결과 단정 금지·요일 맥락·주말 표현 검사·장면 다양화 · v1.8.2: max_tokens · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
 
 log = logging.getLogger(__name__)
 
 BEAT_COUNT = 9                      # 0=훅, 1~7=본문, 8=정리
 BODY_BEATS = 7
-# 비트 → 이미지 슬롯(0~4). 같은 이미지는 Ken Burns 줌 방향을 바꿔 재사용한다.
-BEAT_IMAGE_SLOT: tuple[int, ...] = (0, 1, 1, 2, 2, 3, 3, 4, 4)
+# 비트 → 이미지 슬롯. v1.8.4(Q2-a·b): 이미지 7장, 비트마다 그림이 바뀌게 교차 배치한다.
+#   이전 (0,1,1,2,2,3,3,4,4) 은 같은 그림이 연속 두 비트(약 12~14초) 이어졌다(운영 베타 2026-10-04).
+#   다시 쓰는 그림(2·4)은 서로 떨어진 비트에만 나온다.
+BEAT_IMAGE_SLOT: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 2, 4)
 BODY_MIN_CHARS, BODY_MAX_CHARS = 25, 48
 CLOSING_MIN_CHARS, CLOSING_MAX_CHARS = 15, 35
 TOTAL_MIN_CHARS, TOTAL_MAX_CHARS = 300, 400   # 낭독 초당 6~7자 추정 기준 약 50~60초
@@ -97,17 +99,21 @@ def system_prompt(character: str = config.CHARACTER_EDT) -> str:
   (금지 예: '고용 지표가 안정적으로 나왔다', '오늘 시장은 잔잔했다', '금리가 올랐다').
   상황은 {character} 의 시선·태도·질문으로만 그립니다.
 - 훅은 오늘 분위기와 어긋나지 않게 씁니다(차분한 날에 경고·긴급처럼 쓰지 않습니다).
+- '~라는 이야기가 들린다', '~라는 말이 들려온다', '~라고 한다'처럼 전해 들은 말로 시장 반응·결과를
+  암시하지 않습니다(단정 금지를 돌려 말하는 것도 금지).
+- 내레이션은 3인칭 관찰자 시점으로 통일합니다('나는·나의·내가·저는·제가' 금지).
+  {character} 의 말이 꼭 필요하면 큰따옴표 대사 한 문장만 씁니다.
 
 # 출력
 JSON 하나만 출력합니다. 다른 텍스트 금지.
 {{"hook": "...", "body": ["...", ... 7개], "closing": "...",
-  "image_prompts": ["영문 장면 묘사", ... 5개], "post_caption": "..."}}
+  "image_prompts": ["영문 장면 묘사", ... {config.SHORTS_IMAGE_COUNT}개], "post_caption": "..."}}
 - hook: {hooks.HOOK_MIN_CHARS}~{hooks.HOOK_MAX_CHARS}자 한 문장. 짧고 빠르게 — 첫 1~2초 안에 끝나는 말
 - body: 정확히 {BODY_BEATS}개, 각 {BODY_MIN_CHARS}~{BODY_MAX_CHARS}자, 말로 읽기 좋은 한 문장
 - closing: {CLOSING_MIN_CHARS}~{CLOSING_MAX_CHARS}자
 - 내레이션 전체(hook+body+closing) {TOTAL_MIN_CHARS}~{TOTAL_MAX_CHARS}자
-- image_prompts: 정확히 5개, 영어, 장면 묘사만(글자·숫자·로고 요구 금지).
-  5장은 구도·자세·배경이 확연히 달라야 한다(예: 얼굴 클로즈업 / 아주 먼 원경 / 날아오르는 동작 /
+- image_prompts: 정확히 {config.SHORTS_IMAGE_COUNT}개, 영어, 장면 묘사만(글자·숫자·로고 요구 금지).
+  {config.SHORTS_IMAGE_COUNT}장은 구도·자세·배경이 확연히 달라야 한다(예: 얼굴 클로즈업 / 아주 먼 원경 / 날아오르는 동작 /
   뒷모습 / 낮은 각도 전신). 서 있는 정면 전신을 반복하지 않는다{"" if profile["uses_villain"] else ", 등장인물은 GOC 한 명뿐"}
 - post_caption: 게시글 설명 {CAPTION_MIN_CHARS}~{CAPTION_BODY_MAX}자, 담담한 말투, 질문으로 끝내지 않아도 됨
 """
@@ -140,6 +146,7 @@ class Script:
     themes: tuple[str, ...] = field(default_factory=tuple)
     character: str = config.CHARACTER_EDT
     continuity: dict | None = None     # v1.8.0 연속성 계약을 건 편만(검증 통과한 원문)
+    warnings: tuple[str, ...] = ()     # v1.8.5 마지막 시도에서 소프트 규칙만 남아 통과한 경우의 위반 내용
 
     def to_dict(self) -> dict:
         out = {
@@ -155,6 +162,8 @@ class Script:
         }
         if self.continuity is not None:
             out["continuity"] = dict(self.continuity)
+        if self.warnings:
+            out["warnings"] = list(self.warnings)
         return out
 
 
@@ -174,6 +183,33 @@ def select_villain(mood: mood_source.Mood) -> str:
 
 
 WEEKDAY_KR = ("월", "화", "수", "목", "금", "토", "일")
+# v1.8.4 Q4: 전해 들은 말로 시장 반응을 암시하는 표현(운영 베타: "…가볍게 느껴졌다는 이야기가 들린다").
+#   v1.8.5 사전 점검: '~다고 한다'는 인물 의지("지키겠다고 한다")까지 걸려 뺐다.
+#   '소식'은 '들린다/들려온다'와 붙을 때만 잡는다("소식이 나온다 해도"는 정상 문장).
+HEARSAY_PATTERN = re.compile(
+    r"(?:이야기|얘기|말|소문)(?:이|가|도)?\s*(?:들린다|들려온다|들려|돈다|나온다)"
+    r"|소식(?:이|도)?\s*(?:들린다|들려온다)"
+    r"|다는\s*후문"
+)
+# v1.8.4 Q3: 1인칭(따옴표 밖). '빛나는'·'내일'처럼 낱말 안에 든 경우는 잡지 않는다(앞이 공백·문장 시작).
+#   v1.8.5 사전 점검: 동사 '나다'("빛이 나는", "땀이 나도")는 앞에 주격 조사 '이·가'와 공백이 오므로 '나는/나도'에서 제외한다.
+#   '도·만'은 제외하지 않는다 — "다음 한 주에도 나는"(실제 운영 대본의 1인칭)을 놓친다(리뷰 v1.8.5 재검증).
+#   그래서 "냄새도 나는"·"빛 나는"은 여전히 걸린다 — 소프트 규칙이라 재시도/경고로 끝나고 편은 빠지지 않는다.
+FIRST_PERSON_PATTERN = re.compile(
+    r"(?:^|[\s,.!?…])(?:(?<![이가]\s)(?<![이가]\s\s)(?:나는|나도)|나의|내가|나를|나에게|저는|제가|저의)"
+    r"(?=$|[\s,.!?…])"
+)
+# v1.8.5: 문체 규칙(1인칭·전언형)은 '소프트' — 시도를 다 써도 통과 못 하면, 이것만 위반한 첫 시도를 경고와 함께 쓴다.
+#   숫자·실존명·다른 캐릭터·주말 표현·길이 등 나머지는 '하드' — 끝까지 막는다.
+SOFT_ISSUE_MARKERS = ("1인칭 서술", "전언형 암시")
+
+
+def split_issues(issues: list[str]) -> tuple[list[str], list[str]]:
+    """검증 위반을 (하드, 소프트)로 나눈다."""
+    soft = [i for i in issues if any(m in i for m in SOFT_ISSUE_MARKERS)]
+    hard = [i for i in issues if i not in soft]
+    return hard, soft
+_QUOTED = re.compile(r"[\"“][^\"”]*[\"”]")
 # v1.8.3 운영 베타 C2: 일요일(휴장)에 "오늘 시장 … 잔잔했다"를 사실처럼 말했다. 주말에는 아래 표현을 기계적으로 막는다.
 #   한국·미국 공휴일 달력은 코드에 없다(추측해 넣지 않는다) — 주말(토·일)만 판정한다.
 #   단순 부분 문자열이면 '오늘 장면·오늘 장마'까지 걸려(리뷰 v1.8.3) 정규식으로 범위를 좁힌다.
@@ -194,7 +230,7 @@ def day_context(day: dt.date | None) -> str:
     label = f"{WEEKDAY_KR[day.weekday()]}요일"   # 숫자 금지 규칙이 있어 날짜 숫자는 넣지 않는다
     if is_weekend(day):
         return (f"# 오늘: {label} — 주말, 시장이 열리지 않는 날. '오늘 시장/오늘 증시/오늘 장' 표현 금지. "
-                "지난 한 주를 돌아보거나 다음 주를 준비하는 시선으로 쓴다.")
+                "지난 한 주의 결과를 정리하지 말고, 화제였던 주제를 어떤 마음가짐으로 바라볼지만 쓴다.")
     return (f"# 오늘: {label} — 아침 발행이라 오늘 장의 결과는 아직 없다. "
             "결과를 말하지 말고 화제와 태도만 쓴다.")
 
@@ -242,11 +278,14 @@ def _call_claude(api_key: str, user_prompt: str, character: str = config.CHARACT
     if resp.status_code != 200:
         raise ScriptError(f"Claude API {resp.status_code}: {resp.text[:300]}")
     body = resp.json()
+    usage = body.get("usage") or {}
+    # v1.8.5: 성공 호출도 사용량을 남겨 재시도 비용을 운영 중에 확인한다.
+    log.info("대본 호출 사용량 input_tokens=%s output_tokens=%s stop_reason=%s",
+             usage.get("input_tokens"), usage.get("output_tokens"), body.get("stop_reason"))
     blocks = body.get("content", []) or []
     text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
     if not text.strip():
         # 운영 베타 2026-10-04: 원인 판별에 필요한 값(stop_reason·블록 종류·사용량)을 남긴다.
-        usage = body.get("usage") or {}
         raise ScriptError(
             f"text 블록 없음 — stop_reason={body.get('stop_reason')} "
             f"blocks={[b.get('type') for b in blocks]} output_tokens={usage.get('output_tokens')} "
@@ -308,6 +347,14 @@ def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
     for name in profile["forbidden_names"]:
         if any(name in t for t in texts):
             issues.append(f"{character} 영상에 다른 캐릭터 이름 '{name}' 포함")
+    narration = [hook, *body, closing]
+    for label, line in zip(["훅", *(f"본문{i}" for i in range(1, len(body) + 1)), "정리"], narration, strict=False):
+        if FIRST_PERSON_PATTERN.search(_QUOTED.sub("", line)):
+            issues.append(f"{label} 1인칭 서술 — 3인칭 관찰자로 쓴다(대사는 큰따옴표 한 문장만)")
+    for label, line in zip(["훅", *(f"본문{i}" for i in range(1, len(body) + 1)), "정리", "캡션"],
+                           [*narration, caption], strict=False):
+        if HEARSAY_PATTERN.search(line):
+            issues.append(f"{label} 전언형 암시('~라는 이야기가 들린다' 등) — 시장 반응을 돌려 말하지 않는다")
     if is_weekend(day):
         for label, pattern in WEEKEND_BANNED_PATTERNS:
             if any(pattern.search(t) for t in texts):
@@ -371,6 +418,31 @@ def write_script(
         base_prompt += f"\n\n# 추가 지시(앞 시도 실패)\n{extra_instruction}"
     prompt = base_prompt
     last: list[str] = []
+    fallback: tuple[dict, list[str], int] | None = None   # v1.8.5: 하드 위반 없이 문체 위반만 있던 첫 시도
+
+    def _accept(raw: dict, attempt: int, warnings: tuple[str, ...] = ()) -> Script:
+        spec = hooks.HOOK_SPECS[hook_type]
+        beats = [Beat(str(raw["hook"]).strip(), spec["tts_tone"], True, spec["sfx"])]
+        beats += [Beat(str(x).strip()) for x in raw["body"]]
+        beats.append(Beat(str(raw["closing"]).strip()))
+        if used_captions is not None:
+            used_captions.add(str(raw["post_caption"]).strip())
+        log.info("대본 생성 완료 id=%s 캐릭터=%s fmt=%s 빌런=%s 훅=%s 시도=%d 문체경고=%d",
+                 content_id, character, fmt, villain or "-", hook_type, attempt, len(warnings))
+        return Script(
+            content_id=content_id,
+            fmt=fmt,
+            villain=villain,
+            hook_type=hook_type,
+            beats=tuple(beats),
+            image_prompts=tuple(str(p).strip() for p in raw["image_prompts"]),
+            caption=build_caption(str(raw["post_caption"])),
+            themes=mood.themes,
+            character=character,
+            continuity=dict(raw["continuity"]) if continuity is not None else None,
+            warnings=warnings,
+        )
+
     for attempt in range(1, config.SHORTS_SCRIPT_ATTEMPTS + 1):
         try:
             raw = _call_claude(api_key, prompt, character)
@@ -380,27 +452,17 @@ def write_script(
             continue
         last = validate(raw, hook_type, used_captions, character, continuity, day)
         if not last:
-            spec = hooks.HOOK_SPECS[hook_type]
-            beats = [Beat(str(raw["hook"]).strip(), spec["tts_tone"], True, spec["sfx"])]
-            beats += [Beat(str(x).strip()) for x in raw["body"]]
-            beats.append(Beat(str(raw["closing"]).strip()))
-            if used_captions is not None:
-                used_captions.add(str(raw["post_caption"]).strip())
-            log.info("대본 생성 완료 id=%s 캐릭터=%s fmt=%s 빌런=%s 훅=%s 시도=%d",
-                     content_id, character, fmt, villain or "-", hook_type, attempt)
-            return Script(
-                content_id=content_id,
-                fmt=fmt,
-                villain=villain,
-                hook_type=hook_type,
-                beats=tuple(beats),
-                image_prompts=tuple(str(p).strip() for p in raw["image_prompts"]),
-                caption=build_caption(str(raw["post_caption"])),
-                themes=mood.themes,
-                character=character,
-                continuity=dict(raw["continuity"]) if continuity is not None else None,
-            )
+            return _accept(raw, attempt)
+        hard, soft = split_issues(last)
+        if not hard and fallback is None:
+            fallback = (raw, soft, attempt)
         log.warning("대본 검증 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS,
                     json.dumps(last, ensure_ascii=False))
         prompt = base_prompt + "\n\n# 직전 출력의 위반 사항(모두 고칠 것)\n- " + "\n- ".join(last)
+    if fallback is not None:
+        # v1.8.5: 문체(1인칭·전언형) 위반만 있던 시도가 있으면 편을 버리지 않고 경고와 함께 넘긴다(미리보기에서 사람이 확인).
+        raw, soft, attempt = fallback
+        log.warning("대본 문체 경고와 함께 통과 (시도 %d/%d 결과 사용): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS,
+                    json.dumps(soft, ensure_ascii=False))
+        return _accept(raw, attempt, tuple(soft))
     raise ScriptError(f"대본 재시도 소진: {last}")

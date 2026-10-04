@@ -21,7 +21,7 @@ from pathlib import Path
 from .. import config
 from . import assets
 
-VERSION = "1.1.0"   # v1.8.3: 빠른 훅(최소 2초)·비트별 카메라 움직임 다양화 · v1.8.0 베타 수정
+VERSION = "1.2.0"   # v1.8.4: 훅 낭독 가속 · v1.8.3: 빠른 훅·움직임 다양화 · v1.8.0 베타 수정
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,9 @@ LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
 SEG_PAD_SEC = 0.3              # 비트 내레이션 뒤 여백
 SEG_MAX_SEC = 9.0              # 길이 맞춤으로 늘릴 때 비트 상한
 TEMPO_MAX = 1.25               # 전체 낭독 속도 상한(넘으면 대본이 너무 길다)
+# v1.8.4 Q1: 훅 낭독이 길면(운영 베타 3.7초) 훅 구간만 더 빠르게 재생한다. 공통 속도에 곱하며 상한을 둔다.
+HOOK_FAST_SEC = 2.5            # 훅 낭독 목표 길이
+HOOK_TEMPO_MAX = 1.25          # 훅 추가 가속 상한(공통 속도와 곱한 최댓값 1.25×1.25 ≈ 1.56)
 TARGET_MIN_SEC = config.VIDEO_MIN_SEC + 0.5
 TARGET_MAX_SEC = config.VIDEO_MAX_SEC - 0.5
 SUB_FONT_SIZE = 56
@@ -94,6 +97,10 @@ class Timing:
     durations: tuple[float, ...]     # 비트별 장면 길이(초)
     tempo: float                     # 공통 낭독 속도 배율(1.0 = 원속)
     total: float                     # 아웃트로 포함 총 길이
+    hook_tempo: float = 1.0          # v1.8.4: 훅 구간 추가 가속(공통 속도에 곱함)
+
+    def scene_tempo(self, is_hook: bool) -> float:
+        return round(self.tempo * (self.hook_tempo if is_hook else 1.0), 4)
 
 
 def find_kr_font() -> str | None:
@@ -160,7 +167,10 @@ def plan_timing(narration_sec: list[float], hook_index: int = 0) -> Timing:
                 f"내레이션 {natural:.1f}초 — {TARGET_MAX_SEC}초 안에 넣으려면 {tempo:.2f}배속 필요"
                 f"(상한 {TEMPO_MAX})"
             )
+    hook_spoken = narration_sec[hook_index] / tempo
+    hook_tempo = min(HOOK_TEMPO_MAX, hook_spoken / HOOK_FAST_SEC) if hook_spoken > HOOK_FAST_SEC else 1.0
     durations = [d / tempo + SEG_PAD_SEC for d in narration_sec]
+    durations[hook_index] = hook_spoken / hook_tempo + SEG_PAD_SEC
     durations[hook_index] = max(HOOK_MIN_SEC, durations[hook_index])
     if durations[hook_index] > HOOK_MAX_SEC:
         raise RenderLengthError(f"훅 {durations[hook_index]:.1f}초 — 상한 {HOOK_MAX_SEC}초")
@@ -178,7 +188,8 @@ def plan_timing(narration_sec: list[float], hook_index: int = 0) -> Timing:
         total = sum(durations) + OUTRO_DURATION_SEC
     if total > config.VIDEO_MAX_SEC:
         raise RenderLengthError(f"총 길이 {total:.1f}초 > {config.VIDEO_MAX_SEC}초")
-    return Timing(tuple(round(d, 3) for d in durations), round(tempo, 4), round(total, 3))
+    return Timing(tuple(round(d, 3) for d in durations), round(tempo, 4), round(total, 3),
+                  round(hook_tempo, 4))
 
 
 def _run(cmd: list[str], log_path: Path) -> None:
@@ -337,7 +348,8 @@ def render(scenes: list[SceneInput], villain: str, out_path: Path, *,
 
     hook_index = next((i for i, s in enumerate(scenes) if s.is_hook), 0)
     timing = plan_timing([probe_duration(s.audio) for s in scenes], hook_index)
-    log.info("타이밍 총 %.2f초 · 낭독 %.3f배 · 비트 %s", timing.total, timing.tempo, list(timing.durations))
+    log.info("타이밍 총 %.2f초 · 낭독 %.3f배 · 훅 추가 %.3f배 · 비트 %s", timing.total, timing.tempo,
+             timing.hook_tempo, list(timing.durations))
 
     segments: list[Path] = []
     body_no = 0
@@ -346,7 +358,7 @@ def render(scenes: list[SceneInput], villain: str, out_path: Path, *,
         motion = BODY_MOTIONS[body_no % len(BODY_MOTIONS)]   # 비트별 카메라 움직임
         if not scene.is_hook:
             body_no += 1
-        _render_scene(scene, duration, timing.tempo, motion, seg, tmp, font, log_path)
+        _render_scene(scene, duration, timing.scene_tempo(scene.is_hook), motion, seg, tmp, font, log_path)
         segments.append(seg)
 
     outro = tmp / "seg_outro.mp4"

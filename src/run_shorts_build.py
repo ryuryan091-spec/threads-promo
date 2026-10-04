@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 from . import chat_plan, config, face_story, mood_source, notifier, shorts_plan
 from .video import image_gen, renderer, script_writer, tts, validator
 
-VERSION = "1.1.0"   # v1.8.0: Facebook 회차 원장 읽기 · 연속성 계약
+VERSION = "1.2.0"   # v1.8.5: 미리보기에 대본 문체 경고 표시 · v1.8.0: Facebook 회차 원장 읽기 · 연속성 계약
 
 KST = ZoneInfo("Asia/Seoul")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -99,11 +99,30 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
         "duration": timing.total,
         "images_ok": len(usable),
     }
+    if script.warnings:
+        entry["script_warnings"] = list(script.warnings)
     if req is not None and story is not None and script.continuity is not None:
         entry["themes"] = list(script.themes)
         entry["continuity"] = face_story.build_continuity(script.continuity, req, story, item.content_id)
     return entry
 
+
+PREVIEW_WARN_MAX = 3      # 텔레그램 1000자 안에 캡션·승인 안내가 남도록 경고 줄 수를 제한한다
+PREVIEW_WARN_CHARS = 120
+
+
+def preview_caption(entry: dict) -> str:
+    """텔레그램 미리보기 캡션. 문체 경고는 캡션 앞에 둔다 — 텔레그램 캡션은 1000자에서 잘린다(notifier.send_video)."""
+    head = (f"[Shorts 미리보기] {entry['content_id']} {entry.get('character', '')} {entry['fmt']} → "
+            f"{'/'.join(entry['channels'])}\n")
+    warns = entry.get("script_warnings") or []
+    warn = ""
+    if warns:
+        shown = [w[:PREVIEW_WARN_CHARS] for w in warns[:PREVIEW_WARN_MAX]]
+        more = f"\n- 외 {len(warns) - PREVIEW_WARN_MAX}건" if len(warns) > PREVIEW_WARN_MAX else ""
+        warn = ("⚠ 문체 검토 필요(1인칭·전언형 자동 검사 미통과 — 승인 전 확인):\n- "
+                + "\n- ".join(shown) + more + "\n\n")
+    return f"{head}{warn}{entry['caption']}\n\n승인: Actions › 📘🧵 Meta Shorts › Review deployments"
 
 def _voice_and_render(script, images, usable, gemini_key: str, work: Path, video: Path):
     """TTS → 장면 조립 → 렌더. 길이 초과면 RenderLengthError 를 그대로 올린다."""
@@ -188,12 +207,7 @@ def run() -> int:
 
     bot, chat = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_ALERT_CHAT_ID", "")
     for entry in manifest["items"]:
-        notifier.send_video(
-            bot, chat, base / entry["video"],
-            f"[Shorts 미리보기] {entry['content_id']} {entry.get('character', '')} {entry['fmt']} → "
-            f"{'/'.join(entry['channels'])}\n"
-            f"{entry['caption']}\n\n승인: Actions › 📘🧵 Meta Shorts › Review deployments",
-        )
+        notifier.send_video(bot, chat, base / entry["video"], preview_caption(entry))
     if manifest["failed"]:
         _notify("[Shorts] 일부 영상 생성 실패\n" + "\n".join(
             f"- {f['content_id']}: {f['reason'][:150]}" for f in manifest["failed"]))
