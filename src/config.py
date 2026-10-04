@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.8.5"   # v1.8.5: 대본 문체 검사 오탐 축소·마지막 시도 경고 통과·대본 호출 사용량 로그 · v1.8.4: 빠른 훅 낭독·이미지 7장 교차 배치·3인칭 통일·전언형 암시 금지 · v1.8.3: 빠른 훅·분위기 훅·휴장일 표현·장면/움직임 다양화 · v1.8.2: 대본 max_tokens(사고 토큰 여유)·응답 진단 · v1.8.1: 운영 베타 수정(렌더 concat 절대경로·GOC 아웃트로 표지·로고 키잉) · v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
+VERSION = "1.8.6"   # v1.8.6: Facebook 중복 게시 방지 복구(목록 fields·원장 재게시 방지)·세션 전 치명 오류 원장 실패·Facebook 사전 점검 · v1.8.5: 대본 문체 검사 오탐 축소·마지막 시도 경고 통과·대본 호출 사용량 로그 · v1.8.4: 빠른 훅 낭독·이미지 7장 교차 배치·3인칭 통일·전언형 암시 금지 · v1.8.3: 빠른 훅·분위기 훅·휴장일 표현·장면/움직임 다양화 · v1.8.2: 대본 max_tokens(사고 토큰 여유)·응답 진단 · v1.8.1: 운영 베타 수정(렌더 concat 절대경로·GOC 아웃트로 표지·로고 키잉) · v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
 # v1.6.0: 계정 보호(안전) 모드 — 킬 스위치·일일 예산·링크 리플 비율·워밍업·답글 축소
 # v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
 # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
@@ -671,6 +671,8 @@ FACE_RAMP_STEPS: tuple[tuple[int, int], ...] = ((2, 1), (6, 2), (10_000, 3))
 FACE_GRAPH_BASE = "https://graph.facebook.com/v25.0"          # Reels API 공식 예시 버전
 FACE_RUPLOAD_BASE = "https://rupload.facebook.com/video-upload/v25.0"
 FACE_REELS_LIST_LIMIT = 25
+# v1.8.6: 목록 응답 필드 명시(문서 예시 기본 필드는 id·updated_time — description 이 없으면 중복 확인이 무력화된다)
+FACE_REELS_LIST_FIELDS = "id,description,updated_time"
 FACE_STATUS_POLL_SEC = 20
 FACE_STATUS_MAX_SEC = 600
 

@@ -127,3 +127,69 @@
 | P3 | 소프트/하드 분리: 시도를 다 써도 통과 못 했을 때, 문체 위반만 있던 첫 시도가 있으면 편을 버리지 않고 경고와 함께 사용(`Script.warnings`, manifest `script_warnings`, script.json `warnings`). 길이·숫자·실존명·캐릭터명·주말 표현·연속성은 끝까지 막음 |
 | P4 | 텔레그램 미리보기: 경고를 캡션 **앞**에 최대 3줄 + "외 N건" 표시(1000자 절단 대비, 최악 504자 확인) |
 | P5 | 대본 호출마다 input/output 토큰·stop_reason 로그, 완료 로그에 시도 횟수·문체경고 건수 |
+
+## 10. v1.8.6 Facebook 게시 경로 보강 — 상세설계 (마스터 지시 "모두 상세설계 후 개발")
+배경: 오프라인 통합 테스트(실제 publish 코드 + 실제 HTTP 송신 + 문서대로 응답하는 로컬 가짜 Graph·rupload·Notion)에서
+같은 manifest 로 publish 를 다시 돌리면 **같은 릴스가 두 번 게시**됨을 재현(S2).
+
+### 10.1 근거(공식 문서)
+- Reels Publishing 가이드: `GET /{page-id}/video_reels` 응답 예시 필드는 `updated_time`, `id` 뿐.
+- Graph API 개요: 노드·엣지는 기본 필드 세트를 돌려주며 `fields` 를 주면 지정 필드(+id)만 돌려준다.
+- Video 노드 레퍼런스: `description`(String) 필드 존재.
+→ 현재 코드는 `fields` 없이 목록을 받아 `description` 으로 중복을 판정 — 판정이 항상 불일치(빈 문자열)일 수 있다.
+
+### 10.2 F1 목록 조회 필드 지정
+| 항목 | 내용 |
+|---|---|
+| 변경 | `FaceClient.recent_descriptions` · `recent_reels` 요청에 `fields=config.FACE_REELS_LIST_FIELDS`("id,description,updated_time") |
+| 영향 | 게시 전 중복 확인(face_outcome) · 재조정 캡션해시 매칭(LedgerRun.reconcile) 이 실제로 동작 |
+| 위험 | 필드 이름 오류 시 Graph 400 → 기존과 같이 FaceApiError(세션 전 → 실패). 공식 필드라 해당 없음 |
+
+### 10.3 F2 원장 기반 재게시 방지(2차 방어)
+게시 직전(선기록 전)에 원장에서 같은 회차ID 행을 조회한다(`Ledger.find_entry` → page_id·상태·FB영상ID).
+
+| 원장 상태 | 동작 | Facebook 쓰기 |
+|---|---|---|
+| 행 없음 · 실패 · 확인필요(영상ID 없음) | 기존 흐름(선기록 → 게시) | 있음 |
+| 게시완료 | 건너뜀 "원장에 게시완료 — 재게시하지 않음(video_id=…)" | 없음 |
+| 확인필요 + 영상ID | 업로드하지 않고 그 영상 상태 확인 → 게시완료/실패 기록. 처리 중이면 확인필요 유지(루프 끝 재확인 대상) | 없음 |
+| 확인필요 + 영상ID, 상태 확인 결과 실패 확정 | 원장 실패 기록 후 기존 흐름으로 게시(실패 영상은 공개되지 않았음) | 있음 |
+| 상태 확인 오류(비치명) | 확인필요 유지, 게시하지 않음(보수적) | 없음 |
+| 원장 조회 오류 | 기존 흐름(원장 장애가 게시를 막지 않는다 — v1.8.0 원칙). F1 중복 확인은 그대로 동작 | 있음 |
+
+- 조회 결과(page_id·상태)는 LedgerRun 캐시에 넣어 이후 기록에서 재조회하지 않는다.
+- 계정 치명 오류(190·401·200)는 기존대로 즉시 올린다.
+
+### 10.4 F3 세션 전 계정 치명 오류의 원장 상태
+- 현재: 치명 오류를 바로 올려 선기록 '확인필요'가 남는다(2일 뒤 재조정에서야 실패).
+- 변경(리뷰 D1 반영): `FaceApiError.before_session`(start 요청 실패 시 True)이면 '실패', 영상ID 가 있으면 '확인필요'(영상ID 보존)로
+  기록한 뒤 올린다. 그 밖(중복 확인 조회·상태 조회 중 치명 오류 — 게시 여부 불명)은 선기록 '확인필요'를 그대로 둔다.
+
+### 10.4-1 중복 확인의 처리 실패 후보(리뷰 U1 반영)
+- 같은 설명의 릴스 후보를 모두 본다. Facebook 이 처리 실패를 확정한 후보는 공개되지 않았으므로 중복으로 보지 않는다.
+- 실패 확정이 아닌 첫 후보(처리 중·게시완료·비치명 조회 오류)에서 기존처럼 건너뛴다. 모두 실패면 새로 게시한다.
+- 처리 실패 영상이 목록에 나오는지는 문서로 확인되지 않음 — 나와도 나오지 않아도 같은 결과가 되게 했다.
+
+### 10.5 P1 Facebook 사전 점검(읽기 전용) — `scripts/face_preflight.py` · `.github/workflows/face_preflight.yml`
+수동 실행만(workflow_dispatch). Facebook·Notion 에 쓰지 않는다. 토큰 값은 출력하지 않는다(redact). FAIL 이 있으면 종료코드 1.
+
+| # | 항목 | 요청 | 판정 |
+|---|---|---|---|
+| P1 | Secret 존재 | FACE_PAGE_ID · FACE_PAGE_TOKEN · NOTION_TOKEN · FACE_NOTION_DB_ID | 없으면 FAIL |
+| P2 | 운영 Variables | DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED · SHORTS_BUILD_ENABLED · FACE_STORY_ENABLED · FACE_RAMP_START | 정기 실행이 게시까지 가지 않는 값이면 WARN(값과 사유 표시) |
+| P3 | 앞으로 7일 계획 | shorts_plan.is_rest_day · face_daily_target | 정보(OK) |
+| P4 | 페이지 접근 | `GET /{page_id}?fields=id,name` | 오류 FAIL, id 불일치 FAIL |
+| P5 | 릴스 목록 description | `GET /{page_id}/video_reels?fields=id,description,updated_time&limit=3` | 오류 FAIL · 0건 WARN(판정 불가) · description 키 없음 FAIL |
+| P6 | 원장 DB 스키마 | Notion `GET databases/{id}` 속성 이름·타입 ↔ face_story.SCHEMA | 누락·타입 불일치 FAIL |
+| P7 | 원장 DB 질의 | Notion `POST databases/{id}/query` page_size=1 | 오류 FAIL |
+| — | 게시 권한(pages_manage_posts) | 읽기 요청으로 확인하는 공식 방법을 찾지 못함 | 표시만(첫 실제 게시에서 확인) |
+
+### 10.6 테스트
+- 단위: F1 요청 파라미터 · F2 상태별 6경로 · F3 기록 상태 · P1 각 판정(가짜 응답).
+- 통합(오프라인): S1~S5 + S2 재실행에서 Facebook 쓰기 0건, 원장 FB영상ID 보존.
+
+### 10.7 결과
+- 단위·전수: pytest 1,449건 통과(신규 38) · ruff · verify_repo 이상 없음.
+- 오프라인 통합(S1~S6 + 사전 점검): S2 재실행 Facebook 쓰기 0건·원장 FB영상ID 보존, S5 원장 '실패', S6 재실행이 이전 영상 확인 후 게시완료, 사전 점검 쓰기 0건.
+- 리뷰(QC·코드리뷰·운영/외부 API): 1차 D1(Medium)·U1(미확인) → 반영 → 2차 결함 없음.
+- 미검증(실환경): 목록 description 실제 반환(사전 점검 P5) · 게시 권한(첫 실제 게시).

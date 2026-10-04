@@ -32,7 +32,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.8.0"   # v1.8.0: face_story · v1.7.0: 숏폼 파일·진입점 · 검사 12 폴더 중첩
+VERSION = "1.8.6"   # v1.8.6: Facebook 사전 점검 파일·안전 변수 · v1.8.0: face_story · v1.7.0: 숏폼 파일·진입점 · 검사 12 폴더 중첩
 # v1.6.0: 검사 11 — 안전 모드 변수 워크플로·config 기본값 일치
 # v1.5.0: 검사 10 — 예약 창 상호 겹침·CHAT 구역·트리거 위치
 # v1.4.0: style 모듈, 판정 창 겹침 검사(10)
@@ -67,6 +67,8 @@ REQUIRED_FILES = [
     ".github/workflows/reply_audit.yml",   # v1.4.0 답글 감사(읽기 전용)
     "scripts/reply_audit.py",
     ".github/workflows/shorts.yml",        # v1.7.0 숏폼
+    ".github/workflows/face_preflight.yml",  # v1.8.6 Facebook 사전 점검(읽기 전용)
+    "scripts/face_preflight.py",
 ]
 
 # 워크플로우가 실행하는 모듈
@@ -464,6 +466,9 @@ SAFETY_WORKFLOW_KEYS: dict[str, tuple[str, ...]] = {
     "shorts.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "WARMUP_UNTIL", "SHORTS_BUILD_ENABLED",
                    "SHORTS_THREADS_ENABLED", "FACE_ENABLED", "FACE_RAMP_START", "FACE_DAILY_MAX",
                    "FACE_STORY_ENABLED"),
+    # v1.8.6 Facebook 사전 점검: 정기 실행이 게시까지 가는지 판정하는 키를 같은 식으로 받는다.
+    "face_preflight.yml": ("AUTOMATION_ENABLED", "SHORTS_BUILD_ENABLED", "FACE_ENABLED", "FACE_RAMP_START",
+                           "FACE_DAILY_MAX", "FACE_STORY_ENABLED"),
 }
 
 

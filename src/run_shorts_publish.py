@@ -33,7 +33,7 @@ from . import config, face_story, media_host, notifier, safety, shorts_plan
 from .face_client import FaceApiError, FaceClient
 from .threads_client import ContainerNotReadyError, ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.1.0"   # v1.8.0: Facebook 회차 원장 기록 · 재조정
+VERSION = "1.2.0"   # v1.8.6: 원장 기반 재게시 방지·세션 전 치명 오류 실패 기록 · v1.8.0: Facebook 회차 원장 기록 · 재조정
 
 KST = ZoneInfo("Asia/Seoul")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -122,17 +122,21 @@ def face_outcome(client: FaceClient, item: dict, base: Path, *, with_ids: bool =
     cid = item["content_id"]
     if with_ids:
         same = [rid for rid, desc in client.recent_reels() if desc.strip() == caption.strip()]
-        if same:
+        for rid in same:
             note = ""
             try:
-                state = (_status_of(client, same[0]) if same[0] else None) or face_story.STATUS_PENDING
+                state = (_status_of(client, rid) if rid else None) or face_story.STATUS_PENDING
             except FaceApiError as exc:
                 # 리뷰 2차 QC-N1·CR-D: 건너뛴 편의 상태 확인 실패는 게시 실패가 아니다(v1.7.0 과 같이 '건너뜀').
                 if safety.is_account_fatal(exc):
                     raise
                 state, note = face_story.STATUS_PENDING, " · 상태 확인 실패"
-            return FaceOutcome(state, same[0],
-                               f"FB {cid}: 같은 설명의 릴스가 이미 있어 건너뜀 (video_id={same[0] or '-'} {state}{note})")
+            if state == face_story.STATUS_FAILED:
+                # 리뷰 v1.8.6 U1: Facebook 이 처리 실패를 확정한 영상은 공개되지 않았다 → 중복으로 보지 않는다.
+                log.info("같은 설명의 릴스 %s 는 처리 실패 확정 — 중복으로 보지 않음", rid)
+                continue
+            return FaceOutcome(state, rid,
+                               f"FB {cid}: 같은 설명의 릴스가 이미 있어 건너뜀 (video_id={rid or '-'} {state}{note})")
     elif caption.strip() in {d.strip() for d in client.recent_descriptions()}:
         return FaceOutcome(face_story.STATUS_PUBLISHED, "", f"FB {cid}: 같은 설명의 릴스가 이미 있어 건너뜀")
     if on_session is None:
@@ -229,6 +233,24 @@ class LedgerRun:
                 return
             self.notes.append(f"원장 기록 실패(수동 입력 필요) {_manual_values(item, status, video_id)} — {exc}")
 
+    def prior(self, item: dict) -> tuple[str, str] | None:
+        """v1.8.6 게시 직전 원장 조회 → (상태, FB영상ID). 행이 없거나 조회 실패면 None(원장 장애가 게시를 막지 않는다).
+
+        조회한 page_id·상태는 캐시해 이후 기록에서 다시 조회하지 않는다.
+        """
+        cid = str(item.get("content_id") or "")
+        try:
+            entry = self.ledger.find_entry(cid)
+            if entry is None:
+                return None
+            page_id, status, video_id = (str(x or "") for x in entry)
+        except Exception as exc:  # noqa: BLE001 — 원장 장애·응답 형식 오류 격리
+            log.warning("원장 사전 조회 실패 %s: %s", cid, exc)
+            self.notes.append(f"원장 사전 조회 실패 {cid} — 원장 재게시 방지 없이 진행(Facebook 중복 확인은 동작) — {exc}")
+            return None
+        self._pages[cid] = (page_id, status)
+        return status, video_id
+
     def reconcile(self, face: FaceClient, today: dt.date) -> None:
         """원장 '확인필요' 행을 Facebook 상태로 다시 확인한다. 계정 치명 오류만 그대로 올린다.
 
@@ -294,6 +316,39 @@ class LedgerRun:
             self.notes.append(f"원장 확인필요 {overflow}건 이상 남음(다음 실행에서 이어서 재조정)")
 
 
+def ledger_guard(face: FaceClient, ledger: LedgerRun, item: dict,
+                 pending: list[tuple[dict, str]]) -> str | None:
+    """v1.8.6 원장 기반 재게시 방지(DESIGN_V18 §10.3). 메시지를 돌려주면 이번 편은 Facebook 에 쓰지 않는다.
+
+    None 이면 기존 흐름으로 게시한다(행 없음·실패·영상ID 없는 확인필요·조회 실패·이전 영상 처리 실패 확정).
+    계정 치명 오류만 그대로 올린다.
+    """
+    prior = ledger.prior(item)
+    if prior is None:
+        return None
+    status, video_id = prior
+    cid = item["content_id"]
+    if status == face_story.STATUS_PUBLISHED:
+        return f"FB {cid}: 원장에 게시완료 — 재게시하지 않음 (video_id={video_id or '-'})"
+    if status != face_story.STATUS_PENDING or not video_id:
+        return None
+    try:
+        new = _status_of(face, video_id)
+    except FaceApiError as exc:
+        if safety.is_account_fatal(exc):
+            raise
+        return f"FB {cid}: 원장 확인필요(video_id={video_id}) 상태 확인 실패 — 재게시하지 않음 {exc}"
+    if new == face_story.STATUS_PUBLISHED:
+        ledger.record(item, new, video_id=video_id)
+        return f"FB {cid}: 이전 게시 확인(video_id={video_id} 게시완료) — 재게시하지 않음"
+    if new == face_story.STATUS_FAILED:
+        # 이전 영상은 Facebook 이 처리 실패를 확정 → 공개되지 않았다. 원장에 남기고 새로 게시한다.
+        ledger.record(item, new, video_id=video_id, error="이전 업로드 처리 실패 확정 — 다시 게시")
+        return None
+    pending.append((item, video_id))
+    return f"FB {cid}: 이전 업로드(video_id={video_id}) 아직 처리 중 — 재게시하지 않음(확인필요 유지)"
+
+
 def _open_ledger(notes: list[str]) -> LedgerRun | None:
     try:
         return LedgerRun(face_story.Ledger(_env("NOTION_TOKEN"), config.FACE_NOTION_DB_ID), notes)
@@ -346,15 +401,21 @@ def run() -> int:
     failed = False
     for item, at in zip(ordered, schedule, strict=False):
         _sleep_until(at)
+        on_session = None
+        skip: str | None = None
         if face and item in face_items:
-            on_session = None
-            if ledger is not None:
+            skip = ledger_guard(face, ledger, item, pending) if ledger is not None else None
+            if skip is not None:
+                results.append(skip)
+                log.info(skip)
+            elif ledger is not None:
                 # 게시 직전 선기록 + 세션 video_id 즉시 기록: 업로드 중 실행이 끊겨도 다음 실행이 재조정한다
                 #   (리뷰 #3-F3 · 2차 OPS-N1).
                 ledger.record(item, face_story.STATUS_PENDING, quiet=True)
 
                 def on_session(vid: str, _item: dict = item) -> None:
                     ledger.record(_item, face_story.STATUS_PENDING, video_id=vid, quiet=True)
+        if face and item in face_items and skip is None:
             try:
                 outcome = face_outcome(face, item, base, with_ids=ledger is not None, on_session=on_session)
                 results.append(outcome.message)
@@ -364,6 +425,12 @@ def run() -> int:
                         pending.append((item, outcome.video_id))
             except FaceApiError as exc:
                 if safety.is_account_fatal(exc):
+                    if ledger is not None and (exc.before_session or exc.video_id):
+                        # v1.8.6 F3: 업로드 세션 시작 요청에서 막혔으면 게시물이 생길 수 없다 → 실패.
+                        #   세션 뒤면 확인필요(영상ID 보존). 중복 확인 조회 중 오류처럼 게시 여부를 모르는 경우는
+                        #   선기록 '확인필요'를 그대로 둔다(재조정이 캡션해시로 확인 — 리뷰 v1.8.6 D1).
+                        state = face_story.STATUS_FAILED if exc.before_session else face_story.STATUS_PENDING
+                        ledger.record(item, state, video_id=exc.video_id, error=str(exc), quiet=True)
                     raise
                 failed = True
                 state = failure_status(exc) if ledger is not None else face_story.STATUS_FAILED

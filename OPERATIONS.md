@@ -599,3 +599,11 @@ Variables: `FACE_STORY_ENABLED`(기본 false) · `FACE_STORY_LOOKBACK`(3, 1~5) �
 ### v1.8.5 대본 문체 경고
 - 미리보기에 "⚠ 문체 검토 필요"가 보이면 1인칭·전언형 표현이 남은 대본이다. 영상을 보고 괜찮으면 승인하고, 아니면 Reject 한다(해당 편만 게시되지 않는다).
 - 재시도 비용은 build 로그의 `대본 호출 사용량 … output_tokens=` 와 `대본 생성 완료 … 시도=N 문체경고=M` 으로 확인한다.
+
+### v1.8.6 Facebook 사전 점검 · 재게시 방지
+- Actions › 📘 Facebook Preflight › Run workflow (읽기 전용 — Facebook·Notion 에 쓰지 않음, 비용 없음). 결과는 실행 요약(Summary) 표.
+  - P5 가 FAIL(목록에 description 없음)이면 게시 전 중복 확인이 동작하지 않는다 — 운영 중단(FACE_ENABLED=false) 후 보고.
+  - P5 WARN(릴스 0건)은 첫 게시 뒤 다시 실행해 OK 를 확인한다.
+- 같은 회차를 다시 publish 해도(재실행) 원장이 게시완료면 Facebook 에 올리지 않는다. 결과 알림: "원장에 게시완료 — 재게시하지 않음".
+- 원장이 확인필요(영상ID 있음)면 새로 올리지 않고 그 영상 상태를 확인한다. 처리 실패가 확정된 경우에만 새로 게시한다.
+

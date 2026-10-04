@@ -5,7 +5,9 @@
   2) POST {rupload}/{video_id}  Authorization: OAuth · offset · file_size · 바이너리
   3) POST {graph}/{page_id}/video_reels  upload_phase=finish · video_state=PUBLISHED · description
   상태 확인: GET {graph}/{video_id}?fields=status
-  목록: GET {graph}/{page_id}/video_reels (응답 예시 필드: id · description · updated_time)
+  목록: GET {graph}/{page_id}/video_reels?fields=id,description,updated_time
+        v1.8.6: 문서의 목록 응답 예시는 id · updated_time 뿐이고(Reels Publishing 가이드), Graph API 는 fields 를
+        주지 않으면 기본 필드만 돌려준다(Graph API 개요). description(Video 노드 공식 필드)을 명시해 요청한다.
 
 오류 분류는 threads_client 와 같다. code 190 / HTTP 401 = 토큰 무효, code 200 = 접근 차단
 → 재시도 없이 safety 회로 차단기를 연다.
@@ -25,7 +27,7 @@ import requests
 from . import config, safety
 from .redact import redact
 
-VERSION = "1.1.0"   # v1.8.0: recent_reels
+VERSION = "1.2.0"   # v1.8.6: 목록 fields 지정(중복 게시 방지 복구)·사전 점검용 조회 · v1.8.0: recent_reels
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class FaceApiError(RuntimeError):
         self.code = code
         self.video_id = ""          # v1.8.0: 업로드 세션을 연 뒤 실패하면 그 video_id(원장 확인필요 기록용)
         self.definitive = False     # v1.8.0: Facebook 이 처리 실패를 확정한 경우만 True
+        self.before_session = False  # v1.8.6: 업로드 세션 시작(start) 요청에서 실패 — 게시물이 생길 수 없음
         super().__init__(f"Facebook API {status} (code={code}): {self.payload[:300]}")
 
     @property
@@ -112,23 +115,30 @@ class FaceClient:
     # -- 조회 -------------------------------------------------------------
     def recent_descriptions(self) -> list[str]:
         """최근 릴스 설명 목록(중복 게시 확인용)."""
-        data = _send(
-            "GET", f"{config.FACE_GRAPH_BASE}/{self._page_id}/video_reels", retry=True,
-            params={"access_token": self._token, "limit": config.FACE_REELS_LIST_LIMIT},
-        )
-        return [str(item.get("description") or "") for item in data.get("data") or []]
+        return [str(item.get("description") or "") for item in self.list_reels()]
 
     def recent_reels(self) -> list[tuple[str, str]]:
         """v1.8.0 최근 릴스 (id, description). 같은 설명으로 이미 게시된 회차의 video_id 를 원장에 기록할 때 쓴다.
 
         recent_descriptions 와 같은 요청이다(응답 예시 필드 id · description — 모듈 docstring).
         """
+        return [(str(item.get("id") or ""), str(item.get("description") or ""))
+                for item in self.list_reels()]
+
+    def list_reels(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """최근 릴스 원본 항목(fields 지정). v1.8.6 — 중복 확인·재조정·사전 점검이 같은 요청을 쓴다."""
         data = _send(
             "GET", f"{config.FACE_GRAPH_BASE}/{self._page_id}/video_reels", retry=True,
-            params={"access_token": self._token, "limit": config.FACE_REELS_LIST_LIMIT},
+            params={"access_token": self._token, "fields": config.FACE_REELS_LIST_FIELDS,
+                    "limit": limit or config.FACE_REELS_LIST_LIMIT},
         )
-        return [(str(item.get("id") or ""), str(item.get("description") or ""))
-                for item in data.get("data") or []]
+        items = data.get("data") or []
+        return [i for i in items if isinstance(i, dict)]
+
+    def page_info(self) -> dict[str, Any]:
+        """v1.8.6 사전 점검: 페이지 id·이름(토큰으로 페이지에 접근되는지)."""
+        return _send("GET", f"{config.FACE_GRAPH_BASE}/{self._page_id}", retry=True,
+                     params={"fields": "id,name", "access_token": self._token})
 
     def status(self, video_id: str) -> ReelStatus:
         data = _send("GET", f"{config.FACE_GRAPH_BASE}/{video_id}", retry=True,
@@ -155,8 +165,12 @@ class FaceClient:
         on_session: v1.8.0 업로드 세션 video_id 를 받는 즉시 호출(원장 선기록). 콜백 오류는 게시를 막지 않는다.
         """
         safety.guard_write()
-        start = _send("POST", f"{config.FACE_GRAPH_BASE}/{self._page_id}/video_reels", retry=False,
-                      json={"upload_phase": "start", "access_token": self._token})
+        try:
+            start = _send("POST", f"{config.FACE_GRAPH_BASE}/{self._page_id}/video_reels", retry=False,
+                          json={"upload_phase": "start", "access_token": self._token})
+        except FaceApiError as exc:
+            exc.before_session = True
+            raise
         video_id = str(start.get("video_id") or "")
         if not video_id:
             raise FaceApiError(200, f"video_id 없음: {start}")

@@ -31,7 +31,7 @@ import requests
 from . import config, content, shorts_plan
 from .redact import redact
 
-VERSION = "1.2.0"   # v1.8.0 신규 · 1.1.0/1.2.0: 3인 QC/코드리뷰 1·2차 반영
+VERSION = "1.3.0"   # 1.3.0(v1.8.6): find_entry(재게시 방지)·schema_issues(사전 점검) · v1.8.0 신규 · 1.1.0/1.2.0: 3인 QC/코드리뷰 1·2차 반영
 
 log = logging.getLogger(__name__)
 
@@ -588,6 +588,11 @@ class Ledger:
 
     def find(self, content_id: str) -> tuple[str, str] | None:
         """회차ID 행 (page_id, 상태). 없으면 None."""
+        entry = self.find_entry(content_id)
+        return (entry[0], entry[1]) if entry else None
+
+    def find_entry(self, content_id: str) -> tuple[str, str, str] | None:
+        """회차ID 행 (page_id, 상태, FB영상ID). 없으면 None. v1.8.6 재게시 방지(게시 직전 조회)에 쓴다."""
         rows, _ = self._query({"page_size": 2, "filter": {"property": P_ID, "title": {"equals": content_id}}})
         if not rows:
             return None
@@ -596,7 +601,28 @@ class Ledger:
         page_id = str(rows[0].get("id") or "")
         if not page_id:
             raise LedgerError("Notion 질의 결과 행에 id 가 없음")
-        return page_id, _plain((rows[0].get("properties") or {}).get(P_STATUS))
+        props = rows[0].get("properties") or {}
+        return page_id, _plain(props.get(P_STATUS)), _plain(props.get(P_VIDEO_ID)).strip()
+
+    def schema_issues(self) -> list[str]:
+        """v1.8.6 사전 점검(읽기 전용): DB 속성 이름·타입이 SCHEMA 와 다른 항목. 빈 목록이면 일치."""
+        body = self._call("GET", f"databases/{self._db}")
+        props = body.get("properties")
+        if not isinstance(props, dict):
+            raise LedgerError("Notion DB 응답에 properties 가 없음")
+        issues = []
+        for name, ptype in SCHEMA.items():
+            got = (props.get(name) or {}).get("type") if isinstance(props.get(name), dict) else None
+            if got is None:
+                issues.append(f"속성 없음 '{name}'({ptype})")
+            elif got != ptype:
+                issues.append(f"타입 불일치 '{name}' {got} ≠ {ptype}")
+        return issues
+
+    def probe(self) -> int:
+        """v1.8.6 사전 점검(읽기 전용): 질의 1회. 돌려받은 행 수(0 또는 1)."""
+        rows, _ = self._query({"page_size": 1})
+        return len(rows)
 
     def upsert(self, rec: EpisodeRecord, *, page_id: str = "", current_status: str = "") -> tuple[str, str]:
         """회차ID 1행(멱등). page_id 를 주면 조회 없이 갱신한다. 반환은 (page_id, 기록 뒤 상태).

@@ -699,6 +699,7 @@ class TestPublishRunner:
         self.ledger = mock.Mock()
         self.ledger.pending.return_value = []
         self.ledger.pending_overflow = 0
+        self.ledger.find_entry.return_value = None      # v1.8.6 재게시 방지 조회: 기본은 행 없음
         self.ledger.upsert.side_effect = lambda rec, **kw: (f"pg-{rec.content_id}", rec.status)
         self.ledger_cls = mock.Mock(return_value=self.ledger)
         monkeypatch.setattr(rp.face_story, "Ledger", self.ledger_cls)
@@ -1026,7 +1027,7 @@ class TestPublishRunner:
 class TestConfigAndWorkflow:
     def test_defaults_off(self):
         assert config.SAFETY_VARIABLE_DEFAULTS["FACE_STORY_ENABLED"] == "false"
-        assert config.VERSION == "1.8.5"
+        assert config.VERSION == "1.8.6"
         assert config.FACE_STORY_SCAN_ROWS > 10 >= 2
 
     def test_clamps(self, monkeypatch):
@@ -1697,3 +1698,333 @@ class TestL_StyleRulePrecheck:
         plain = rb.preview_caption({k: v for k, v in entry.items() if k != "script_warnings"})
         assert "⚠" not in plain and plain.startswith("[Shorts 미리보기] sv-20261005-1 GOC F1 → face\n가")
         assert plain.endswith("승인: Actions › 📘🧵 Meta Shorts › Review deployments")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# M. v1.8.6 Facebook 게시 경로 보강 — F1 목록 fields · F2 원장 재게시 방지 · F3 치명 오류 기록 · P1 사전 점검
+# ─────────────────────────────────────────────────────────────────────────────
+class TestM_FaceListFields:
+    def _client(self, monkeypatch, payload):
+        calls = []
+
+        def fake(method, url, **kw):
+            calls.append((method, url, kw))
+            return _Resp(payload=payload)
+
+        monkeypatch.setattr(face_client.requests, "request", fake)
+        return face_client.FaceClient("123", "EAA" + "t" * 30), calls
+
+    def test_recent_reels_requests_description(self, monkeypatch):
+        c, calls = self._client(monkeypatch, {"data": [{"id": "v1", "description": "캡션"}]})
+        assert c.recent_reels() == [("v1", "캡션")]
+        method, url, kw = calls[0]
+        assert method == "GET" and url.endswith("/123/video_reels")
+        assert kw["params"]["fields"] == "id,description,updated_time"
+        assert kw["params"]["limit"] == config.FACE_REELS_LIST_LIMIT
+
+    def test_recent_descriptions_requests_description(self, monkeypatch):
+        c, calls = self._client(monkeypatch, {"data": [{"id": "v1", "description": "a"}, "bad"]})
+        assert c.recent_descriptions() == ["a"]
+        assert calls[0][2]["params"]["fields"] == config.FACE_REELS_LIST_FIELDS
+
+    def test_list_reels_limit_and_page_info(self, monkeypatch):
+        c, calls = self._client(monkeypatch, {"data": []})
+        assert c.list_reels(limit=3) == []
+        assert calls[0][2]["params"]["limit"] == 3
+        c.page_info()
+        assert calls[1][1].endswith("/123") and calls[1][2]["params"]["fields"] == "id,name"
+
+    def test_start_failure_marks_before_session(self, monkeypatch):
+        def fake(method, url, **kw):
+            return _Resp(400, payload={"error": {"code": 190, "message": "bad"}})
+
+        monkeypatch.setattr(face_client.requests, "request", fake)
+        with pytest.raises(face_client.FaceApiError) as ei:
+            face_client.FaceClient("123", "EAA" + "t" * 30).publish_reel(pathlib.Path("x.mp4"), "c")
+        assert ei.value.before_session is True and ei.value.video_id == ""
+
+    def test_doc_default_response_without_description(self, monkeypatch):
+        """문서 예시 기본 응답(id·updated_time)이 와도 예외 없이 빈 설명으로 처리한다."""
+        c, _ = self._client(monkeypatch, {"data": [{"id": "v1", "updated_time": "1"}]})
+        assert c.recent_reels() == [("v1", "")]
+
+
+class TestM_LedgerEntry:
+    def test_find_entry_returns_video_id(self):
+        row = {"id": "pg1", "properties": {
+            "상태": {"type": "select", "select": {"name": "확인필요"}},
+            "FB영상ID": {"type": "rich_text", "rich_text": [{"plain_text": " v9 "}]}}}
+        s = _Session(_Resp(payload={"results": [row]}), _Resp(payload={"results": [row]}))
+        led = face_story.Ledger("t", "d", session=s)
+        assert led.find_entry("sv-20261006-1") == ("pg1", "확인필요", "v9")
+        assert led.find("sv-20261006-1") == ("pg1", "확인필요")
+        assert s.calls[0][2]["json"]["filter"] == {"property": "회차ID", "title": {"equals": "sv-20261006-1"}}
+
+    def test_find_entry_none(self):
+        s = _Session(_Resp(payload={"results": []}))
+        assert face_story.Ledger("t", "d", session=s).find_entry("x") is None
+
+    def test_schema_issues(self):
+        props = {name: {"type": t} for name, t in face_story.SCHEMA.items()}
+        s = _Session(_Resp(payload={"properties": props}))
+        led = face_story.Ledger("t", "d", session=s)
+        assert led.schema_issues() == []
+        assert s.calls[0][0] == "GET" and s.calls[0][1].endswith("/databases/d")
+        bad = dict(props)
+        bad.pop("떡밥")
+        bad["시리즈회차"] = {"type": "rich_text"}
+        s2 = _Session(_Resp(payload={"properties": bad}))
+        issues = face_story.Ledger("t", "d", session=s2).schema_issues()
+        assert "속성 없음 '떡밥'(rich_text)" in issues and "타입 불일치 '시리즈회차' rich_text ≠ number" in issues
+
+    def test_schema_issues_bad_response(self):
+        s = _Session(_Resp(payload={"x": 1}))
+        with pytest.raises(face_story.LedgerError):
+            face_story.Ledger("t", "d", session=s).schema_issues()
+
+    def test_probe(self):
+        s = _Session(_Resp(payload={"results": [{"id": "1"}]}))
+        assert face_story.Ledger("t", "d", session=s).probe() == 1
+        assert s.calls[0][2]["json"] == {"page_size": 1}
+
+
+class TestM_PublishGuard:
+    env = TestPublishRunner.env
+    _recs = TestPublishRunner._recs
+    _statuses = TestPublishRunner._statuses
+
+    def _result(self):
+        return next(n for n in self.notes if n.startswith("[Shorts] 게시 결과"))
+
+    def test_published_row_skips_upload(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "게시완료", "v1")
+        assert rp.run() == 0
+        self.face.publish_reel.assert_not_called()
+        self.face.recent_reels.assert_not_called()
+        self.ledger.upsert.assert_not_called()                 # FB영상ID 덮어쓰기 없음(S2 재현 결함)
+        assert "원장에 게시완료 — 재게시하지 않음 (video_id=v1)" in self._result()
+
+    def test_pending_with_video_confirmed_published(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "확인필요", "v1")
+        self.face.status.return_value = DONE
+        assert rp.run() == 0
+        self.face.publish_reel.assert_not_called()
+        assert self._statuses() == [("게시완료", "v1")]
+        assert self.ledger.upsert.call_args.kwargs == {"page_id": "pg1", "current_status": "확인필요"}
+        assert "이전 게시 확인(video_id=v1 게시완료)" in self._result()
+
+    def test_pending_with_video_failed_then_reposts(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "확인필요", "v1")
+        self.face.status.return_value = ERR
+        self.face.publish_reel.return_value = ("v2", DONE)
+        assert rp.run() == 0
+        self.face.publish_reel.assert_called_once()
+        assert self._statuses() == [("실패", "v1"), ("확인필요", ""), ("게시완료", "v2")]
+        assert "이전 업로드 처리 실패 확정" in self._recs()[0].error
+
+    def test_pending_with_video_still_processing(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "확인필요", "v1")
+        self.face.status.side_effect = [BUSY, DONE]           # 가드 확인 → 루프 끝 재확인
+        assert rp.run() == 0
+        self.face.publish_reel.assert_not_called()
+        assert self._statuses() == [("게시완료", "v1")]
+        assert "아직 처리 중 — 재게시하지 않음" in self._result()
+
+    def test_pending_status_error_no_repost(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "확인필요", "v1")
+        self.face.status.side_effect = face_client.FaceApiError(500, "down")
+        assert rp.run() == 0
+        self.face.publish_reel.assert_not_called()
+        self.ledger.upsert.assert_not_called()
+        assert "상태 확인 실패 — 재게시하지 않음" in self._result()
+
+    def test_pending_status_fatal_raises(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "확인필요", "v1")
+        self.face.status.side_effect = face_client.FaceApiError(400, "x", code=190)
+        assert rp.main() == safety.FATAL_EXIT_CODE
+        self.face.publish_reel.assert_not_called()
+
+    @pytest.mark.parametrize("entry", [("pg1", "실패", "v1"), ("pg1", "확인필요", ""), None])
+    def test_other_rows_post_normally(self, env, entry):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = entry
+        self.face.publish_reel.return_value = ("v2", DONE)
+        assert rp.run() == 0
+        self.face.publish_reel.assert_called_once()
+        assert self._statuses()[-1] == ("게시완료", "v2")
+        if entry:                                              # 조회한 page_id 재사용(재조회 없음)
+            assert self.ledger.upsert.call_args_list[0].kwargs["page_id"] == "pg1"
+
+    def test_lookup_error_posts_and_notes(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.side_effect = face_story.LedgerError("Notion 502")
+        self.face.publish_reel.return_value = ("v2", DONE)
+        assert rp.run() == 0
+        self.face.publish_reel.assert_called_once()
+        assert "원장 사전 조회 실패" in self._result()
+
+    def test_malformed_entry_treated_as_lookup_error(self, env):
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("only-one",)
+        self.face.publish_reel.return_value = ("v2", DONE)
+        assert rp.run() == 0
+        self.face.publish_reel.assert_called_once()
+
+    @pytest.mark.parametrize("before,video_id,expected", [
+        (True, "", [("확인필요", ""), ("실패", "")]),              # start 에서 막힘 → 게시물 없음
+        (False, "v1", [("확인필요", ""), ("확인필요", "v1")]),     # 세션 뒤 → 영상ID 보존
+        (False, "", [("확인필요", "")]),                          # 위치 불명 → 선기록 유지(재조정에 맡김)
+    ])
+    def test_fatal_records_failure_status(self, env, before, video_id, expected):
+        """F3(리뷰 D1 반영): start 요청에서 막힌 경우만 '실패'로 기록한다."""
+        rp, tmp, today = env
+        _manifest(tmp, today)
+        exc = face_client.FaceApiError(400, "x", code=190)
+        exc.video_id, exc.before_session = video_id, before
+        self.face.publish_reel.side_effect = exc
+        assert rp.main() == safety.FATAL_EXIT_CODE
+        assert self._statuses() == expected
+
+    def test_fatal_during_dedupe_status_keeps_pending(self, env):
+        """리뷰 D1: 같은 설명의 릴스 상태 조회 중 치명 오류 — 게시됐을 수 있으므로 '실패'로 쓰지 않는다."""
+        rp, tmp, today = env
+        items = _manifest(tmp, today)
+        self.face.recent_reels.return_value = [("v1", items[0]["caption"])]
+        self.face.status.side_effect = face_client.FaceApiError(401, "x")
+        assert rp.main() == safety.FATAL_EXIT_CODE
+        assert self._statuses() == [("확인필요", "")]
+        self.face.publish_reel.assert_not_called()
+
+    def test_failed_duplicate_not_blocking(self, env):
+        """리뷰 U1: 같은 설명이지만 처리 실패 확정된 영상은 중복으로 보지 않고 새로 게시한다."""
+        rp, tmp, today = env
+        items = _manifest(tmp, today)
+        self.ledger.find_entry.return_value = ("pg1", "확인필요", "v1")
+        self.face.recent_reels.return_value = [("v1", items[0]["caption"])]
+        self.face.status.return_value = ERR
+        self.face.publish_reel.return_value = ("v2", DONE)
+        assert rp.run() == 0
+        self.face.publish_reel.assert_called_once()
+        assert self._statuses()[-1] == ("게시완료", "v2")
+
+    def test_live_duplicate_still_skips(self, env):
+        rp, tmp, today = env
+        items = _manifest(tmp, today)
+        self.face.recent_reels.return_value = [("v0", items[0]["caption"]), ("v1", items[0]["caption"])]
+        self.face.status.side_effect = [ERR, DONE]                # 첫 후보 실패 확정 → 다음 후보 게시완료
+        assert rp.run() == 0
+        self.face.publish_reel.assert_not_called()
+        assert self._statuses()[-1] == ("게시완료", "v1")
+
+    def test_guard_skipped_without_ledger(self, env, cfg):
+        rp, tmp, today = env
+        cfg(FACE_STORY_ENABLED=False)
+        _manifest(tmp, today)
+        self.face.recent_descriptions.return_value = []
+        self.face.publish_reel.return_value = ("v1", DONE)
+        assert rp.run() == 0
+        self.ledger.find_entry.assert_not_called()
+
+
+class TestM_Preflight:
+    @pytest.fixture
+    def pf(self, monkeypatch, cfg):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+        import face_preflight
+        importlib.reload(face_preflight)
+        for k, v in {"FACE_PAGE_ID": "123", "FACE_PAGE_TOKEN": "EAA" + "t" * 30, "NOTION_TOKEN": "secret_x",
+                     "FACE_NOTION_DB_ID": "db", "DRY_RUN": "false"}.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True, SHORTS_BUILD_ENABLED=True, FACE_STORY_ENABLED=True,
+            FACE_RAMP_START="2026-10-01", FACE_NOTION_DB_ID="db")
+        self.client = mock.Mock()
+        self.client.page_info.return_value = {"id": "123", "name": "GOC"}
+        self.client.list_reels.return_value = [{"id": "v1", "description": "캡션"}]
+        monkeypatch.setattr(face_preflight, "FaceClient", mock.Mock(return_value=self.client))
+        self.ledger = mock.Mock()
+        self.ledger.schema_issues.return_value = []
+        self.ledger.probe.return_value = 0
+        monkeypatch.setattr(face_preflight.face_story, "Ledger", mock.Mock(return_value=self.ledger))
+        return face_preflight
+
+    def test_all_ok(self, pf, capsys):
+        assert pf.main() == 0
+        out = capsys.readouterr().out
+        assert "FAIL 없음" in out and "[OK  ] P5" in out and "[OK  ] P2" in out
+        assert "EAA" + "t" * 30 not in out                     # 토큰 미출력
+        self.client.list_reels.assert_called_once_with(limit=3)
+
+    def test_missing_secret_fails_and_skips_api(self, pf, monkeypatch, capsys):
+        monkeypatch.delenv("FACE_PAGE_TOKEN")
+        assert pf.main() == 1
+        assert "FACE_PAGE_TOKEN" in capsys.readouterr().out
+        self.client.page_info.assert_not_called()
+
+    def test_no_description_fails(self, pf, capsys):
+        self.client.list_reels.return_value = [{"id": "v1", "updated_time": "1"}]
+        assert pf.main() == 1
+        assert "중복 게시 방지" in capsys.readouterr().out
+
+    def test_zero_reels_warns(self, pf, capsys):
+        self.client.list_reels.return_value = []
+        assert pf.main() == 0
+        assert "[WARN] P5" in capsys.readouterr().out
+
+    def test_page_error_fails(self, pf, capsys):
+        self.client.page_info.side_effect = face_client.FaceApiError(400, "bad", code=190)
+        assert pf.main() == 1
+        out = capsys.readouterr().out
+        assert "[FAIL] P4" in out and "[FAIL] P5" in out
+
+    def test_page_id_mismatch_fails(self, pf, capsys):
+        self.client.page_info.return_value = {"id": "999"}
+        assert pf.main() == 1
+
+    def test_schema_issue_fails(self, pf, capsys):
+        self.ledger.schema_issues.return_value = ["속성 없음 '떡밥'(rich_text)"]
+        assert pf.main() == 1
+        assert "[FAIL] P6" in capsys.readouterr().out
+
+    def test_notion_error_fails(self, pf, capsys):
+        self.ledger.schema_issues.side_effect = face_story.LedgerError("Notion 404 — FACE_NOTION_DB_ID 확인")
+        assert pf.main() == 1
+        out = capsys.readouterr().out
+        assert "[FAIL] P6" in out and "[FAIL] P7" in out
+
+    def test_variable_warnings(self, pf, monkeypatch, cfg):
+        monkeypatch.setenv("DRY_RUN", "")
+        cfg(AUTOMATION_ENABLED=False, FACE_ENABLED=False, SHORTS_BUILD_ENABLED=False, FACE_STORY_ENABLED=False,
+            FACE_RAMP_START="")
+        warns = " ".join(pf.variable_warnings(dt.date(2026, 10, 5)))
+        for key in ("DRY_RUN", "AUTOMATION_ENABLED", "FACE_ENABLED", "SHORTS_BUILD_ENABLED",
+                    "FACE_STORY_ENABLED", "FACE_RAMP_START"):
+            assert key in warns
+        cfg(FACE_RAMP_START="2026-12-01")
+        assert any("시작 전" in w for w in pf.variable_warnings(dt.date(2026, 10, 5)))
+
+    def test_workflow_read_only(self):
+        wf = yaml.safe_load((pathlib.Path(__file__).resolve().parent.parent
+                             / ".github/workflows/face_preflight.yml").read_text(encoding="utf-8"))
+        assert set(wf["on"]) == {"workflow_dispatch"}                 # 수동 실행만
+        assert wf["permissions"] == {"contents": "read"}
+        env = wf["jobs"]["check"]["steps"][-1]["env"]
+        assert env["DRY_RUN"] == "${{ vars.DRY_RUN || 'true' }}"
+        src = (pathlib.Path(__file__).resolve().parent.parent / "scripts/face_preflight.py").read_text("utf-8")
+        for write_call in ("publish_reel", "upsert", "set_status", "requests.post"):
+            assert write_call not in src
