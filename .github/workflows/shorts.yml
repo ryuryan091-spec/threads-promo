@@ -20,14 +20,16 @@ name: 📘🧵 Meta Shorts (Facebook · Threads)
 permissions:
   contents: read
 
-concurrency:
-  group: threads-shorts
-  cancel-in-progress: false
-
+# 동시 실행 그룹은 job 단위로 둔다(점검 2026-10-04).
+#   워크플로 단위로 두면 승인 대기 중인 publish 가 그룹을 붙잡아 다음 날 build 까지 막힌다.
+#   publish 는 cancel-in-progress: true — 새 실행이 오면 지난 날 승인 대기분은 취소된다(지난 영상은 어차피 게시 안 함).
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: threads-shorts-build
+      cancel-in-progress: false
     outputs:
       has_items: ${{ steps.manifest.outputs.has_items }}
     steps:
@@ -99,6 +101,9 @@ jobs:
     runs-on: ubuntu-latest
     # 승인 게이트: Settings › Environments › meta-publish › Required reviewers = 마스터
     environment: meta-publish
+    concurrency:
+      group: threads-shorts-publish
+      cancel-in-progress: true
     # 편간 대기(최대 SHORTS_JOB_BUDGET_MIN=330분) + 업로드·처리 대기
     timeout-minutes: 350
     permissions:
