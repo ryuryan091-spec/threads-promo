@@ -550,3 +550,48 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. �
 6. **실게시**: `DRY_RUN=false`. 매일 08:19 build 후 미리보기 → 승인 → 10~22시 사이 게시.
 7. **게시 후**: 앱에서 각 게시물 'AI 정보' 표시를 켠다.
 8. **즉시 정지**: `AUTOMATION_ENABLED=false` 또는 `FACE_ENABLED=false` / `SHORTS_THREADS_ENABLED=false`. 승인 거절(Reject)도 정지다.
+
+## v1.8.0 Facebook 숏폼 스토리 연속성 (Notion 회차 원장) 운영 절차
+
+설계: `DESIGN_V18_FACE_STORY.md` · Notion 「Facebook 숏폼 스토리 연속성 상세설계 v1.0」
+
+1. Notion 에 새 DB 생성 — 기존 Tracker DB(`NOTION_DB_ID`)에 넣지 않는다(STORY 가 읽는 DB).
+   속성 이름·타입은 `src/face_story.py` 의 `SCHEMA` 와 같아야 한다.
+   | 속성 | 타입 | | 속성 | 타입 |
+   |---|---|---|---|---|
+   | 회차ID | 제목(title) | | 떡밥ID | 텍스트 |
+   | 날짜 | 날짜 | | 떡밥 | 텍스트 |
+   | 포맷 | 선택 | | 떡밥상태 | 선택 |
+   | 상태 | 선택 | | 떡밥경과 | 숫자 |
+   | 시리즈회차 | 숫자 | | 회수내용 | 텍스트 |
+   | 훅유형 | 선택 | | FB영상ID | 텍스트 |
+   | 테마 | 다중 선택 | | 캡션해시 | 텍스트 |
+   | 줄거리요약 | 텍스트 | | 오류 | 텍스트 |
+   선택 옵션은 미리 만들지 않아도 된다(쓰기 권한이 있으면 자동 생성).
+2. DB 의 `•••` 메뉴 › `Add connections` › 기존 `NOTION_TOKEN` 통합 연결.
+   통합 설정의 Capabilities 에서 **Read · Update · Insert content** 가 모두 켜져 있는지 확인한다
+   (기존에는 조회만 했으므로 쓰기 권한이 꺼져 있을 수 있다. 꺼져 있으면 live 첫 게시부터 원장 기록이 403 으로 실패하고,
+   publish dry_run 은 원장을 열지 않으므로 dry_run 으로는 드러나지 않는다).
+3. **DB 에 데이터 소스를 추가하지 않는다** — Notion-Version 2022-06-28 은 데이터 소스가 2개 이상이면 조회·생성이 실패한다(공식 업그레이드 가이드 2025-09-03).
+4. GitHub Secret `FACE_NOTION_DB_ID` 등록 — **database ID** 를 넣는다('Manage data sources' 의 data source ID 가 아님).
+   → Variables `FACE_STORY_ENABLED=false` 로 반영 → dry_run(build 가 원장을 실제로 조회하므로 ID·연결 오류는 여기서 드러난다).
+5. `FACE_STORY_ENABLED=true`. 첫 편은 원장이 비어 있어 '시리즈 첫 화'로 만든다.
+6. 다음 날 build 로그에서 `원장 조회 N행 → 지난 이야기 …` 확인.
+
+상태 규칙
+- 게시완료: 처리 완료 확인. 지난 이야기·번호·떡밥 모두에 쓴다.
+- 확인필요: 결과 미확정(처리 시간 초과·업로드 뒤 오류·게시 직전 선기록). FB영상ID 가 있으면 번호 계산에만 넣고 요약·떡밥 문장은 쓰지 않는다.
+  가장 최근 떡밥 변화가 확인필요 회차에 있으면 다음 F1 은 떡밥을 다루지 않는다(확인 대기).
+  다음 publish 시작 시 재조정(실행당 5건, 오래된 날짜부터). 회차 날짜로부터 2일이 지나도 확인 못 하면 '실패(확인 불가)'로 닫는다.
+- 알림에 '결과 미확인(확인필요 — 재게시 금지)' 이 보이면 수동으로 다시 올리지 않는다(중복 게시). 다음 실행이 재조정한다.
+- 실패: Facebook 이 실패를 확정했거나 세션 전 거부, 또는 재조정에서 게시 흔적 없음.
+- 게시완료는 재실행의 실패·확인필요로 내리지 않는다.
+
+장애 시
+- build 원장 조회 실패: 지난 이야기 없이 생성 + 텔레그램 알림(영상 생성은 계속).
+- publish 원장 기록 실패: 게시는 그대로, 텔레그램 `[원장]` 섹션의 값(회차ID·FB영상ID·캡션해시·요약·떡밥)을 Notion 에 직접 입력.
+  FB영상ID 를 모르면 상태를 확인필요로 두되 캡션해시를 반드시 넣는다(재조정이 최근 릴스에서 찾는다).
+- '실패(확인 불가) — 결번 가능' 알림: 실제로 게시된 회차라면 Notion 에서 상태를 게시완료로 고친다.
+- 사람이 Notion 에서 요약·떡밥을 고쳐도 된다. 읽을 때 다시 린트하고 위반 값은 버린다.
+
+Variables: `FACE_STORY_ENABLED`(기본 false) · `FACE_STORY_LOOKBACK`(3, 1~5) · `FACE_THREAD_MAX_EPISODES`(5, 2~10) / Secrets: `FACE_NOTION_DB_ID` · `NOTION_TOKEN`(기존)

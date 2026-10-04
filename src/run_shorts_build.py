@@ -3,6 +3,8 @@
 흐름
   1) 오늘 계획(shorts_plan.daily_plan): SHORTS_BUILD_ENABLED · 휴식일 · 램프 · 채널 스위치
   2) 시장 분위기 근거(mood_source — CHAT 과 같은 소스, 수치·기업명 없는 테마만)
+  2-1) (v1.8.0, FACE_STORY_ENABLED) Facebook 회차 원장 읽기 — 게시완료 회차의 지난 이야기·열린 떡밥.
+        원장 쓰기는 하지 않는다(publish 가 게시 결과로 쓴다). 조회 실패면 원장 없이 진행 + 알림.
   3) 편마다: 대본(Claude) → 이미지(Gemini) → 음성(Gemini TTS) → 렌더 → 규격 검사
   4) manifest.json + 영상 → artifact(워크플로가 업로드) · 텔레그램 미리보기
 편 하나가 실패해도 다른 편은 계속한다. 정적 폴백 영상은 만들지 않는다.
@@ -20,10 +22,10 @@ import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import chat_plan, config, mood_source, notifier, shorts_plan
+from . import chat_plan, config, face_story, mood_source, notifier, shorts_plan
 from .video import image_gen, renderer, script_writer, tts, validator
 
-VERSION = "1.0.0"   # v1.7.0 신규
+VERSION = "1.1.0"   # v1.8.0: Facebook 회차 원장 읽기 · 연속성 계약
 
 KST = ZoneInfo("Asia/Seoul")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -45,14 +47,19 @@ def _notify(message: str) -> None:
 
 def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_key: str,
               gemini_key: str, used_types: set[str], used_hooks: list[str], base: Path,
-              used_captions: set[str] | None = None) -> dict:
-    """영상 1편. 성공하면 manifest 항목을 돌려주고, 실패하면 예외를 올린다."""
+              used_captions: set[str] | None = None,
+              story: face_story.StoryContext | None = None) -> dict:
+    """영상 1편. 성공하면 manifest 항목을 돌려주고, 실패하면 예외를 올린다.
+
+    story: v1.8.0 Facebook 회차 원장 맥락. Facebook 편에만 연속성 계약을 건다(None 이면 v1.7.0 동작).
+    """
+    req = face_story.request_for(story, item.fmt) if shorts_plan.CHANNEL_FACE in item.channels else None
     work = base / item.content_id
     work.mkdir(parents=True, exist_ok=True)
     script = script_writer.write_script(
         claude_key, content_id=item.content_id, fmt=item.fmt, mood=mood,
         used_hook_types=used_types, used_hooks=used_hooks, used_captions=used_captions,
-        character=item.character,
+        character=item.character, continuity=req,
     )
     (work / "script.json").write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2),
                                       encoding="utf-8")
@@ -70,7 +77,7 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
             used_hook_types=used_types, used_hooks=used_hooks, used_captions=used_captions,
             extra_instruction=(f"직전 대본은 낭독하면 60초를 넘었다({exc}). 내레이션 합계를 "
                                f"{script_writer.TOTAL_MIN_CHARS}자에 가깝게 줄이고 훅은 짧게 쓴다."),
-            character=item.character,
+            character=item.character, continuity=req,
         )
         (work / "script.json").write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2),
                                           encoding="utf-8")
@@ -80,7 +87,7 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
         raise renderer.RenderError(f"규격 검사 실패: {issues}")
     used_types.add(script.hook_type)
     used_hooks.append(script.beats[0].narration)
-    return {
+    entry = {
         "content_id": item.content_id,
         "character": item.character,
         "fmt": item.fmt,
@@ -92,6 +99,10 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
         "duration": timing.total,
         "images_ok": len(usable),
     }
+    if req is not None and story is not None and script.continuity is not None:
+        entry["themes"] = list(script.themes)
+        entry["continuity"] = face_story.build_continuity(script.continuity, req, story, item.content_id)
+    return entry
 
 
 def _voice_and_render(script, images, usable, gemini_key: str, work: Path, video: Path):
@@ -107,6 +118,19 @@ def _voice_and_render(script, images, usable, gemini_key: str, work: Path, video
             sfx=renderer.assets.find_sfx(beat.sfx) if beat.is_hook else None,
         ))
     return renderer.render(scenes, script.villain, video)
+
+
+def _load_story(plan: list[shorts_plan.PlannedVideo], today: dt.date) -> face_story.StoryContext | None:
+    """v1.8.0 Facebook 회차 원장 맥락. 꺼져 있거나 Facebook 편이 없으면 None(v1.7.0 동작)."""
+    if not config.FACE_STORY_ENABLED:
+        return None
+    if not any(shorts_plan.CHANNEL_FACE in p.channels for p in plan):
+        return None
+    ctx = face_story.load_context(os.environ.get("NOTION_TOKEN", "").strip(), config.FACE_NOTION_DB_ID,
+                                  today=today)
+    if not ctx.available:
+        _notify(f"[Shorts] Facebook 회차 원장을 읽지 못해 지난 이야기 없이 만듭니다 — {ctx.error[:200]}")
+    return ctx
 
 
 def run() -> int:
@@ -144,6 +168,7 @@ def run() -> int:
     mood = mood_source.collect(first, api_key=claude_key, today=today, now=now.astimezone(dt.UTC))
     log.info("근거 소스=%s 테마=%s 분위기=%s", mood.source, ",".join(mood.themes) or "-", mood.mood_word or "-")
 
+    story = _load_story(plan, today)
     used_types: set[str] = set()
     used_hooks: list[str] = []
     used_captions: set[str] = set()
@@ -151,7 +176,7 @@ def run() -> int:
         try:
             entry = build_one(item, mood, claude_key=claude_key, gemini_key=gemini_key,
                               used_types=used_types, used_hooks=used_hooks, base=base,
-                              used_captions=used_captions)
+                              used_captions=used_captions, story=story)
         except Exception as exc:  # noqa: BLE001 — 편 단위 격리
             log.exception("영상 생성 실패 %s", item.content_id)
             manifest["failed"].append({"content_id": item.content_id, "reason": str(exc)[:300]})

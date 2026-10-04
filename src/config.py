@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 import os
 
-VERSION = "1.7.0"   # v1.7.0: 60초 숏폼(Facebook 릴스 · Threads 동영상) — DESIGN_V17_SHORTS.md
+VERSION = "1.8.0"   # v1.8.0: Facebook 숏폼 스토리 연속성(Notion 회차 원장) — DESIGN_V18_FACE_STORY.md · v1.7.0: 60초 숏폼
 # v1.6.0: 계정 보호(안전) 모드 — 킬 스위치·일일 예산·링크 리플 비율·워밍업·답글 축소
 # v1.5.0: CHAT 창 09:00~24:00·CHAT 구역·트리거 재배치·이벤트 표 이동
 # v1.3.0: 문체 축·반복 린트·답글 확대·셀프 이어쓰기·정기 슬롯 7개
@@ -87,6 +87,8 @@ SAFETY_VARIABLE_DEFAULTS: dict[str, str] = {
     "FACE_ENABLED": "false",
     "FACE_RAMP_START": "",
     "FACE_DAILY_MAX": "3",
+    # v1.8.0 Facebook 숏폼 스토리 연속성(Notion 회차 원장). false 면 v1.7.0 과 같은 동작.
+    "FACE_STORY_ENABLED": "false",
 }
 
 
@@ -720,3 +722,18 @@ SHORTS_EXTRA_LATIN: tuple[str, ...] = ("EDT",)
 CHARACTER_EDT = "EDT"
 CHARACTER_GOC = "GOC"
 FACE_CHARACTER = CHARACTER_GOC
+
+
+# ---------------------------------------------------------------------------
+# v1.8.0 Facebook 숏폼 스토리 연속성 — Notion 회차 원장 (DESIGN_V18_FACE_STORY.md)
+#   마스터 결정 2026-10-04: 저장소 도입 A안, Facebook 기준 단독 DB. 기존 Tracker DB(NOTION_DB_ID)와 분리.
+# ---------------------------------------------------------------------------
+FACE_STORY_ENABLED = _bool_env("FACE_STORY_ENABLED", False)
+# Secret. Facebook 회차 원장 DB ID. 토큰은 기존 NOTION_TOKEN 을 쓴다(새 DB 에 통합 연결 필요).
+FACE_NOTION_DB_ID = os.environ.get("FACE_NOTION_DB_ID", "").strip()
+# 프롬프트에 넣는 지난 이야기 건수(1~5).
+FACE_STORY_LOOKBACK = max(1, min(5, _safe_int_env("FACE_STORY_LOOKBACK", 3)))
+# 떡밥 강제 회수 기준(떡밥을 연 뒤 지난 F1 회차 수, 2~10). 상세설계 D3 기본 5.
+FACE_THREAD_MAX_EPISODES = max(2, min(10, _safe_int_env("FACE_THREAD_MAX_EPISODES", 5)))
+# 열린 떡밥을 찾으려고 읽는 게시완료 F1 행 수. 강제 회수 기준보다 커야 떡밥을 놓치지 않는다.
+FACE_STORY_SCAN_ROWS = 12

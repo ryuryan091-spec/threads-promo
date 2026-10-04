@@ -7,6 +7,12 @@
      Threads 는 게시 직전에 킬 스위치·워밍업·하루 총량(DAILY_POST_BUDGET)을 다시 본다.
   4) 결과 알림 + 'AI 정보 표시는 앱에서' 안내
 
+v1.8.0 (FACE_STORY_ENABLED) — Facebook 회차 원장(Notion, 상세설계 v1.0)
+  0) 시작 시 재조정: 원장 '확인필요' 행을 Facebook 상태로 다시 확인 → 게시완료/실패
+  3-1) Facebook 결과마다 원장 upsert(회차ID 1행): 게시완료 / 확인필요(처리 확인 시간 초과) / 실패
+  3-2) 루프 끝에 이번 실행의 확인필요를 한 번 더 확인
+  원장 실패는 게시 결과·종료코드를 바꾸지 않는다(재게시 없음). 알림에 수동 입력용 값을 싣는다.
+
 DRY_RUN 이면 대기·쓰기 없이 계획만 로그로 남긴다.
 종료코드: 0 정상 · 4 일부 실패 · 7 계정·토큰 사용 불가(회로 차단)
 """
@@ -19,14 +25,15 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import config, media_host, notifier, safety, shorts_plan
+from . import config, face_story, media_host, notifier, safety, shorts_plan
 from .face_client import FaceApiError, FaceClient
 from .threads_client import ContainerNotReadyError, ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.0.0"   # v1.7.0 신규
+VERSION = "1.1.0"   # v1.8.0: Facebook 회차 원장 기록 · 재조정
 
 KST = ZoneInfo("Asia/Seoul")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -35,6 +42,7 @@ for noisy in ("urllib3", "requests", "hpack", "httpx", "httpcore"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 
 FAIL_EXIT_CODE = 4
+RECHECK_SLACK_MIN = 20     # 루프 끝 재확인을 하는 마지노선: job 예산(300분) + 20분 (timeout 350분)
 
 
 def _env(name: str) -> str:
@@ -84,17 +92,66 @@ def _sleep_until(target: dt.datetime) -> None:
         time.sleep(wait)
 
 
-def post_face(client: FaceClient, item: dict, base: Path) -> str:
-    """Facebook 릴스 1편. 반환은 결과 요약 문자열."""
+@dataclass(frozen=True)
+class FaceOutcome:
+    """Facebook 1편 결과. status 는 원장 상태값(face_story.STATUS_*)."""
+
+    status: str
+    video_id: str
+    message: str
+
+
+def _status_of(face: FaceClient, video_id: str) -> str | None:
+    """Facebook 처리 상태 → 원장 상태. 아직 진행 중이면 None. 계정 치명 오류는 그대로 올린다."""
+    st = face.status(video_id)
+    if st.failed:
+        return face_story.STATUS_FAILED
+    if st.published:
+        return face_story.STATUS_PUBLISHED
+    return None
+
+
+def face_outcome(client: FaceClient, item: dict, base: Path, *, with_ids: bool = False,
+                 on_session=None) -> FaceOutcome:
+    """Facebook 릴스 1편. 처리 실패는 FaceApiError(definitive=True).
+
+    with_ids: v1.8.0 원장 기록용. 같은 설명의 릴스가 이미 있으면 그 id 와 처리 상태를 함께 돌려준다
+              (리뷰 #3-F1: 처리 확인 없이 게시완료로 기록하지 않는다). False 면 v1.7.0 과 같은 요청.
+    """
     caption = str(item["caption"])
-    if caption.strip() in {d.strip() for d in client.recent_descriptions()}:
-        return f"FB {item['content_id']}: 같은 설명의 릴스가 이미 있어 건너뜀"
-    video_id, status = client.publish_reel(base / item["video"], caption)
+    cid = item["content_id"]
+    if with_ids:
+        same = [rid for rid, desc in client.recent_reels() if desc.strip() == caption.strip()]
+        if same:
+            note = ""
+            try:
+                state = (_status_of(client, same[0]) if same[0] else None) or face_story.STATUS_PENDING
+            except FaceApiError as exc:
+                # 리뷰 2차 QC-N1·CR-D: 건너뛴 편의 상태 확인 실패는 게시 실패가 아니다(v1.7.0 과 같이 '건너뜀').
+                if safety.is_account_fatal(exc):
+                    raise
+                state, note = face_story.STATUS_PENDING, " · 상태 확인 실패"
+            return FaceOutcome(state, same[0],
+                               f"FB {cid}: 같은 설명의 릴스가 이미 있어 건너뜀 (video_id={same[0] or '-'} {state}{note})")
+    elif caption.strip() in {d.strip() for d in client.recent_descriptions()}:
+        return FaceOutcome(face_story.STATUS_PUBLISHED, "", f"FB {cid}: 같은 설명의 릴스가 이미 있어 건너뜀")
+    if on_session is None:
+        video_id, status = client.publish_reel(base / item["video"], caption)
+    else:
+        video_id, status = client.publish_reel(base / item["video"], caption, on_session=on_session)
     if status is None:
-        return f"FB {item['content_id']}: video_id={video_id} 게시 요청 완료 · 처리 상태 확인 필요"
+        return FaceOutcome(face_story.STATUS_PENDING, video_id,
+                           f"FB {cid}: video_id={video_id} 게시 요청 완료 · 처리 상태 확인 필요")
     if status.failed:
-        raise FaceApiError(200, f"릴스 처리 실패 video_id={video_id}: {status.error or status}")
-    return f"FB {item['content_id']}: video_id={video_id} 게시 완료"
+        exc = FaceApiError(200, f"릴스 처리 실패 video_id={video_id}: {status.error or status}")
+        exc.video_id, exc.definitive = video_id, True
+        raise exc
+    return FaceOutcome(face_story.STATUS_PUBLISHED, video_id, f"FB {cid}: video_id={video_id} 게시 완료")
+
+
+def post_face(client: FaceClient, item: dict, base: Path) -> str:
+    """Facebook 릴스 1편. 반환은 결과 요약 문자열(v1.7.0 호환)."""
+    return face_outcome(client, item, base).message
 
 
 def post_threads(client: ThreadsClient, item: dict, base: Path) -> str:
@@ -114,6 +171,135 @@ def post_threads(client: ThreadsClient, item: dict, base: Path) -> str:
     media_host.verify(url)
     post_id = client.publish_video_post(url, caption)
     return f"Threads {item['content_id']}: post_id={post_id} 게시 완료"
+
+
+def failure_status(exc: FaceApiError) -> str:
+    """게시 오류 → 원장 상태. 리뷰 #2-3: 결과를 모르는 오류를 '실패'로 확정하지 않는다.
+
+    - Facebook 이 처리 실패를 확정(definitive) → 실패
+    - 업로드 세션을 연 뒤의 오류(video_id 있음 — finish 이후 오류 포함) → 확인필요
+    - 세션을 열기 전 오류(중복 확인 조회·start 실패 — 4xx·네트워크 모두) → 실패. finish 를 부르지 않았으므로
+      게시물이 생길 수 없다(리뷰 3차 OPS-R3-1).
+    """
+    if exc.definitive:
+        return face_story.STATUS_FAILED
+    if exc.video_id:
+        return face_story.STATUS_PENDING
+    return face_story.STATUS_FAILED
+
+
+# ---------------------------------------------------------------------------
+# v1.8.0 Facebook 회차 원장
+# ---------------------------------------------------------------------------
+
+
+def _manual_values(item: dict, status: str, video_id: str) -> str:
+    c = item.get("continuity") or {}
+    return (f"{item.get('content_id')} 상태={status} FB영상ID={video_id or '-'} "
+            f"캡션해시={face_story.caption_hash(str(item.get('caption') or ''))} "
+            f"시리즈회차={c.get('series_no')} 떡밥={c.get('thread_state', '-')}:{c.get('thread_text', '')} "
+            f"요약={c.get('summary', '')}")
+
+
+class LedgerRun:
+    """이번 실행의 원장 기록. 어떤 예외도 밖으로 내지 않는다(게시 결과·종료코드 불변 — 리뷰 #1-D1·#3-F2).
+
+    회차별 (page_id, 현재 상태)를 기억해 두 번째 기록부터는 재조회 없이 갱신한다(리뷰 #3-F6).
+    """
+
+    def __init__(self, ledger: face_story.Ledger, notes: list[str]):
+        self.ledger = ledger
+        self.notes = notes
+        self._pages: dict[str, tuple[str, str]] = {}
+
+    def record(self, item: dict, status: str, *, video_id: str = "", error: str = "",
+               quiet: bool = False) -> None:
+        """quiet: 선기록·세션 기록처럼 뒤에 결과 기록이 이어지는 경우 — 실패해도 알림 대신 로그만(리뷰 2차 OPS-N5)."""
+        cid = str(item.get("content_id") or "")
+        page_id, current = self._pages.get(cid, ("", ""))
+        try:
+            page_id, after = self.ledger.upsert(
+                face_story.record_from_item(item, status, video_id=video_id, error=error),
+                page_id=page_id, current_status=current)
+            self._pages[cid] = (page_id, after)
+            log.info("원장 기록 %s → %s", cid, after)
+        except Exception as exc:  # noqa: BLE001 — 원장 장애 격리
+            log.warning("원장 기록 실패 %s: %s", cid, exc)
+            if quiet:
+                return
+            self.notes.append(f"원장 기록 실패(수동 입력 필요) {_manual_values(item, status, video_id)} — {exc}")
+
+    def reconcile(self, face: FaceClient, today: dt.date) -> None:
+        """원장 '확인필요' 행을 Facebook 상태로 다시 확인한다. 계정 치명 오류만 그대로 올린다.
+
+        - FB영상ID 가 없는 행(업로드 세션 전 끊긴 실행)은 최근 릴스의 캡션해시로 찾는다.
+        - 확인하지 못한 행은 회차 날짜로부터 RECONCILE_GIVEUP_DAYS 가 지나면 '실패(확인 불가)'로 닫는다
+          (리뷰 2차 OPS-N1: 한 번 못 찾았다고 바로 닫지 않는다 · CR-C: 못 닫는 행이 재조정 자리를 막지 않게).
+        - 확인필요 → 실패로 닫히면 시리즈회차 결번이 생길 수 있어 알림에 남긴다(리뷰 2차 CR-A).
+        """
+        try:
+            rows = self.ledger.pending()
+        except Exception as exc:  # noqa: BLE001
+            self.notes.append(f"원장 재조정 조회 실패 — {exc}")
+            return
+        reels: list[tuple[str, str]] | None = None
+        for page_id, cid, video_id, chash in rows:
+            day = face_story.content_date(cid)
+            if day is None:
+                # 리뷰 3차 OPS-R3-2: 회차ID 형식이 틀린 행(사람 입력)은 기한 계산이 안 되므로 바로 닫는다.
+                try:
+                    self.ledger.set_status(page_id, cid, face_story.STATUS_FAILED, "회차ID 형식 오류(sv-YYYYMMDD-N)")
+                    self.notes.append(f"원장 재조정 {cid or '-'} → 실패(회차ID 형식 오류)")
+                except Exception as exc:  # noqa: BLE001
+                    self.notes.append(f"원장 재조정 기록 실패 {cid} — {exc}")
+                continue
+            expired = day is not None and (today - day).days >= face_story.RECONCILE_GIVEUP_DAYS
+            reason = ""
+            try:
+                if not video_id:
+                    if reels is None:
+                        reels = face.recent_reels()
+                    video_id = next((rid for rid, desc in reels
+                                     if chash and face_story.caption_hash(desc) == chash), "")
+                    if not video_id:
+                        reason = "게시 흔적 없음(최근 릴스에 같은 설명 없음)"
+                if video_id:
+                    new = _status_of(face, video_id)
+                    if new is not None:
+                        self.ledger.set_status(page_id, cid, new, video_id=video_id)
+                        self.notes.append(f"원장 재조정 {cid} → {new}"
+                                          + (" — 시리즈회차 결번 가능(이 회차는 게시되지 않음)"
+                                             if new == face_story.STATUS_FAILED else ""))
+                        continue
+                    reason = "아직 처리 중"
+            except FaceApiError as exc:
+                if safety.is_account_fatal(exc):
+                    raise
+                reason = f"상태 확인 실패 {exc}"
+            except Exception as exc:  # noqa: BLE001
+                reason = f"재조정 오류 {exc}"
+            if not expired:
+                log.info("원장 재조정 보류 %s: %s", cid, reason)
+                continue
+            try:
+                self.ledger.set_status(page_id, cid, face_story.STATUS_FAILED,
+                                       f"확인 불가({face_story.RECONCILE_GIVEUP_DAYS}일 경과): {reason}",
+                                       video_id=video_id)
+                self.notes.append(f"원장 재조정 {cid} → 실패(확인 불가: {reason[:80]}) — 시리즈회차 결번 가능, "
+                                  "실제로 게시됐다면 Notion 에서 게시완료로 고쳐 주십시오")
+            except Exception as exc:  # noqa: BLE001
+                self.notes.append(f"원장 재조정 기록 실패 {cid} — {exc}")
+        overflow = getattr(self.ledger, "pending_overflow", 0)
+        if overflow:
+            self.notes.append(f"원장 확인필요 {overflow}건 이상 남음(다음 실행에서 이어서 재조정)")
+
+
+def _open_ledger(notes: list[str]) -> LedgerRun | None:
+    try:
+        return LedgerRun(face_story.Ledger(_env("NOTION_TOKEN"), config.FACE_NOTION_DB_ID), notes)
+    except face_story.LedgerError as exc:
+        notes.append(f"원장 미사용 — {exc}")
+        return None
 
 
 def run() -> int:
@@ -152,17 +338,44 @@ def run() -> int:
     face = FaceClient(_env("FACE_PAGE_ID"), _env("FACE_PAGE_TOKEN")) if face_items else None
     threads = _threads_client() if threads_items and safety.shorts_threads_allowed() else None
     results: list[str] = [f"제외(시간 초과) {d['content_id']}" for d in dropped]
+    notes: list[str] = []
+    ledger = _open_ledger(notes) if face and config.FACE_STORY_ENABLED else None
+    if ledger is not None and face is not None:
+        ledger.reconcile(face, now.date())
+    pending: list[tuple[dict, str]] = []
     failed = False
     for item, at in zip(ordered, schedule, strict=False):
         _sleep_until(at)
         if face and item in face_items:
+            on_session = None
+            if ledger is not None:
+                # 게시 직전 선기록 + 세션 video_id 즉시 기록: 업로드 중 실행이 끊겨도 다음 실행이 재조정한다
+                #   (리뷰 #3-F3 · 2차 OPS-N1).
+                ledger.record(item, face_story.STATUS_PENDING, quiet=True)
+
+                def on_session(vid: str, _item: dict = item) -> None:
+                    ledger.record(_item, face_story.STATUS_PENDING, video_id=vid, quiet=True)
             try:
-                results.append(post_face(face, item, base))
+                outcome = face_outcome(face, item, base, with_ids=ledger is not None, on_session=on_session)
+                results.append(outcome.message)
+                if ledger is not None:
+                    ledger.record(item, outcome.status, video_id=outcome.video_id)
+                    if outcome.status == face_story.STATUS_PENDING and outcome.video_id:
+                        pending.append((item, outcome.video_id))
             except FaceApiError as exc:
                 if safety.is_account_fatal(exc):
                     raise
                 failed = True
-                results.append(f"FB {item['content_id']}: 실패 {exc}")
+                state = failure_status(exc) if ledger is not None else face_story.STATUS_FAILED
+                if state == face_story.STATUS_PENDING:
+                    # 리뷰 2차 CR-E: 결과를 모르는 오류를 '실패'로 알리면 수동 재게시 → 중복 게시 위험
+                    results.append(f"FB {item['content_id']}: 결과 미확인(확인필요 — 재게시 금지, 다음 실행이 재조정) {exc}")
+                else:
+                    results.append(f"FB {item['content_id']}: 실패 {exc}")
+                if ledger is not None:
+                    ledger.record(item, state, video_id=exc.video_id, error=str(exc))
+                    if state == face_story.STATUS_PENDING and exc.video_id:
+                        pending.append((item, exc.video_id))
         if threads and item in threads_items:
             try:
                 results.append(post_threads(threads, item, base))
@@ -173,8 +386,33 @@ def run() -> int:
                 results.append(f"Threads {item['content_id']}: 실패 {exc}")
         log.info(results[-1] if results else "-")
 
+    fatal: FaceApiError | None = None
+    elapsed_min = (dt.datetime.now(KST) - now).total_seconds() / 60
+    if pending and elapsed_min > config.SHORTS_JOB_BUDGET_MIN + RECHECK_SLACK_MIN:
+        # 리뷰 2차 OPS-N4: job 시간 상한이 가까우면 재확인을 건너뛰고 다음 실행의 재조정에 맡긴다.
+        notes.append(f"원장 확인필요 재확인 생략(경과 {elapsed_min:.0f}분) — 다음 실행에서 재조정")
+        pending = []
+    if ledger is not None and face is not None:
+        for item, video_id in pending:
+            try:
+                new = _status_of(face, video_id)
+            except FaceApiError as exc:
+                if safety.is_account_fatal(exc):
+                    # 리뷰 #2-5: 게시는 끝났다. 결과 알림을 먼저 보내고 회로 차단 종료(7)는 그 뒤에.
+                    fatal = exc
+                    notes.append(f"원장 확인필요 재확인 중단 — 계정 오류 {exc}")
+                    break
+                notes.append(f"원장 확인필요 재확인 실패 {item['content_id']} — {exc}")
+                continue
+            if new is not None:
+                ledger.record(item, new, video_id=video_id)
+                notes.append(f"원장 확인필요 재확인 {item['content_id']} → {new}")
+
     _notify("[Shorts] 게시 결과\n" + "\n".join(f"- {r}" for r in results)
+            + ("\n\n[원장]\n" + "\n".join(f"- {n}" for n in notes) if notes else "")
             + "\n\n앱에서 각 게시물의 'AI 정보' 표시를 켜 주십시오(Meta AI 표시 의무).")
+    if fatal is not None:
+        raise fatal
     return FAIL_EXIT_CODE if failed else 0
 
 

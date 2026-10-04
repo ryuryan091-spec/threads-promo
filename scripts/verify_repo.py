@@ -32,7 +32,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-VERSION = "1.7.0"   # v1.7.0: 숏폼 파일·진입점 · 검사 12 폴더 중첩
+VERSION = "1.8.0"   # v1.8.0: face_story · v1.7.0: 숏폼 파일·진입점 · 검사 12 폴더 중첩
 # v1.6.0: 검사 11 — 안전 모드 변수 워크플로·config 기본값 일치
 # v1.5.0: 검사 10 — 예약 창 상호 겹침·CHAT 구역·트리거 위치
 # v1.4.0: style 모듈, 판정 창 겹침 검사(10)
@@ -47,6 +47,8 @@ REQUIRED_MODULES = [
     "shorts_plan", "face_client", "media_host", "run_shorts_build", "run_shorts_publish",
     "video.assets", "video.hooks", "video.script_writer", "video.image_gen", "video.tts",
     "video.renderer", "video.validator",
+    # v1.8.0 Facebook 회차 원장
+    "face_story",
 ]
 
 REQUIRED_FILES = [
@@ -460,7 +462,8 @@ SAFETY_WORKFLOW_KEYS: dict[str, tuple[str, ...]] = {
     "reply_audit.yml": ("REPLY_CANNED_ENABLED", "REPLY_AUTHOR_DAILY_CAP", "REPLY_THREAD_AUTHOR_CAP"),
     # v1.7.0 숏폼: 생성 판단(build)과 게시 판단(publish) 모두 킬 스위치·채널 스위치·램프를 본다.
     "shorts.yml": ("AUTOMATION_ENABLED", "DAILY_POST_BUDGET", "WARMUP_UNTIL", "SHORTS_BUILD_ENABLED",
-                   "SHORTS_THREADS_ENABLED", "FACE_ENABLED", "FACE_RAMP_START", "FACE_DAILY_MAX"),
+                   "SHORTS_THREADS_ENABLED", "FACE_ENABLED", "FACE_RAMP_START", "FACE_DAILY_MAX",
+                   "FACE_STORY_ENABLED"),
 }
 
 

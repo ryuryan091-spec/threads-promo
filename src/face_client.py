@@ -25,7 +25,7 @@ import requests
 from . import config, safety
 from .redact import redact
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.8.0: recent_reels
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,8 @@ class FaceApiError(RuntimeError):
         self.status = status
         self.payload = redact(payload)
         self.code = code
+        self.video_id = ""          # v1.8.0: 업로드 세션을 연 뒤 실패하면 그 video_id(원장 확인필요 기록용)
+        self.definitive = False     # v1.8.0: Facebook 이 처리 실패를 확정한 경우만 True
         super().__init__(f"Facebook API {status} (code={code}): {self.payload[:300]}")
 
     @property
@@ -116,6 +118,18 @@ class FaceClient:
         )
         return [str(item.get("description") or "") for item in data.get("data") or []]
 
+    def recent_reels(self) -> list[tuple[str, str]]:
+        """v1.8.0 최근 릴스 (id, description). 같은 설명으로 이미 게시된 회차의 video_id 를 원장에 기록할 때 쓴다.
+
+        recent_descriptions 와 같은 요청이다(응답 예시 필드 id · description — 모듈 docstring).
+        """
+        data = _send(
+            "GET", f"{config.FACE_GRAPH_BASE}/{self._page_id}/video_reels", retry=True,
+            params={"access_token": self._token, "limit": config.FACE_REELS_LIST_LIMIT},
+        )
+        return [(str(item.get("id") or ""), str(item.get("description") or ""))
+                for item in data.get("data") or []]
+
     def status(self, video_id: str) -> ReelStatus:
         data = _send("GET", f"{config.FACE_GRAPH_BASE}/{video_id}", retry=True,
                      params={"fields": "status", "access_token": self._token})
@@ -134,8 +148,12 @@ class FaceClient:
         )
 
     # -- 게시 -------------------------------------------------------------
-    def publish_reel(self, video: Path, description: str) -> tuple[str, ReelStatus | None]:
-        """3단계 게시 후 상태를 확인한다. 반환 (video_id, 마지막 상태 또는 None=시간 초과)."""
+    def publish_reel(self, video: Path, description: str,
+                     on_session=None) -> tuple[str, ReelStatus | None]:
+        """3단계 게시 후 상태를 확인한다. 반환 (video_id, 마지막 상태 또는 None=시간 초과).
+
+        on_session: v1.8.0 업로드 세션 video_id 를 받는 즉시 호출(원장 선기록). 콜백 오류는 게시를 막지 않는다.
+        """
         safety.guard_write()
         start = _send("POST", f"{config.FACE_GRAPH_BASE}/{self._page_id}/video_reels", retry=False,
                       json={"upload_phase": "start", "access_token": self._token})
@@ -143,7 +161,18 @@ class FaceClient:
         if not video_id:
             raise FaceApiError(200, f"video_id 없음: {start}")
         log.info("릴스 업로드 세션 video_id=%s", video_id)
+        if on_session is not None:
+            try:
+                on_session(video_id)
+            except Exception as exc:  # noqa: BLE001 — 기록 실패가 게시를 막지 않는다
+                log.warning("세션 콜백 실패(게시는 계속): %s", redact(str(exc)))
+        try:
+            return video_id, self._upload_and_finish(video, description, video_id)
+        except FaceApiError as exc:
+            exc.video_id = video_id     # 이미 게시됐을 수 있으므로 호출자가 확인필요로 남길 수 있게 한다
+            raise
 
+    def _upload_and_finish(self, video: Path, description: str, video_id: str) -> ReelStatus | None:
         safety.guard_write()
         size = video.stat().st_size
         with video.open("rb") as fh:
@@ -160,7 +189,7 @@ class FaceClient:
               params={"access_token": self._token, "video_id": video_id, "upload_phase": "finish",
                       "video_state": "PUBLISHED", "description": description})
         log.info("릴스 게시 요청 완료 video_id=%s — 처리 상태 확인", video_id)
-        return video_id, self.wait_status(video_id)
+        return self.wait_status(video_id)
 
     def wait_status(self, video_id: str) -> ReelStatus | None:
         """게시 완료·실패가 확정될 때까지 확인. 상한(FACE_STATUS_MAX_SEC)을 넘기면 None(확인 필요)."""

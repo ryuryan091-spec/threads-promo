@@ -13,10 +13,10 @@ from dataclasses import dataclass, field
 
 import requests
 
-from .. import ai_writer, config, content, mood_source
+from .. import ai_writer, config, content, face_story, mood_source
 from . import hooks
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
 
 log = logging.getLogger(__name__)
 
@@ -131,9 +131,10 @@ class Script:
     caption: str                       # AI 고지 포함 최종 캡션
     themes: tuple[str, ...] = field(default_factory=tuple)
     character: str = config.CHARACTER_EDT
+    continuity: dict | None = None     # v1.8.0 연속성 계약을 건 편만(검증 통과한 원문)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "content_id": self.content_id,
             "character": self.character,
             "fmt": self.fmt,
@@ -144,6 +145,9 @@ class Script:
             "caption": self.caption,
             "themes": list(self.themes),
         }
+        if self.continuity is not None:
+            out["continuity"] = dict(self.continuity)
+        return out
 
 
 def select_villain(mood: mood_source.Mood) -> str:
@@ -215,11 +219,13 @@ IMAGE_FORBIDDEN = {
 
 
 def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
-             character: str = config.CHARACTER_EDT) -> list[str]:
+             character: str = config.CHARACTER_EDT,
+             continuity: face_story.ContinuityRequest | None = None) -> list[str]:
     """대본 JSON 위반 목록. 빈 목록이면 통과.
 
     used_captions: 같은 날 앞 편의 캡션(본문). 같으면 게시 단계 중복 검사에 걸려 그 편이 빠지므로 여기서 막는다.
     character: 다른 캐릭터 이름(대사·캡션)과 다른 캐릭터 묘사(이미지 프롬프트)를 막는다.
+    continuity: v1.8.0 연속성 계약. 주면 continuity 객체의 구조·행동 규칙·린트·금지 이름을 함께 본다.
     """
     profile = CHARACTER_PROFILES[character]
     issues: list[str] = []
@@ -248,7 +254,10 @@ def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
         issues.append(f"캡션 {len(caption)}자 — {CAPTION_MIN_CHARS}~{CAPTION_BODY_MAX}자 필요")
     if caption and caption in (used_captions or set()):
         issues.append("캡션이 같은 날 다른 편과 같음")
-    texts = [hook, *body, closing, caption]
+    extra = face_story.continuity_texts(raw.get("continuity")) if continuity is not None else []
+    if continuity is not None:
+        issues += face_story.validate_continuity(raw.get("continuity"), continuity)
+    texts = [hook, *body, closing, caption, *(t for _, t, _ in extra)]
     for name in profile["forbidden_names"]:
         if any(name in t for t in texts):
             issues.append(f"{character} 영상에 다른 캐릭터 이름 '{name}' 포함")
@@ -260,6 +269,7 @@ def validate(raw: dict, hook_type: str, used_captions: set[str] | None = None,
         [("훅", hook, hooks.HOOK_MAX_CHARS)]
         + [(f"본문{i}", x, BODY_MAX_CHARS) for i, x in enumerate(body, start=1)]
         + [("정리", closing, CLOSING_MAX_CHARS), ("캡션", caption, CAPTION_BODY_MAX)]
+        + extra
     ):
         if not line:
             continue
@@ -287,10 +297,12 @@ def write_script(
     used_captions: set[str] | None = None,
     extra_instruction: str = "",
     character: str = config.CHARACTER_EDT,
+    continuity: face_story.ContinuityRequest | None = None,
 ) -> Script:
     """대본 생성. 검증 실패 시 위반 사유를 붙여 재시도. 소진하면 ScriptError.
 
     extra_instruction: 렌더 길이 초과 등 앞 단계 실패 사유(재생성 지시)를 프롬프트 끝에 붙인다.
+    continuity: v1.8.0 연속성 계약(Facebook 회차 원장). None 이면 v1.7.0 과 같은 프롬프트·검증.
     """
     if character not in CHARACTER_PROFILES:
         raise ScriptError(f"알 수 없는 캐릭터: {character}")
@@ -301,6 +313,8 @@ def write_script(
     allowed = hooks.HOOK_TYPES if profile["uses_villain"] else hooks.NO_VILLAIN_HOOK_TYPES
     hook_type = hooks.select_hook_type(fmt, villain, used_hook_types, allowed)
     base_prompt = _user_prompt(fmt, villain, hook_type, mood, list(used_hooks or []), character)
+    if continuity is not None:
+        base_prompt += "\n\n" + continuity.prompt_block
     if extra_instruction:
         base_prompt += f"\n\n# 추가 지시(앞 시도 실패)\n{extra_instruction}"
     prompt = base_prompt
@@ -312,7 +326,7 @@ def write_script(
             last = [str(exc)]
             log.warning("대본 생성 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS, exc)
             continue
-        last = validate(raw, hook_type, used_captions, character)
+        last = validate(raw, hook_type, used_captions, character, continuity)
         if not last:
             spec = hooks.HOOK_SPECS[hook_type]
             beats = [Beat(str(raw["hook"]).strip(), spec["tts_tone"], True, spec["sfx"])]
@@ -332,6 +346,7 @@ def write_script(
                 caption=build_caption(str(raw["post_caption"])),
                 themes=mood.themes,
                 character=character,
+                continuity=dict(raw["continuity"]) if continuity is not None else None,
             )
         log.warning("대본 검증 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS,
                     json.dumps(last, ensure_ascii=False))

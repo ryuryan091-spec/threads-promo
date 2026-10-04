@@ -30,7 +30,7 @@ LEGACY_PROFILE: dict[str, object] = {
 }
 
 # 코드 기본값(안전 프로필)을 그대로 보는 모듈
-SAFETY_MODULES = frozenset({"test_safety_v16", "test_shorts_v17"})
+SAFETY_MODULES = frozenset({"test_safety_v16", "test_shorts_v17", "test_face_story_v18"})
 
 
 def pytest_configure(config):
