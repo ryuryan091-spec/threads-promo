@@ -64,6 +64,12 @@ jobs:
           CLAUDE_AI_KEY: ${{ secrets.CLAUDE_AI_KEY }}
           CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
           GEMINI_API_SUB_PAY_KEY: ${{ secrets.GEMINI_API_SUB_PAY_KEY }}
+          # v1.8.0 Facebook 회차 원장(읽기 전용) — 기존 Tracker DB(NOTION_DB_ID)와 다른 DB
+          FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
+          FACE_STORY_LOOKBACK: ${{ vars.FACE_STORY_LOOKBACK }}
+          FACE_THREAD_MAX_EPISODES: ${{ vars.FACE_THREAD_MAX_EPISODES }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          FACE_NOTION_DB_ID: ${{ secrets.FACE_NOTION_DB_ID }}
           CHAT_SOURCE_MODE: ${{ vars.CHAT_SOURCE_MODE || 'mix' }}
           MOOD_RSS_URLS: ${{ vars.MOOD_RSS_URLS }}
           MOOD_WEB_MAX_USES: ${{ vars.MOOD_WEB_MAX_USES || '2' }}
@@ -134,6 +140,10 @@ jobs:
           FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
           FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
           FACE_PAGE_TOKEN: ${{ secrets.FACE_PAGE_TOKEN }}
+          # v1.8.0 Facebook 회차 원장(게시 결과 기록 · 재조정)
+          FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          FACE_NOTION_DB_ID: ${{ secrets.FACE_NOTION_DB_ID }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
