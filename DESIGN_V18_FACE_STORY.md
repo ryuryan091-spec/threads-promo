@@ -193,3 +193,22 @@
 - 오프라인 통합(S1~S6 + 사전 점검): S2 재실행 Facebook 쓰기 0건·원장 FB영상ID 보존, S5 원장 '실패', S6 재실행이 이전 영상 확인 후 게시완료, 사전 점검 쓰기 0건.
 - 리뷰(QC·코드리뷰·운영/외부 API): 1차 D1(Medium)·U1(미확인) → 반영 → 2차 결함 없음.
 - 미검증(실환경): 목록 description 실제 반환(사전 점검 P5) · 게시 권한(첫 실제 게시).
+
+## 11. v1.8.7 Facebook 사전 점검 로그 보강 (마스터 지시 "정상 동작 사전 체크 로그 추가")
+계기: 실환경 Preflight 결과 P4 FAIL(code 190 / subcode 463 — 페이지 토큰 만료). 권한 획득 여부를 로그로 판단할 수 없었다.
+
+| # | 추가 | 내용 |
+|---|---|---|
+| L1 | 실행 정보 | 실행 시각(KST) · config/점검 버전 · 커밋 · 브랜치 · 워크플로 · Graph 버전 · Notion-Version (로그 첫 줄 + Summary) |
+| L2 | 요청 경로 | 각 Facebook 요청 경로를 토큰 없이 출력 |
+| L3 | 조치 안내 | 190+463(Session has expired) → 장기 페이지 토큰 재발급 · 190/401 → 토큰 무효 · code 200 → 권한·페이지 역할 |
+| L4 | P9 토큰 정보·권한 | `GET /debug_token?input_token=<페이지 토큰>`(호출 토큰도 같은 페이지 토큰). is_valid · type · application · profile_id(=FACE_PAGE_ID) · expires_at · scopes |
+| L5 | 회로 차단 로그 | 점검 중 치명 오류로 공통 모듈의 '회로 차단' 문구가 찍히면 "점검은 쓰기를 하지 않음" 안내를 덧붙임 |
+
+P9 판정: is_valid≠true → FAIL · profile_id 불일치 → FAIL · 만료 지남 → FAIL · 7일 이내 만료 → WARN(단기 토큰) ·
+필요 권한(Reels 문서: pages_show_list · pages_read_engagement · pages_manage_posts) 누락 → FAIL · 조회 자체 실패 → WARN(판단 불가).
+- 근거·한계: Debug Token 레퍼런스는 응답 필드를 정의하지만 호출 토큰(access_token) 종류를 명시하지 않는다 → 조회 실패는 FAIL 로 보지 않는다.
+  expires_at=0 의 의미는 문서에서 확인하지 못해 값 그대로 표시한다. `type` 은 레퍼런스 응답 필드 목록에서 확인되지 않아 표시만 하고 판정에 쓰지 않는다.
+  subcode 는 오류 JSON 을 파싱해 정확히 463 일 때만 '만료' 안내. redact 에 input_token 키 추가(로그 마스킹 강화). 페이지 CREATE_CONTENT 작업 권한은 scopes 로 보이지 않으므로
+  실제 게시 성공은 여전히 첫 게시(P8)로만 확인된다.
+- 테스트: 단위 신규 10건(전체 1,459건 통과) · 로컬 가짜 서버로 실제 로그 재현 3종(만료·정상·권한 누락), 로그·요청 경로에 토큰 없음.

@@ -1027,7 +1027,7 @@ class TestPublishRunner:
 class TestConfigAndWorkflow:
     def test_defaults_off(self):
         assert config.SAFETY_VARIABLE_DEFAULTS["FACE_STORY_ENABLED"] == "false"
-        assert config.VERSION == "1.8.6"
+        assert config.VERSION == "1.8.7"
         assert config.FACE_STORY_SCAN_ROWS > 10 >= 2
 
     def test_clamps(self, monkeypatch):
@@ -1734,6 +1734,15 @@ class TestM_FaceListFields:
         c.page_info()
         assert calls[1][1].endswith("/123") and calls[1][2]["params"]["fields"] == "id,name"
 
+    def test_token_debug_request(self, monkeypatch):
+        c, calls = self._client(monkeypatch, {"data": {"is_valid": True, "scopes": ["a"]}})
+        assert c.token_debug() == {"is_valid": True, "scopes": ["a"]}
+        method, url, kw = calls[0]
+        assert method == "GET" and url.endswith("/debug_token")
+        assert kw["params"]["input_token"] == kw["params"]["access_token"] == "EAA" + "t" * 30
+        c2, _ = self._client(monkeypatch, {"data": "x"})
+        assert c2.token_debug() == {}
+
     def test_start_failure_marks_before_session(self, monkeypatch):
         def fake(method, url, **kw):
             return _Resp(400, payload={"error": {"code": 190, "message": "bad"}})
@@ -1956,7 +1965,11 @@ class TestM_Preflight:
         self.client = mock.Mock()
         self.client.page_info.return_value = {"id": "123", "name": "GOC"}
         self.client.list_reels.return_value = [{"id": "v1", "description": "캡션"}]
+        self.client.token_debug.return_value = {
+            "is_valid": True, "type": "PAGE", "application": "GOC", "profile_id": "123", "expires_at": 0,
+            "scopes": ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "public_profile"]}
         monkeypatch.setattr(face_preflight, "FaceClient", mock.Mock(return_value=self.client))
+        monkeypatch.setattr(face_preflight.safety, "_TRIPPED", [])
         self.ledger = mock.Mock()
         self.ledger.schema_issues.return_value = []
         self.ledger.probe.return_value = 0
@@ -1991,6 +2004,81 @@ class TestM_Preflight:
         assert pf.main() == 1
         out = capsys.readouterr().out
         assert "[FAIL] P4" in out and "[FAIL] P5" in out
+        assert "토큰 무효" in out
+        self.client.token_debug.assert_called_once()           # P4 실패해도 P9 는 시도(권한 원인 진단)
+
+    def test_expired_token_hint(self, pf, capsys):
+        payload = ('{"error":{"message":"Error validating access token: Session has expired on Sunday, '
+                   '04-Oct-26 00:00:00 PDT.","type":"OAuthException","code":190,"error_subcode":463}}')
+        self.client.page_info.side_effect = face_client.FaceApiError(400, payload, code=190)
+        self.client.token_debug.side_effect = face_client.FaceApiError(400, payload, code=190)
+        assert pf.main() == 1
+        out = capsys.readouterr().out
+        assert "토큰 만료: 장기 페이지 토큰 재발급" in out and "[WARN] P9" in out
+
+    def test_run_info_and_request_paths(self, pf, monkeypatch, capsys):
+        monkeypatch.setenv("GITHUB_SHA", "353fb18abcdef")
+        monkeypatch.setenv("GITHUB_REF_NAME", "main")
+        assert pf.main() == 0
+        out = capsys.readouterr().out
+        assert "커밋 353fb18" in out and "브랜치 main" in out and "Graph v25.0" in out
+        assert "요청 GET /{page_id}?fields=id,name" in out
+        assert "요청 GET /debug_token?input_token=<페이지 토큰>" in out
+        assert "EAA" + "t" * 30 not in out
+
+    def test_token_ok_reported(self, pf, capsys):
+        assert pf.main() == 0
+        out = capsys.readouterr().out
+        assert "[OK  ] P9" in out and "필요 권한 3개 있음" in out and "expires_at=0" in out
+
+    def test_missing_scope_fails(self, pf, capsys):
+        self.client.token_debug.return_value["scopes"] = ["pages_show_list"]
+        assert pf.main() == 1
+        assert "필요 권한 없음: pages_read_engagement, pages_manage_posts" in capsys.readouterr().out
+
+    def test_permission_error_hint(self, pf, capsys):
+        self.client.page_info.side_effect = face_client.FaceApiError(400, '{"error":{"code":200}}', code=200)
+        assert pf.main() == 1
+        assert "권한 문제" in capsys.readouterr().out
+
+    def test_subcode_exact_match(self, pf):
+        e = face_client.FaceApiError(400, '{"error":{"code":190,"error_subcode":4631}}', code=190)
+        assert "토큰 무효" in pf._hint(e)
+        assert pf._subcode(face_client.FaceApiError(400, "not json", code=190)) is None
+
+    def test_missing_scopes_field_fails(self, pf, capsys):
+        del self.client.token_debug.return_value["scopes"]
+        assert pf.main() == 1
+        assert "필요 권한 없음" in capsys.readouterr().out
+
+    def test_input_token_redacted(self):
+        from src.redact import redact
+        assert "abc_DEF-123456" not in redact("GET /debug_token?input_token=abc_DEF-123456&x=1")
+
+    def test_token_debug_unavailable_warns(self, pf, capsys):
+        self.client.token_debug.side_effect = face_client.FaceApiError(400, "bad", code=100)
+        assert pf.main() == 0
+        assert "[WARN] P9" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("data,status,needle", [
+        ({}, "WARN", "판단 불가"),
+        ({"is_valid": False, "error": {"message": "expired"}}, "FAIL", "expired"),
+        ({"is_valid": True, "profile_id": "999", "scopes": ["pages_show_list", "pages_read_engagement",
+                                                            "pages_manage_posts"]}, "FAIL", "≠ FACE_PAGE_ID"),
+    ])
+    def test_token_findings_cases(self, pf, data, status, needle):
+        got, detail = pf.token_findings(data, "123", dt.datetime(2026, 10, 5, 9, 0, tzinfo=KST))
+        assert got == status and needle in detail
+
+    def test_token_expiry_windows(self, pf):
+        now = dt.datetime(2026, 10, 5, 9, 0, tzinfo=KST)
+        base = {"is_valid": True, "scopes": list(pf.REQUIRED_SCOPES)}
+        soon = int((now + dt.timedelta(hours=2)).timestamp())
+        past = int((now - dt.timedelta(hours=1)).timestamp())
+        later = int((now + dt.timedelta(days=55)).timestamp())
+        assert pf.token_findings(base | {"expires_at": soon}, "123", now)[0] == "WARN"
+        assert pf.token_findings(base | {"expires_at": past}, "123", now)[0] == "FAIL"
+        assert pf.token_findings(base | {"expires_at": later}, "123", now)[0] == "OK"
 
     def test_page_id_mismatch_fails(self, pf, capsys):
         self.client.page_info.return_value = {"id": "999"}

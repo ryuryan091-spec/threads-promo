@@ -27,7 +27,7 @@ import requests
 from . import config, safety
 from .redact import redact
 
-VERSION = "1.2.0"   # v1.8.6: 목록 fields 지정(중복 게시 방지 복구)·사전 점검용 조회 · v1.8.0: recent_reels
+VERSION = "1.3.0"   # v1.8.7: token_debug(사전 점검) · v1.8.6: 목록 fields 지정(중복 게시 방지 복구)·사전 점검용 조회 · v1.8.0: recent_reels
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +134,17 @@ class FaceClient:
         )
         items = data.get("data") or []
         return [i for i in items if isinstance(i, dict)]
+
+    def token_debug(self) -> dict[str, Any]:
+        """v1.8.7 사전 점검: GET /debug_token (input_token = 페이지 토큰). 응답의 data 객체.
+
+        문서(Debug Token 레퍼런스)는 호출 토큰(access_token) 종류를 명시하지 않는다 — 같은 페이지 토큰으로 호출하고,
+        실패하면 호출자가 '판단 불가'로 다룬다.
+        """
+        body = _send("GET", f"{config.FACE_GRAPH_BASE}/debug_token", retry=True,
+                     params={"input_token": self._token, "access_token": self._token})
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
 
     def page_info(self) -> dict[str, Any]:
         """v1.8.6 사전 점검: 페이지 id·이름(토큰으로 페이지에 접근되는지)."""

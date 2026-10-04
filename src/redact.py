@@ -46,7 +46,7 @@ _MIN_SECRET_LEN = 8
 
 # 형식 패턴. 실값을 모르는 경우(갱신 직후 새 토큰 등)를 덮는다.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\b(access_token|client_secret|th_refresh_token|fb_exchange_token|key)"
+    (re.compile(r"(?i)\b(access_token|input_token|client_secret|th_refresh_token|fb_exchange_token|key)"
                 r"=[^&\s'\"<>]+"), rf"\1={MASK}"),
     (re.compile(r"(?i)(\"?(?:access_token|client_secret)\"?\s*:\s*\")[^\"]+"), rf"\1{MASK}"),
     (re.compile(r"\bbot\d{6,}:[A-Za-z0-9_-]{20,}"), f"bot{MASK}"),

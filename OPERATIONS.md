@@ -607,3 +607,12 @@ Variables: `FACE_STORY_ENABLED`(기본 false) · `FACE_STORY_LOOKBACK`(3, 1~5) �
 - 같은 회차를 다시 publish 해도(재실행) 원장이 게시완료면 Facebook 에 올리지 않는다. 결과 알림: "원장에 게시완료 — 재게시하지 않음".
 - 원장이 확인필요(영상ID 있음)면 새로 올리지 않고 그 영상 상태를 확인한다. 처리 실패가 확정된 경우에만 새로 게시한다.
 
+### v1.8.7 Facebook 페이지 토큰 재발급 · 사전 점검 P9
+공식 문서(장기 토큰 발급 가이드): 단기 토큰은 몇 시간, 장기 사용자 토큰은 약 60일, 장기 사용자 토큰으로 받은 페이지 토큰은 만료일이 없다(특정 조건에서만 무효).
+토큰·앱 시크릿 값은 채팅·커밋에 쓰지 않고 GitHub Secret 에만 넣는다.
+1. Graph API 탐색기에서 사용자 토큰 발급 — 권한 pages_show_list · pages_read_engagement · pages_manage_posts 승인
+2. 장기 사용자 토큰 교환: `GET /oauth/access_token?grant_type=fb_exchange_token&client_id={앱ID}&client_secret={앱시크릿}&fb_exchange_token={1의 토큰}`
+3. 페이지 토큰 조회: `GET /{사용자ID}/accounts?access_token={2의 장기 토큰}` → 해당 페이지의 access_token
+4. Secret `FACE_PAGE_TOKEN` 교체 → 📘 Facebook Preflight 실행
+5. 판정: P4 OK · P9 OK(유효 · 필요 권한 3개) · P5 는 릴스 0건이면 WARN(첫 게시 뒤 재실행). P9 가 "7일 이내 만료" WARN 이면 단기 토큰이 들어간 것 — 2~3단계를 다시 한다.
+
