@@ -258,7 +258,7 @@ class TestScript:
         bad = _valid_raw(hook="짧다")
         calls = []
 
-        def fake(api_key, prompt):
+        def fake(api_key, prompt, character="EDT"):
             calls.append(prompt)
             return bad if len(calls) == 1 else _valid_raw()
 
@@ -271,7 +271,7 @@ class TestScript:
         assert s.caption.endswith(config.SHORTS_AI_NOTICE)
 
     def test_write_script_exhausts(self, monkeypatch):
-        monkeypatch.setattr(script_writer, "_call_claude", lambda k, p: _valid_raw(hook="짧다"))
+        monkeypatch.setattr(script_writer, "_call_claude", lambda k, p, c="EDT": _valid_raw(hook="짧다"))
         with pytest.raises(script_writer.ScriptError):
             script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1",
                                        mood=mood_source.Mood("none"))
@@ -357,6 +357,7 @@ class TestRenderE2E:
         timing = renderer.render(scenes, "Debt Titan", out, rng=random.Random(1))
         assert validator.check(out) == []
         assert config.VIDEO_MIN_SEC <= timing.total <= config.VIDEO_MAX_SEC
+        assert out.stat().st_size < 50 * 1024 * 1024   # 텔레그램 미리보기 상한 안
         atoms = validator.top_level_atoms(out)
         assert atoms.index("moov") < atoms.index("mdat")
 
@@ -820,3 +821,223 @@ class TestVideoDoesNotLeakIntoThreadsPipelines:
         cfg(AUTOMATION_ENABLED=True, DAILY_POST_BUDGET=1)
         now = dt.datetime.combine(DAY, dt.time(20, 0), tzinfo=KST)
         assert safety.budget_block(safety.KIND_CHAT, [_post(now - dt.timedelta(hours=1), "VIDEO")], now)
+
+
+# ---------------------------------------------------------------------------
+# I. 점검 2026-10-04 반영 항목
+# ---------------------------------------------------------------------------
+
+
+class TestInspectionFixes:
+    def test_concurrency_is_per_job(self):
+        wf = yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))
+        assert "concurrency" not in wf          # 워크플로 단위 그룹 없음(승인 대기가 다음 날 build 를 막지 않게)
+        assert wf["jobs"]["build"]["concurrency"]["group"] == "threads-shorts-build"
+        pub = wf["jobs"]["publish"]["concurrency"]
+        assert pub["group"] == "threads-shorts-publish" and pub["cancel-in-progress"] is True
+
+    def test_job_budget_leaves_room_for_last_post(self):
+        timeout = yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))["jobs"]["publish"]["timeout-minutes"]
+        worst_last_post_min, setup_min = 35, 5
+        rng = random.Random(7)
+        for _ in range(3000):
+            start = dt.datetime.combine(DAY, dt.time(rng.randint(8, 20), rng.randint(0, 59)), tzinfo=KST)
+            out = shorts_plan.publish_schedule(start, 3, rng=rng)
+            if out:
+                used = (out[-1] - start).total_seconds() / 60
+                assert used + worst_last_post_min + setup_min <= timeout
+
+    def test_size_limit_below_github_push_limit(self):
+        assert config.VIDEO_MAX_BYTES < 100 * 1024 * 1024
+
+    def test_face_fatal_message_is_facebook_specific(self, monkeypatch, tmp_path, cfg):
+        from src import run_shorts_publish as rp
+        sent = []
+        monkeypatch.setattr(rp, "_notify", sent.append)
+        monkeypatch.setattr(rp, "run", mock.Mock(side_effect=face_client.FaceApiError(400, "x", code=190)))
+        assert rp.main() == safety.FATAL_EXIT_CODE
+        assert sent and sent[0].startswith("[Facebook]") and "authorize" not in sent[0]
+        assert "FACE_PAGE_TOKEN" in sent[0]
+
+    def test_stale_only_manifest_notifies(self, monkeypatch, tmp_path, cfg):
+        from src import run_shorts_publish as rp
+        stale = (dt.datetime.now(KST).date() - dt.timedelta(days=1)).strftime("%Y%m%d")
+        (tmp_path / "manifest.json").write_text(json.dumps({"items": [{"content_id": f"sv-{stale}-1"}]}), "utf-8")
+        monkeypatch.setenv("SHORTS_OUT_DIR", str(tmp_path))
+        sent = []
+        monkeypatch.setattr(rp, "_notify", sent.append)
+        assert rp.run() == 0
+        assert sent and "지난 날짜" in sent[0]
+
+    def test_render_length_regenerates_script_once(self, monkeypatch, tmp_path):
+        from src import run_shorts_build as rb
+        item = shorts_plan.PlannedVideo("sv-20261005-1", 0, "F1", ("face",))
+        scripts = []
+
+        def fake_write(key, **kw):
+            scripts.append(kw.get("extra_instruction", ""))
+            return mock.Mock(image_prompts=("a",) * 5, villain="Debt Titan", hook_type="B",
+                             caption="c", beats=[mock.Mock(narration="훅입니다", tone="", is_hook=True, sfx="")],
+                             to_dict=lambda: {})
+
+        calls = {"n": 0}
+
+        def fake_voice(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise renderer.RenderLengthError("너무 김")
+            return renderer.Timing((3.0,), 1.0, 57.0)
+
+        monkeypatch.setattr(rb.script_writer, "write_script", fake_write)
+        monkeypatch.setattr(rb.image_gen, "generate_scenes", lambda *a, **k: [tmp_path / "i.png"] * 5)
+        monkeypatch.setattr(rb, "_voice_and_render", fake_voice)
+        monkeypatch.setattr(rb.validator, "check", lambda p: [])
+        entry = rb.build_one(item, mood_source.Mood("none"), claude_key="k", gemini_key="g",
+                             used_types=set(), used_hooks=[], base=tmp_path, used_captions=set())
+        assert len(scripts) == 2 and scripts[0] == "" and "60초" in scripts[1]
+        assert calls["n"] == 2 and entry["duration"] == 57.0
+
+    def test_redact_github_installation_token(self):
+        from src.redact import redact
+        assert "ZZZZ" not in redact("push failed ghs_" + "Z" * 36)
+
+
+# ---------------------------------------------------------------------------
+# J. Facebook = GOC 단독 (마스터 결정 2026-10-04)
+# ---------------------------------------------------------------------------
+
+
+def _goc_raw(hook="시장에 경고등이 켜졌다"):
+    raw = _valid_raw(hook=hook)
+    raw["body"] = [
+        "금리라는 무게가 오늘도 다시 시장의 어깨를 천천히 누르기 시작했습니다",
+        "GOC 는 높은 성벽 위에서 흔들리는 도시의 불빛을 조용히 내려다봅니다",
+        "지키는 일은 크게 외치는 일이 아니라 끝까지 자리를 지키는 일입니다",
+        "지금 중요한 건 큰 소리가 아니라 끝까지 버티는 자세라고 그녀는 말합니다",
+        "물가와 고용 이야기가 같은 날 한꺼번에 겹치면서 시장의 소음이 커집니다",
+        "흔들릴수록 내가 지금 무엇을 보고 있는지 차분히 적어 두는 편이 낫습니다",
+        "날개를 접은 GOC 는 아직 지켜야 할 것이 남았다며 다시 앞을 바라봅니다",
+    ]
+    raw["image_prompts"] = ["guardian heroine watching a city from a wall at dusk"] * 5
+    raw["post_caption"] = "금리 이야기로 무거웠던 하루를 GOC 의 시선으로 정리했습니다. 소음보다 자세를 보자는 이야기입니다."
+    return raw
+
+
+class TestGocOnlyOnFacebook:
+    def test_plan_characters(self, cfg):
+        cfg(SHORTS_BUILD_ENABLED=True, AUTOMATION_ENABLED=True, FACE_ENABLED=True,
+            FACE_RAMP_START="2025-01-01", SHORTS_THREADS_ENABLED=True)
+        plan = shorts_plan.daily_plan(DAY)
+        assert all(p.character == "GOC" for p in plan)          # 전부 Facebook 행 → GOC
+        cfg(FACE_ENABLED=False)
+        only_threads = shorts_plan.daily_plan(DAY)
+        assert [p.character for p in only_threads] == ["EDT"]   # Threads 단독은 EDT
+
+    def test_hook_never_villain_type_for_goc(self):
+        assert hooks.select_hook_type("F1", None, allowed=hooks.NO_VILLAIN_HOOK_TYPES) == hooks.HOOK_A
+        for used in ({hooks.HOOK_A}, {hooks.HOOK_A, hooks.HOOK_C}, set(hooks.NO_VILLAIN_HOOK_TYPES)):
+            t = hooks.select_hook_type("F1", None, used, hooks.NO_VILLAIN_HOOK_TYPES)
+            assert t in hooks.NO_VILLAIN_HOOK_TYPES
+
+    def test_goc_valid_script_passes(self):
+        assert script_writer.validate(_goc_raw(), hooks.HOOK_A, character="GOC") == []
+
+    def test_goc_rejects_other_characters(self):
+        raw = _goc_raw()
+        raw["body"][1] = "EDT 가 높은 성벽 위에서 흔들리는 도시의 불빛을 조용히 내려다봅니다"
+        raw["body"][2] = "뎁트타이탄의 사슬이 도시 위로 소리 없이 길게 내려오고 있습니다 정말로"
+        raw["image_prompts"][0] = "a tiger hero with a chainsaw"
+        issues = script_writer.validate(raw, hooks.HOOK_A, character="GOC")
+        assert any("'EDT'" in i for i in issues)
+        assert any("'뎁트타이탄'" in i for i in issues)
+        assert any("'tiger'" in i for i in issues) and any("'chainsaw'" in i for i in issues)
+
+    def test_edt_rejects_goc(self):
+        raw = _valid_raw()
+        raw["body"][0] = "GOC 가 오늘도 다시 시장의 어깨를 천천히 누르기 시작했습니다 조용히"
+        issues = script_writer.validate(raw, hooks.HOOK_B, character="EDT")
+        assert any("'GOC'" in i for i in issues)
+
+    def test_goc_write_script(self, monkeypatch):
+        seen = {}
+
+        def fake(api_key, prompt, character="EDT"):
+            seen["prompt"], seen["character"] = prompt, character
+            return _goc_raw()
+
+        monkeypatch.setattr(script_writer, "_call_claude", fake)
+        s = script_writer.write_script("k", content_id="sv-20261005-1", fmt="F1",
+                                       mood=mood_source.Mood("rss", ("금리",), "관망"), character="GOC")
+        assert s.character == "GOC" and s.villain is None
+        assert s.hook_type != hooks.HOOK_B
+        assert seen["character"] == "GOC" and "빌런 없음" in seen["prompt"] and "GOC 수호 서사" in seen["prompt"]
+        assert s.to_dict()["character"] == "GOC"
+
+    def test_system_prompt_goc(self):
+        sp = script_writer.system_prompt("GOC")
+        assert "GOC 혼자만 등장" in sp and "EDT" in sp.split("다음 이름은 쓰지 않습니다:")[1].split("\n")[0]
+        assert "영문은 GOC 와" in sp
+
+    def test_goc_image_prompt(self):
+        from src.video import image_gen
+        p = image_gen.build_prompt("guardian watching the city", None, True, "GOC")
+        assert "Guardian of Capital (GOC)" in p and "only character" in p
+        assert "tiger" not in p.lower() and "Debt Titan" not in p
+        e = image_gen.build_prompt("x", "Debt Titan", False, "EDT")
+        assert "tiger" in e and "GOC" not in e
+
+    def test_reference_dirs_isolated(self, tmp_path):
+        from src.video import assets
+        (tmp_path / "reference" / "edt").mkdir(parents=True)
+        (tmp_path / "reference" / "goc").mkdir(parents=True)
+        (tmp_path / "reference" / "edt" / "edt.png").write_bytes(b"x")
+        (tmp_path / "reference" / "goc" / "goc.png").write_bytes(b"x")
+        assert [p.name for p in assets.reference_images("GOC", root=tmp_path)] == ["goc.png"]
+        assert [p.name for p in assets.reference_images("EDT", root=tmp_path)] == ["edt.png"]
+
+    def test_generate_scenes_uses_goc_refs(self, monkeypatch, tmp_path):
+        from src.video import image_gen
+        asked = []
+        monkeypatch.setattr(image_gen.assets, "reference_images", lambda c: asked.append(c) or [])
+
+        class Part:
+            inline_data = type("I", (), {"data": b"png"})()
+
+        class Resp:
+            candidates = [type("C", (), {"content": type("Ct", (), {"parts": [Part()]})()})()]
+
+        sent = []
+
+        class Client:
+            class models:
+                @staticmethod
+                def generate_content(model, contents, config=None):
+                    sent.append(contents[-1])
+                    return Resp()
+
+        out = image_gen.generate_scenes("k", ["scene"] * 2, None, tmp_path, client=Client, character="GOC")
+        assert asked == ["GOC"] and all(p for p in out)
+        assert all("Guardian of Capital (GOC)" in s for s in sent)
+
+    def test_build_one_passes_character(self, monkeypatch, tmp_path):
+        from src import run_shorts_build as rb
+        item = shorts_plan.PlannedVideo("sv-20261005-1", 0, "F1", ("face",), "GOC")
+        got = {}
+
+        def fake_write(key, **kw):
+            got["script_char"] = kw.get("character")
+            return mock.Mock(image_prompts=("a",) * 5, villain=None, hook_type="A", caption="c",
+                             beats=[mock.Mock(narration="훅입니다", tone="", is_hook=True, sfx="")],
+                             to_dict=lambda: {})
+
+        def fake_images(key, prompts, villain, out, character="EDT"):
+            got["image_char"] = character
+            return [tmp_path / "i.png"] * 5
+
+        monkeypatch.setattr(rb.script_writer, "write_script", fake_write)
+        monkeypatch.setattr(rb.image_gen, "generate_scenes", fake_images)
+        monkeypatch.setattr(rb, "_voice_and_render", lambda *a, **k: renderer.Timing((3.0,), 1.0, 57.0))
+        monkeypatch.setattr(rb.validator, "check", lambda p: [])
+        entry = rb.build_one(item, mood_source.Mood("none"), claude_key="k", gemini_key="g",
+                             used_types=set(), used_hooks=[], base=tmp_path, used_captions=set())
+        assert got == {"script_char": "GOC", "image_char": "GOC"} and entry["character"] == "GOC"

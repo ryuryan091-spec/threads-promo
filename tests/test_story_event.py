@@ -381,8 +381,8 @@ class TestScheduleSafety:
         return sorted(out)
 
     def test_event_never_shortly_before_publish(self):
-        events = self._kst_slots("Threads Story Event")
-        publishes = self._kst_slots("Threads Publish")
+        events = self._kst_slots("🧵 Threads Story Event")
+        publishes = self._kst_slots("🧵 Threads Publish")
         assert events and publishes
 
         # 이벤트 지터 최대 50분 + 정기 지터 8분 -> 90분 여유를 둔다
