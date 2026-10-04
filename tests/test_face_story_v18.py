@@ -1026,7 +1026,7 @@ class TestPublishRunner:
 class TestConfigAndWorkflow:
     def test_defaults_off(self):
         assert config.SAFETY_VARIABLE_DEFAULTS["FACE_STORY_ENABLED"] == "false"
-        assert config.VERSION == "1.8.0"
+        assert config.VERSION == "1.8.1"
         assert config.FACE_STORY_SCAN_ROWS > 10 >= 2
 
     def test_clamps(self, monkeypatch):
@@ -1202,3 +1202,89 @@ class TestMultiDaySimulation:
         # 같은 날 build 재실행은 오늘 행을 지난 이야기로 읽지 않는다(리뷰 #2-8)
         same_day = face_story.load_context("t", "db", today=dt.date(2026, 10, 9), session=store)
         assert same_day.next_series_no == 5
+
+
+# ---------------------------------------------------------------------------
+# H. 운영 베타 회귀 — 운영 출력 경로(out/shorts)는 상대 경로다
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not (__import__("shutil").which("ffmpeg") and __import__("shutil").which("ffprobe")),
+                    reason="ffmpeg 없음")
+class TestBetaRelativeOutPath:
+    def test_concat_line_absolute_and_quoted(self, tmp_path, monkeypatch):
+        from src.video import renderer
+        monkeypatch.chdir(tmp_path)
+        line = renderer._concat_line(pathlib.Path("out/shorts/a'b/seg.mp4"))
+        assert line.startswith(f"file '{tmp_path.as_posix()}/out/shorts/a")
+        assert "a'\\''b" in line
+
+    def test_render_with_relative_out_dir(self, tmp_path, monkeypatch, cfg):
+        """v1.8.0 운영 베타에서 발견: 상대 경로 출력이면 concat 이 경로를 겹쳐 렌더가 실패했다."""
+        import random
+        import subprocess
+
+        from src.video import renderer, validator
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(config, "X_URL", "https://x.com/tiger18272")
+        work = pathlib.Path("out/shorts/sv-20261005-1")
+        work.mkdir(parents=True)
+        img = work / "img.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=0x336699:s=1024x1536",
+                        "-frames:v", "1", str(img)], check=True)
+        scenes = []
+        for i in range(9):
+            wav = work / f"n{i}.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            f"sine=frequency={300 + i * 30}:sample_rate=24000:duration={2.6 if i == 0 else 5.2}",
+                            "-ac", "1", str(wav)], check=True)
+            scenes.append(renderer.SceneInput(img, wav, "시장에 경고등이 켜졌다", i == 0, None))
+        out = work / "video.mp4"
+        renderer.render(scenes, None, out, rng=random.Random(1))
+        assert validator.check(out) == []
+
+    def test_cover_by_character(self, tmp_path):
+        from src.video import assets
+        brand = tmp_path / "brand"
+        brand.mkdir()
+        for name in ("logo.png", "EDT_UNIVERS_cover.png", "goc_cover.png"):
+            (brand / name).write_bytes(b"x")
+        assert assets.find_cover(root=tmp_path, character="GOC").name == "goc_cover.png"
+        assert assets.find_cover(root=tmp_path, character="EDT").name == "EDT_UNIVERS_cover.png"
+        (brand / "goc_cover.png").unlink()
+        assert assets.find_cover(root=tmp_path, character="GOC") is None      # → 마지막 장면 사용
+        assert assets.find_cover(root=tmp_path).name == "EDT_UNIVERS_cover.png"  # 기존 동작
+
+    def test_goc_outro_no_edt_cover_and_logo_keyed(self, tmp_path, monkeypatch, cfg):
+        """운영 베타 발견: GOC 영상 아웃트로에 EDT 표지가 나오고, 로고 마젠타 배경이 그대로 보였다."""
+        import subprocess
+
+        from src.video import assets, renderer
+        root = tmp_path / "assets"
+        (root / "brand").mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=0x00FF00:s=1024x1536",
+                        "-frames:v", "1", str(root / "brand" / "EDT_cover.png")], check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=0xFF00FF:s=600x300",
+                        "-vf", "drawbox=x=250:y=100:w=100:h=100:color=0xFFAA00:t=fill,format=rgba",
+                        "-frames:v", "1", str(root / "brand" / "logo.png")], check=True)
+        real_files = assets._files
+        monkeypatch.setattr(assets, "_files", lambda sub, ext, r=None: real_files(sub, ext, r or root))
+        img = tmp_path / "goc.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=0x2040A0:s=1024x1536",
+                        "-frames:v", "1", str(img)], check=True)
+        out = tmp_path / "seg_outro.mp4"
+        renderer._render_outro(assets.find_cover(character="GOC") or img, "", out, tmp_path, None,
+                               tmp_path / "ffmpeg.log")
+        frame = tmp_path / "f.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-ss", "1", "-i", str(out), "-frames:v", "1", "-vf",
+                        "scale=1080:1920,format=rgb24", "-f", "rawvideo", str(frame)], check=True)
+        raw = frame.read_bytes()
+
+        def px(x, y):
+            i = (y * 1080 + x) * 3
+            return raw[i], raw[i + 1], raw[i + 2]
+
+        r, g, b = px(540, 960)                       # 화면 중앙 = 표지(배경)
+        assert g < 150 and b > 100                   # EDT 표지(초록)가 아니라 GOC 장면(파랑)
+        lr, lg_, lb = px(1080 - 60 - 10, 60 + 5)     # 로고 영역 모서리 = 마젠타가 아니어야 함
+        assert not (lr > 200 and lg_ < 80 and lb > 200)

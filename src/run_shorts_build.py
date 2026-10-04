@@ -117,7 +117,7 @@ def _voice_and_render(script, images, usable, gemini_key: str, work: Path, video
             image=image, audio=audios[idx], caption=beat.narration, is_hook=beat.is_hook,
             sfx=renderer.assets.find_sfx(beat.sfx) if beat.is_hook else None,
         ))
-    return renderer.render(scenes, script.villain, video)
+    return renderer.render(scenes, script.villain, video, character=script.character)
 
 
 def _load_story(plan: list[shorts_plan.PlannedVideo], today: dt.date) -> face_story.StoryContext | None:

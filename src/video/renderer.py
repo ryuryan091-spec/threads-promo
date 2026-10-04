@@ -21,7 +21,7 @@ from pathlib import Path
 from .. import config
 from . import assets
 
-VERSION = "1.0.0"
+VERSION = "1.0.2"   # v1.8.0 베타: concat 절대 경로 · 캐릭터별 표지 · 로고 배경 키잉
 
 log = logging.getLogger(__name__)
 
@@ -259,16 +259,6 @@ def _render_scene(scene: SceneInput, duration: float, tempo: float, zoom_in: boo
     _run(cmd, log_path)
 
 
-def _has_alpha(path: Path) -> bool:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt",
-         "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True, check=False)
-    pix_fmt = out.stdout.strip()
-    alpha_fmts = {"rgba", "bgra", "argb", "abgr", "ya8", "ya16be", "ya16le",
-                  "rgba64be", "rgba64le", "pal8"}
-    return pix_fmt in alpha_fmts or pix_fmt.startswith(("yuva", "gbrap"))
-
-
 def _render_outro(background: Path, handle: str, out: Path, tmp: Path, font: str | None,
                   log_path: Path) -> None:
     frames = max(1, int(OUTRO_DURATION_SEC * FPS))
@@ -286,9 +276,10 @@ def _render_outro(background: Path, handle: str, out: Path, tmp: Path, font: str
     if logo:
         cmd += ["-i", str(logo)]
         logo_w = int(W * LOGO_WIDTH_RATIO)
-        logo_chain = (f"[2:v]scale={logo_w}:-1[lg]" if _has_alpha(logo) else
-                      f"[2:v]colorkey={LOGO_CHROMA_KEY}:{LOGO_CHROMA_SIMILARITY}:{LOGO_CHROMA_BLEND},"
-                      f"format=rgba,scale={logo_w}:-1[lg]")
+        # 운영 베타 발견: 로고 PNG 가 RGBA 이지만 배경이 불투명 마젠타라 그대로 얹으면 마젠타 상자가 보였다.
+        #   알파 유무와 무관하게 마젠타 키잉을 한다(투명 PNG 에는 영향 없음).
+        logo_chain = (f"[2:v]format=rgba,colorkey={LOGO_CHROMA_KEY}:{LOGO_CHROMA_SIMILARITY}:"
+                      f"{LOGO_CHROMA_BLEND},scale={logo_w}:-1[lg]")
         fc = (f"{base}[bg];{logo_chain};"
               f"[bg][lg]overlay=W-w-{LOGO_MARGIN_PX}:{LOGO_MARGIN_PX},format=yuv420p[vout]")
     else:
@@ -304,8 +295,14 @@ def handle_from_x_url(x_url: str) -> str:
     return f"@{tail}" if tail and tail.replace("_", "").isalnum() else ""
 
 
+def _concat_line(path: Path) -> str:
+    """ffmpeg concat 목록 한 줄. 절대 경로 + 작은따옴표 이스케이프(공식 concat demuxer 인용 규칙)."""
+    quoted = path.resolve().as_posix().replace("'", "'\\''")
+    return f"file '{quoted}'\n"
+
+
 def render(scenes: list[SceneInput], villain: str, out_path: Path, *,
-           rng: random.Random | None = None) -> Timing:
+           rng: random.Random | None = None, character: str | None = None) -> Timing:
     """장면들을 이어 붙여 out_path(mp4, faststart)를 만든다. 반환은 실제 적용한 타이밍."""
     if not scenes:
         raise RenderError("장면이 없습니다")
@@ -332,12 +329,14 @@ def render(scenes: list[SceneInput], villain: str, out_path: Path, *,
         segments.append(seg)
 
     outro = tmp / "seg_outro.mp4"
-    background = assets.find_cover(rng=rng) or scenes[-1].image
+    background = assets.find_cover(rng=rng, character=character) or scenes[-1].image
     _render_outro(background, handle_from_x_url(config.X_URL), outro, tmp, font, log_path)
     segments.append(outro)
 
     concat_list = tmp / "concat.txt"
-    concat_list.write_text("".join(f"file '{p.as_posix()}'\n" for p in segments), encoding="utf-8")
+    # concat demuxer 는 목록 안의 상대 경로를 '목록 파일 위치' 기준으로 푼다. 운영 출력 경로(out/shorts)는 상대 경로라
+    #   상대 경로를 쓰면 out/shorts/<id>/_segments/out/shorts/... 로 겹쳐 실패한다(v1.8.0 운영 베타에서 발견) → 절대 경로.
+    concat_list.write_text("".join(_concat_line(p) for p in segments), encoding="utf-8")
     joined = tmp / "joined.mp4"
     _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy",
           str(joined)], log_path)

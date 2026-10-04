@@ -77,3 +77,13 @@
 | V5 | `GET /{page_id}/video_reels` 목록 응답(id·description) — Reels 가이드는 예시가 있으나 Graph API 레퍼런스는 Reading 불가로 표기. v1.7.0 부터 쓰는 요청이며 운영 로그로 확인 |
 | V6 | 오늘 UI 로 만든 단일 데이터 소스 DB 를 2022-06-28 로 조회·생성 — 문서에 명시 문장 없음. 첫 dry_run 에서 확인 |
 | V7 | 실패 처리된 릴스가 video_reels 목록에 나오는지(캡션해시 재조정의 '게시 흔적 없음' 판정 근거) — 문서 없음 |
+
+## 5. v1.8.1 운영 베타 (2026-10-04)
+배포 레포(main 9b870f2)를 받아 패키지와 대조하고, 실제 자산으로 오프라인 렌더를 돌렸다(API 호출 없음).
+| # | 발견 | 영향 | 조치 |
+|---|---|---|---|
+| B1 | ffmpeg concat 목록에 상대 경로 → 운영 출력(out/shorts, 상대 경로)에서 경로가 겹쳐 렌더 실패 | **모든 영상 생성 실패**(build 종료코드 2). 대본·이미지·TTS 비용은 이미 쓴 뒤 | 절대 경로 + 따옴표 이스케이프. 상대 경로 렌더 회귀 테스트 |
+| B2 | 아웃트로 표지를 brand/ 의 아무 이미지에서 고름 → GOC 영상에 EDT 표지 | Facebook GOC 단독 규칙 위반 | 캐릭터별 표지(GOC 는 이름에 goc 포함만, 없으면 마지막 장면) |
+| B3 | 로고 PNG 가 RGBA 인데 배경이 불투명 마젠타 → 알파로 판단해 키잉 생략 | 아웃트로에 마젠타 상자 | 항상 마젠타 키잉 |
+| D1 | 레포에 src/src · tests/tests · scripts/scripts 잔존(v1.6 사본) | verify_repo 검사 12 FAIL, pytest 수집 오류(실행 경로는 정상) | 레포에서 삭제 필요(마스터) |
+| D2 | 자산이 assets/bgm·sfx·brand·reference 에 있음 — 코드는 assets/video/* 를 읽음 | BGM·효과음·로고·GOC 참조 이미지 전부 미사용 | assets/video/ 아래로 이동 필요(마스터) |

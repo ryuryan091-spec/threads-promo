@@ -15,7 +15,7 @@ import logging
 import random
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"   # v1.8.0 베타: 아웃트로 표지를 캐릭터별로 고른다
 
 log = logging.getLogger(__name__)
 
@@ -71,9 +71,20 @@ def find_logo(*, root: Path | None = None) -> Path | None:
     return logos[0] if logos else None
 
 
-def find_cover(*, rng: random.Random | None = None, root: Path | None = None) -> Path | None:
+def find_cover(*, rng: random.Random | None = None, root: Path | None = None,
+               character: str | None = None) -> Path | None:
+    """아웃트로 표지. character 를 주면 그 캐릭터 영상에 맞는 표지만 고른다(v1.8.0 운영 베타 발견).
+
+    - GOC: 파일 이름에 'goc' 가 들어간 표지만(Facebook 은 GOC 만 등장 — 마스터 결정 2026-10-04).
+      없으면 None → 렌더러가 마지막 장면(GOC 생성 이미지)을 쓴다.
+    - 그 밖(EDT): 'goc' 가 들어가지 않은 표지.
+    - None: 기존 동작(로고가 아닌 모든 이미지).
+    """
     rng = rng or random.Random()
     covers = [p for p in _files("brand", IMAGE_EXTENSIONS, root) if p.stem.lower() != LOGO_STEM]
+    if character is not None:
+        is_goc = character.upper() == "GOC"
+        covers = [p for p in covers if ("goc" in p.stem.lower()) == is_goc]
     return rng.choice(covers) if covers else None
 
 
