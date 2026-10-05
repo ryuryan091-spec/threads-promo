@@ -1,0 +1,108 @@
+name: 📘 Facebook Reels Publish
+
+# DN2026_0003 (2026-10-05 마스터 결정) — 발행 거래 분리: Facebook 릴스 게시 전용 파이프라인
+#   기동 경로
+#     1) 자동: shorts.yml build 성공 → dispatch_face job 이 이 워크플로를 workflow_dispatch 로 기동
+#              (build_run_id=해당 실행, timing=window → Facebook 시간대 06:06~22:00 준수)
+#     2) 수동: Actions › 📘 Facebook Reels Publish › Run workflow
+#              미게시분 재게시 — build_run_id 비우면 만료 전 최신 'shorts' artifact 사용,
+#              target_date 로 지난 회차 지정, timing=now 면 시간대 무시하고 지금부터 게시
+#   중복 방지: 같은 설명(캡션) 게시물이 있으면 건너뜀 + Facebook 회차 원장(FACE_STORY_ENABLED) 재게시 방지
+#   차단 스위치: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED (shorts.yml 과 동일)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        options: [dry_run, live]
+        default: dry_run
+      timing:
+        description: "now=시간대 무시·지금부터 게시 / window=Facebook 시간대(06:06~22:00) 준수"
+        type: choice
+        options: [now, window]
+        default: now
+      build_run_id:
+        description: "영상 build 실행 ID (비우면 만료 전 최신 'shorts' artifact)"
+        required: false
+        default: ""
+      target_date:
+        description: "게시할 회차 날짜 YYYY-MM-DD (KST, 비우면 오늘)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read   # 다른 실행의 artifact 조회·다운로드
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: face-reels-publish
+      cancel-in-progress: false   # 업로드 중인 실행을 끊지 않는다(대기열)
+    # 편간 대기(job 예산 300분) + 업로드·처리 대기
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve build artifact
+        id: art
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN: ${{ inputs.build_run_id }}
+        run: |
+          RUN="$INPUT_RUN"
+          if [ -z "$RUN" ]; then
+            RUN=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=shorts&per_page=20" \
+              --jq '[.artifacts[] | select(.expired | not)][0].workflow_run.id // empty')
+          fi
+          if [ -z "$RUN" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::게시할 'shorts' artifact 없음(만료 또는 build 미실행)"
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN" >> "$GITHUB_OUTPUT"
+          echo "build run: $RUN"
+
+      - uses: actions/setup-python@v5
+        if: steps.art.outputs.found == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+        if: steps.art.outputs.found == 'true'
+
+      - uses: actions/download-artifact@v4
+        if: steps.art.outputs.found == 'true'
+        with:
+          name: shorts
+          path: out/shorts
+          run-id: ${{ steps.art.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish Facebook reels
+        if: steps.art.outputs.found == 'true'
+        env:
+          AUTOMATION_ENABLED: ${{ vars.AUTOMATION_ENABLED || 'false' }}
+          WARMUP_UNTIL: ${{ vars.WARMUP_UNTIL }}
+          FACE_ENABLED: ${{ vars.FACE_ENABLED || 'false' }}
+          FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
+          FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
+          FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
+          FACE_PAGE_TOKEN: ${{ secrets.FACE_PAGE_TOKEN }}
+          FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          FACE_NOTION_DB_ID: ${{ secrets.FACE_NOTION_DB_ID }}
+          PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          SHORTS_OUT_DIR: out/shorts
+          SHORTS_PUBLISH_CHANNELS: face
+          SHORTS_TARGET_DATE: ${{ inputs.target_date }}
+          SHORTS_IGNORE_WINDOW: ${{ inputs.timing == 'now' && 'true' || 'false' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
+        run: python -m src.run_shorts_publish

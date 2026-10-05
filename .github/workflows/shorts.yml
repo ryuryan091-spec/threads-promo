@@ -10,6 +10,13 @@ name: 📘🧵 Meta Shorts (Facebook · Threads)
 #   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +5~40분) / Threads 10:00~22:00 유지 (src/config.py)
 #   - build 는 영상 생성 시간을 고려해 게시 하한(06:06)보다 1시간 먼저 시작한다.
 #   - 차단 스위치는 그대로: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED · SHORTS_BUILD_ENABLED
+#
+# DN2026_0003 (2026-10-05 마스터 결정) — 발행 거래 분리
+#   - Facebook 게시는 별도 워크플로 face_publish.yml(📘 Facebook Reels Publish)이 수행한다.
+#   - 이 워크플로의 publish job 은 Threads 동영상만 게시한다(SHORTS_PUBLISH_CHANNELS=threads).
+#   - build 성공 후 dispatch_face job 이 face_publish.yml 을 이 실행 ID 로 기동한다
+#     (GITHUB_TOKEN 으로 기동 가능한 이벤트는 workflow_dispatch — GitHub 문서 기준).
+#     → Threads 가 10시대까지 대기해도 Facebook 은 06:06 시간대에 독립적으로 게시된다.
 # Facebook 전용 값은 FACE_ 접두(Threads 와 공유하지 않는 값).
 
 "on":
@@ -109,6 +116,27 @@ jobs:
             out/shorts/*/script.json
           retention-days: 3
 
+  # DN2026_0003 : Facebook 게시 파이프라인(face_publish.yml) 기동 — build 산출물(artifact) 기준
+  dispatch_face:
+    needs: build
+    if: needs.build.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write   # workflow_dispatch 기동
+    steps:
+      - name: Dispatch face_publish.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 정기 실행은 Variables DRY_RUN, 수동 실행은 inputs.mode 를 그대로 넘긴다
+          FACE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || ((vars.DRY_RUN || 'true') == 'false' && 'live' || 'dry_run') }}
+        run: |
+          gh workflow run face_publish.yml \
+            --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" \
+            -f mode="$FACE_MODE" -f build_run_id="${{ github.run_id }}" \
+            -f timing=window -f target_date=""
+          echo "face_publish.yml 기동: mode=$FACE_MODE build_run_id=${{ github.run_id }}"
+
   publish:
     needs: build
     if: needs.build.outputs.has_items == 'true'
@@ -158,5 +186,7 @@ jobs:
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
           SHORTS_OUT_DIR: out/shorts
+          # DN2026_0003 : 이 job 은 Threads 동영상만 게시 (Facebook 은 face_publish.yml)
+          SHORTS_PUBLISH_CHANNELS: threads
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
         run: python -m src.run_shorts_publish
