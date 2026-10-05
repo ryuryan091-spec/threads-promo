@@ -1,0 +1,272 @@
+name: "🌐 Sidestory Run (Facebook side canon)"
+
+# SIDESTORY track — isolated from the main X pipeline (K-1).
+#  - Separate concurrency group (main uses icg-<date>).
+#  - SUPABASE_SCHEMA is pinned to icg_side; main schema is read only via views.
+#  - SG-8 (v8.9): image / p1 / inspect stages check each panel picture with Claude vision.
+#  - X / Telegram channel secrets are never injected. FACE_* reach only the publish / verify
+#    stages. A real post needs BOTH the "publish only: post to Facebook for real" input AND the
+#    repository variable SIDESTORY_PUBLISH_LIVE == 'true' (P2 double lock); otherwise dry run.
+# P4 schedule (Tue/Thu, inert until repository variable SIDESTORY_SCHEDULE_ENABLED == 'true'):
+#   10:17 KST (01:17 UTC)  p1       — script → images → SG-8 → slides
+#   11:17 KST (02:17 UTC)  publish  — posts only if assembled >= 60 min ago and not yet posted
+#   12:17 KST (03:17 UTC)  publish  — retry for a late schedule (no-op when already posted)
+#   13:17 KST (04:17 UTC)  publish  — last attempt; still waiting = alert for a manual run
+#   Scheduled publish is live only when repository variable SIDESTORY_PUBLISH_LIVE == 'true'.
+# Every p1 / publish run sends a Telegram notice (success and failure) to the internal channel
+# used by Watchdog. The Telegram secrets reach only the notify step, never sidestory code.
+
+on:
+  schedule:
+    - cron: "17 1 * * 2,4"
+    - cron: "17 2 * * 2,4"
+    - cron: "17 3 * * 2,4"
+    - cron: "17 4 * * 2,4"
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "gate | echo (P0) · narrative | image | assembly | inspect | p1 (P1, paid) · refgen (Zero Block REF, paid) · publish | verify (P2, Facebook)"
+        required: true
+        default: "gate"
+        type: choice
+        options: [gate, echo, narrative, image, assembly, inspect, p1, refgen, publish, verify]
+      date:
+        description: "Side slot date KST (YYYY-MM-DD). Empty = today KST"
+        required: false
+        default: ""
+      force:
+        description: "Ignore Tue/Thu slot check"
+        required: false
+        default: false
+        type: boolean
+      persist:
+        description: "Write draft to icg_side (echo stage only; P1 stages always write)"
+        required: false
+        default: false
+        type: boolean
+      retry_hold:
+        description: "p1 / publish: release a held episode and resume from its last artifact"
+        required: false
+        default: false
+        type: boolean
+      ref_revision:
+        description: "refgen only: REF revision number r<N> (1..999). Use a new number for new prompts"
+        required: false
+        default: "1"
+      publish_live:
+        description: "publish only: post to Facebook for real (also needs repository variable SIDESTORY_PUBLISH_LIVE=true). Unchecked = dry run"
+        required: false
+        default: false
+        type: boolean
+      artifact_run_id:
+        description: "Resume only: previous run id or run URL whose artifact to restore. Leave EMPTY for a first run"
+        required: false
+        default: ""
+
+concurrency:
+  group: sidestory-${{ inputs.date || 'today' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sidestory:
+    if: github.event_name == 'workflow_dispatch' || vars.SIDESTORY_SCHEDULE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: .
+      SUPABASE_SCHEMA: icg_side
+      ICG_GENERATION_REVISION: "1"
+      # F3: second dollar source (ICE DXY close). "off" = main broad index only.
+      SIDESTORY_DXY_SOURCE: yfinance
+      DRY_RUN: "true"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # P4: one place decides what this run does (manual inputs or which schedule fired).
+      - name: Resolve mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHED: ${{ github.event.schedule }}
+          IN_STAGE: ${{ inputs.stage }}
+          IN_LIVE: ${{ inputs.publish_live }}
+          LIVE_VAR: ${{ vars.SIDESTORY_PUBLISH_LIVE }}
+        run: |
+          STAGE="$IN_STAGE"; WAIT=0; FINAL=false
+          if [ "$EVENT" = "schedule" ]; then
+            case "$SCHED" in
+              "17 1 * * 2,4") STAGE=p1 ;;
+              "17 2 * * 2,4"|"17 3 * * 2,4") STAGE=publish; WAIT=60 ;;
+              "17 4 * * 2,4") STAGE=publish; WAIT=60; FINAL=true ;;
+              *) echo "::error::unknown schedule '$SCHED'"; exit 1 ;;
+            esac
+          fi
+          LIVE=false
+          if [ "$STAGE" = "publish" ] && [ "$LIVE_VAR" = "true" ] \
+             && { [ "$EVENT" = "schedule" ] || [ "$IN_LIVE" = "true" ]; }; then LIVE=true; fi
+          { echo "stage=$STAGE"; echo "live=$LIVE"; echo "wait=$WAIT"; echo "final=$FINAL"; } >> "$GITHUB_OUTPUT"
+          echo "EVENT=$EVENT SCHED=$SCHED STAGE=$STAGE LIVE=$LIVE WAIT=$WAIT FINAL=$FINAL"
+
+      # Only NotoSansCJK-Bold.ttc is used (engine/assembly/pil_composer.py). Cache that one file
+      # so a slow Ubuntu mirror (observed 12m32s for the 61 MB package) is paid at most once.
+      - name: Restore Korean font cache
+        id: fontcache
+        if: (steps.mode.outputs.stage == 'assembly' || steps.mode.outputs.stage == 'p1')
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/sidestory-fonts
+          key: noto-cjk-bold-v1-${{ runner.os }}
+
+      - name: Install Korean font (slide composer)
+        if: (steps.mode.outputs.stage == 'assembly' || steps.mode.outputs.stage == 'p1') && steps.fontcache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y fonts-noto-cjk --no-install-recommends -q
+          mkdir -p ~/.cache/sidestory-fonts
+          cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ~/.cache/sidestory-fonts/
+
+      - name: Save Korean font cache
+        if: (steps.mode.outputs.stage == 'assembly' || steps.mode.outputs.stage == 'p1') && steps.fontcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/sidestory-fonts
+          key: noto-cjk-bold-v1-${{ runner.os }}
+
+      - name: Place Korean font
+        if: (steps.mode.outputs.stage == 'assembly' || steps.mode.outputs.stage == 'p1')
+        run: |
+          sudo mkdir -p /usr/share/fonts/opentype/noto
+          sudo cp -n ~/.cache/sidestory-fonts/NotoSansCJK-Bold.ttc /usr/share/fonts/opentype/noto/
+          test -s /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc
+
+      - name: Resolve slot date
+        id: slot
+        env:
+          SIDE_DATE: ${{ inputs.date }}
+        run: |
+          if [ -n "$SIDE_DATE" ]; then SLOT="$SIDE_DATE"; else SLOT="$(TZ=Asia/Seoul date +%F)"; fi
+          echo "date=$SLOT" >> "$GITHUB_OUTPUT"
+          echo "SLOT=$SLOT"
+
+      - name: Validate artifact_run_id
+        id: art
+        env:
+          RAW: ${{ inputs.artifact_run_id }}
+        run: |
+          RUN_ID="$(printf '%s' "$RAW" | tr -d '[:space:]')"
+          RUN_ID="${RUN_ID##*/runs/}"; RUN_ID="${RUN_ID%%/*}"
+          if [ -z "$RUN_ID" ]; then echo "id=" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if ! printf '%s' "$RUN_ID" | grep -Eq '^[0-9]+$'; then
+            echo "::error::artifact_run_id must be the numeric run id (e.g. 18234567890) or the run URL. Leave it empty for a first run. Got: '$RAW'"
+            exit 1
+          fi
+          echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      # P4: an unattended publish restores the assembly run recorded in manifest_json.run_id.
+      - name: Locate assembly artifact
+        id: loc
+        if: steps.mode.outputs.stage == 'publish' && steps.art.outputs.id == ''
+        env:
+          SIDE_DATE: ${{ steps.slot.outputs.date }}
+        run: |
+          LINE=$(python -m sidestory --stage locate --date "$SIDE_DATE" | grep '^run_id=' || true)
+          echo "${LINE:-run_id=}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore previous artifact
+        if: steps.art.outputs.id != '' || steps.loc.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.art.outputs.id || steps.loc.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: sidestory-${{ steps.slot.outputs.date }}-*
+          merge-multiple: true
+          path: output/sidestory
+
+      - name: Run sidestory stage
+        env:
+          STAGE: ${{ steps.mode.outputs.stage }}
+          SIDE_DATE: ${{ steps.slot.outputs.date }}
+          FORCE: ${{ inputs.force && '--force' || '' }}
+          NO_PERSIST: ${{ (github.event_name == 'workflow_dispatch' && !inputs.persist && (inputs.stage == 'gate' || inputs.stage == 'echo')) && '--no-persist' || '' }}
+          RETRY_HOLD: ${{ inputs.retry_hold && '--retry-hold' || '' }}
+          # Live lock (Resolve mode): publish AND repository variable SIDESTORY_PUBLISH_LIVE ==
+          # 'true' AND (schedule OR the "publish only: post to Facebook for real" input).
+          LIVE: ${{ steps.mode.outputs.live == 'true' && '--live' || '' }}
+          DRY_RUN: ${{ steps.mode.outputs.live == 'true' && 'false' || 'true' }}
+          WAIT: ${{ steps.mode.outputs.wait }}
+          FACE_PAGE_ID: ${{ (steps.mode.outputs.stage == 'publish' || steps.mode.outputs.stage == 'verify') && secrets.FACE_PAGE_ID || '' }}
+          FACE_PAGE_TOKEN: ${{ (steps.mode.outputs.stage == 'publish' || steps.mode.outputs.stage == 'verify') && secrets.FACE_PAGE_TOKEN || '' }}
+          REF_REVISION: ${{ inputs.ref_revision || '1' }}
+          # P1 providers (narrative / image / inspect / p1 stages; SG-8 uses ANTHROPIC_API_KEY)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_SUB_PAY_KEY: ${{ secrets.GEMINI_API_SUB_PAY_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_SIDE_SYSTEM_ID: ${{ secrets.NOTION_SIDE_SYSTEM_ID }}
+        run: |
+          ARGS=(--stage "$STAGE" --date "$SIDE_DATE" --report sidestory_report.json)
+          if [ -n "$FORCE" ]; then ARGS+=("$FORCE"); fi
+          if [ -n "$NO_PERSIST" ]; then ARGS+=("$NO_PERSIST"); fi
+          if [ -n "$RETRY_HOLD" ] && { [ "$STAGE" = "p1" ] || [ "$STAGE" = "publish" ]; }; then ARGS+=("$RETRY_HOLD"); fi
+          if [ -n "$LIVE" ]; then ARGS+=("$LIVE"); fi
+          if [ "$STAGE" = "publish" ] && [ "${WAIT:-0}" != "0" ]; then ARGS+=(--wait-minutes "$WAIT"); fi
+          if [ "$STAGE" = "refgen" ]; then
+            if ! printf '%s' "$REF_REVISION" | grep -Eq '^[0-9]{1,3}$'; then
+              echo "::error::ref_revision must be 1..999 (got '$REF_REVISION')"; exit 1
+            fi
+            ARGS+=(--ref-revision "$REF_REVISION")
+          fi
+          echo "STAGE=$STAGE SIDE_DATE=$SIDE_DATE FORCE=$FORCE NO_PERSIST=$NO_PERSIST RETRY_HOLD=$RETRY_HOLD LIVE=$LIVE DRY_RUN=$DRY_RUN WAIT=$WAIT SIDESTORY_DXY_SOURCE=$SIDESTORY_DXY_SOURCE"
+          python -m sidestory "${ARGS[@]}"
+
+      - name: Upload side artifacts
+        if: always() && (steps.mode.outputs.stage == 'image' || steps.mode.outputs.stage == 'assembly' || steps.mode.outputs.stage == 'p1' || steps.mode.outputs.stage == 'refgen')
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidestory-${{ steps.slot.outputs.date }}-${{ github.run_id }}
+          path: output/sidestory/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # P4: notice for every p1 / publish run (success and failure) and every scheduled run.
+      - name: Notify (Telegram internal)
+        if: always() && (github.event_name == 'schedule' || steps.mode.outputs.stage == 'p1' || steps.mode.outputs.stage == 'publish')
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_PAID_CHANNEL_ID }}
+          STAGE: ${{ steps.mode.outputs.stage || inputs.stage || 'unknown' }}
+          SIDE_DATE: ${{ steps.slot.outputs.date || 'unknown' }}
+          FINAL: ${{ steps.mode.outputs.final }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          set -uo pipefail
+          FLAGS=()
+          if [ "$FINAL" = "true" ]; then FLAGS+=(--final); fi
+          if ! TEXT=$(python -m sidestory.app.notify --report sidestory_report.json \
+                --stage "$STAGE" --date "$SIDE_DATE" --run-url "$RUN_URL" "${FLAGS[@]}"); then
+            TEXT=$(printf '🚨 외전 %s %s 실행 실패 (알림 생성 오류)\n로그: %s' "$SIDE_DATE" "$STAGE" "$RUN_URL")
+          fi
+          if [ -z "$TEXT" ]; then echo "nothing to notify"; exit 0; fi
+          if [ -z "${BOT_TOKEN}" ] || [ -z "${CHAT_ID}" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN or TELEGRAM_PAID_CHANNEL_ID missing"; exit 1
+          fi
+          curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 5 --max-time 20 \
+            -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${TEXT}" \
+            --data-urlencode "disable_web_page_preview=true" > /dev/null
+          echo "notified"
