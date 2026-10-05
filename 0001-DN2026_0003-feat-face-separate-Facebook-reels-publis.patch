@@ -1,0 +1,498 @@
+From ee6efae21e61afd1a600641c3201728e6c479822 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 13:32:17 +0000
+Subject: [PATCH] DN2026_0003 feat(face): separate Facebook reels publish into
+ face_publish.yml
+
+- new workflow face_publish.yml (manual + dispatched by shorts.yml build)
+- shorts.yml: dispatch_face job after build; publish job is Threads-only
+- run_shorts_publish: SHORTS_PUBLISH_CHANNELS / SHORTS_TARGET_DATE / SHORTS_IGNORE_WINDOW
+- backlog re-publish: timing=now, target_date for previous day, duplicate guard unchanged
+- verify_repo, docs, tests updated; change points tagged DN2026_0003
+---
+ .github/workflows/face_publish.yml | 108 ++++++++++++++++++++++
+ .github/workflows/shorts.yml       |  30 ++++++
+ DESIGN_V17_SHORTS.md               |   3 +-
+ OPERATIONS.md                      |   9 ++
+ scripts/verify_repo.py             |   5 +-
+ src/run_shorts_publish.py          |  63 +++++++++++--
+ tests/test_shorts_v17.py           | 141 +++++++++++++++++++++++++++++
+ 7 files changed, 350 insertions(+), 9 deletions(-)
+ create mode 100644 .github/workflows/face_publish.yml
+
+diff --git a/.github/workflows/face_publish.yml b/.github/workflows/face_publish.yml
+new file mode 100644
+index 0000000..966c0a1
+--- /dev/null
++++ b/.github/workflows/face_publish.yml
+@@ -0,0 +1,108 @@
++name: 📘 Facebook Reels Publish
++
++# DN2026_0003 (2026-10-05 마스터 결정) — 발행 거래 분리: Facebook 릴스 게시 전용 파이프라인
++#   기동 경로
++#     1) 자동: shorts.yml build 성공 → dispatch_face job 이 이 워크플로를 workflow_dispatch 로 기동
++#              (build_run_id=해당 실행, timing=window → Facebook 시간대 06:06~22:00 준수)
++#     2) 수동: Actions › 📘 Facebook Reels Publish › Run workflow
++#              미게시분 재게시 — build_run_id 비우면 만료 전 최신 'shorts' artifact 사용,
++#              target_date 로 지난 회차 지정, timing=now 면 시간대 무시하고 지금부터 게시
++#   중복 방지: 같은 설명(캡션) 게시물이 있으면 건너뜀 + Facebook 회차 원장(FACE_STORY_ENABLED) 재게시 방지
++#   차단 스위치: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED (shorts.yml 과 동일)
++
++"on":
++  workflow_dispatch:
++    inputs:
++      mode:
++        description: "실행 모드"
++        type: choice
++        options: [dry_run, live]
++        default: dry_run
++      timing:
++        description: "now=시간대 무시·지금부터 게시 / window=Facebook 시간대(06:06~22:00) 준수"
++        type: choice
++        options: [now, window]
++        default: now
++      build_run_id:
++        description: "영상 build 실행 ID (비우면 만료 전 최신 'shorts' artifact)"
++        required: false
++        default: ""
++      target_date:
++        description: "게시할 회차 날짜 YYYY-MM-DD (KST, 비우면 오늘)"
++        required: false
++        default: ""
++
++permissions:
++  contents: read
++  actions: read   # 다른 실행의 artifact 조회·다운로드
++
++jobs:
++  publish:
++    runs-on: ubuntu-latest
++    concurrency:
++      group: face-reels-publish
++      cancel-in-progress: false   # 업로드 중인 실행을 끊지 않는다(대기열)
++    # 편간 대기(job 예산 300분) + 업로드·처리 대기
++    timeout-minutes: 350
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Resolve build artifact
++        id: art
++        env:
++          GH_TOKEN: ${{ github.token }}
++          INPUT_RUN: ${{ inputs.build_run_id }}
++        run: |
++          RUN="$INPUT_RUN"
++          if [ -z "$RUN" ]; then
++            RUN=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=shorts&per_page=20" \
++              --jq '[.artifacts[] | select(.expired | not)][0].workflow_run.id // empty')
++          fi
++          if [ -z "$RUN" ]; then
++            echo "found=false" >> "$GITHUB_OUTPUT"
++            echo "::warning::게시할 'shorts' artifact 없음(만료 또는 build 미실행)"
++            exit 0
++          fi
++          echo "found=true" >> "$GITHUB_OUTPUT"
++          echo "run_id=$RUN" >> "$GITHUB_OUTPUT"
++          echo "build run: $RUN"
++
++      - uses: actions/setup-python@v5
++        if: steps.art.outputs.found == 'true'
++        with:
++          python-version: "3.12"
++          cache: pip
++
++      - run: pip install -r requirements.txt
++        if: steps.art.outputs.found == 'true'
++
++      - uses: actions/download-artifact@v4
++        if: steps.art.outputs.found == 'true'
++        with:
++          name: shorts
++          path: out/shorts
++          run-id: ${{ steps.art.outputs.run_id }}
++          github-token: ${{ github.token }}
++
++      - name: Publish Facebook reels
++        if: steps.art.outputs.found == 'true'
++        env:
++          AUTOMATION_ENABLED: ${{ vars.AUTOMATION_ENABLED || 'false' }}
++          WARMUP_UNTIL: ${{ vars.WARMUP_UNTIL }}
++          FACE_ENABLED: ${{ vars.FACE_ENABLED || 'false' }}
++          FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
++          FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
++          FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
++          FACE_PAGE_TOKEN: ${{ secrets.FACE_PAGE_TOKEN }}
++          FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
++          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
++          FACE_NOTION_DB_ID: ${{ secrets.FACE_NOTION_DB_ID }}
++          PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
++          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
++          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
++          SHORTS_OUT_DIR: out/shorts
++          SHORTS_PUBLISH_CHANNELS: face
++          SHORTS_TARGET_DATE: ${{ inputs.target_date }}
++          SHORTS_IGNORE_WINDOW: ${{ inputs.timing == 'now' && 'true' || 'false' }}
++          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
++        run: python -m src.run_shorts_publish
+diff --git a/.github/workflows/shorts.yml b/.github/workflows/shorts.yml
+index 3b5c7cf..48a477a 100644
+--- a/.github/workflows/shorts.yml
++++ b/.github/workflows/shorts.yml
+@@ -10,6 +10,13 @@ name: 📘🧵 Meta Shorts (Facebook · Threads)
+ #   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +5~40분) / Threads 10:00~22:00 유지 (src/config.py)
+ #   - build 는 영상 생성 시간을 고려해 게시 하한(06:06)보다 1시간 먼저 시작한다.
+ #   - 차단 스위치는 그대로: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED · SHORTS_BUILD_ENABLED
++#
++# DN2026_0003 (2026-10-05 마스터 결정) — 발행 거래 분리
++#   - Facebook 게시는 별도 워크플로 face_publish.yml(📘 Facebook Reels Publish)이 수행한다.
++#   - 이 워크플로의 publish job 은 Threads 동영상만 게시한다(SHORTS_PUBLISH_CHANNELS=threads).
++#   - build 성공 후 dispatch_face job 이 face_publish.yml 을 이 실행 ID 로 기동한다
++#     (GITHUB_TOKEN 으로 기동 가능한 이벤트는 workflow_dispatch — GitHub 문서 기준).
++#     → Threads 가 10시대까지 대기해도 Facebook 은 06:06 시간대에 독립적으로 게시된다.
+ # Facebook 전용 값은 FACE_ 접두(Threads 와 공유하지 않는 값).
+ 
+ "on":
+@@ -109,6 +116,27 @@ jobs:
+             out/shorts/*/script.json
+           retention-days: 3
+ 
++  # DN2026_0003 : Facebook 게시 파이프라인(face_publish.yml) 기동 — build 산출물(artifact) 기준
++  dispatch_face:
++    needs: build
++    if: needs.build.outputs.has_items == 'true'
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    permissions:
++      actions: write   # workflow_dispatch 기동
++    steps:
++      - name: Dispatch face_publish.yml
++        env:
++          GH_TOKEN: ${{ github.token }}
++          # 정기 실행은 Variables DRY_RUN, 수동 실행은 inputs.mode 를 그대로 넘긴다
++          FACE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || ((vars.DRY_RUN || 'true') == 'false' && 'live' || 'dry_run') }}
++        run: |
++          gh workflow run face_publish.yml \
++            --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" \
++            -f mode="$FACE_MODE" -f build_run_id="${{ github.run_id }}" \
++            -f timing=window -f target_date=""
++          echo "face_publish.yml 기동: mode=$FACE_MODE build_run_id=${{ github.run_id }}"
++
+   publish:
+     needs: build
+     if: needs.build.outputs.has_items == 'true'
+@@ -158,5 +186,7 @@ jobs:
+           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+           GITHUB_TOKEN: ${{ github.token }}
+           SHORTS_OUT_DIR: out/shorts
++          # DN2026_0003 : 이 job 은 Threads 동영상만 게시 (Facebook 은 face_publish.yml)
++          SHORTS_PUBLISH_CHANNELS: threads
+           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}
+         run: python -m src.run_shorts_publish
+diff --git a/DESIGN_V17_SHORTS.md b/DESIGN_V17_SHORTS.md
+index 054854b..14fcb52 100644
+--- a/DESIGN_V17_SHORTS.md
++++ b/DESIGN_V17_SHORTS.md
+@@ -18,7 +18,8 @@ shorts.yml (KST 월~토 05:06 — DN2026_0002, 이전: 매일 08:19)
+  [build]  SHORTS_BUILD_ENABLED · 휴식일 · 램프 → 오늘 N편 계획
+           mood_source(테마·분위기) → 대본(Claude) → 이미지 5장(Gemini) → TTS(Gemini) → ffmpeg → ffprobe 검사
+           manifest.json + mp4 → artifact(3일) · 텔레그램 미리보기
+- [publish] (has_items 일 때만) build 직후 자동 시작 (DN2026_0002)
++ [publish] (has_items 일 때만) build 직후 자동 시작 (DN2026_0002) — DN2026_0003: Threads 전용
++ [dispatch_face] DN2026_0003 — face_publish.yml(📘 Facebook Reels Publish) 기동 → Facebook 게시는 별도 파이프라인
+           오늘 content_id 만(신선도) → 게시 시각(채널별 시간대: Facebook 06:06~22시 · Threads 10~22시,
+           첫 편 5~40분 지연, 편간 120~200분, job 300분 안)
+           편마다: Facebook 릴스(같은 설명 있으면 건너뜀) → 첫 편만 Threads 동영상(킬 스위치·워밍업·총량 재확인)
+diff --git a/OPERATIONS.md b/OPERATIONS.md
+index a466077..666df17 100644
+--- a/OPERATIONS.md
++++ b/OPERATIONS.md
+@@ -551,6 +551,15 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. 
+ 7. **게시 후**: 앱에서 각 게시물 'AI 정보' 표시를 켠다.
+ 8. **즉시 정지**: `AUTOMATION_ENABLED=false` 또는 `FACE_ENABLED=false` / `SHORTS_THREADS_ENABLED=false`. (DN2026_0002: 승인 게이트가 없으므로 정지는 이 Variables 로만 한다.)
+ 
++### DN2026_0003 — Facebook 게시 분리 (face_publish.yml)
++
++- 자동: shorts.yml build 성공 → `dispatch_face` job 이 `📘 Facebook Reels Publish` 를 기동(timing=window, 06:06~22:00).
++  shorts.yml 의 publish job 은 Threads 동영상만 게시한다.
++- **미게시분 재게시(수동)**: Actions › 📘 Facebook Reels Publish › Run workflow
++  - mode=`live`, timing=`now`(시간대 무시, 지금+5~40분), build_run_id 비움(최신 artifact), target_date 비움(오늘)
++  - 자정(KST)이 지났으면 target_date=`YYYY-MM-DD`(회차 날짜) 입력. artifact 보관 3일 이내만 가능.
++  - 같은 설명(캡션) 게시물이 이미 있으면 건너뛰므로 재실행해도 중복 게시되지 않는다.
++
+ ## v1.8.0 Facebook 숏폼 스토리 연속성 (Notion 회차 원장) 운영 절차
+ 
+ 설계: `DESIGN_V18_FACE_STORY.md` · Notion 「Facebook 숏폼 스토리 연속성 상세설계 v1.0」
+diff --git a/scripts/verify_repo.py b/scripts/verify_repo.py
+index 861441b..3acc55e 100644
+--- a/scripts/verify_repo.py
++++ b/scripts/verify_repo.py
+@@ -68,6 +68,7 @@ REQUIRED_FILES = [
+     "scripts/reply_audit.py",
+     ".github/workflows/shorts.yml",        # v1.7.0 숏폼
+     ".github/workflows/face_preflight.yml",  # v1.8.6 Facebook 사전 점검(읽기 전용)
++    ".github/workflows/face_publish.yml",    # DN2026_0003 Facebook 릴스 게시 분리
+     "scripts/face_preflight.py",
+ ]
+ 
+@@ -86,6 +87,7 @@ WORKFLOW_ENTRYPOINTS = {
+ # 한 워크플로가 두 모듈을 실행하는 경우(v1.7.0 shorts.yml: build job · publish job)
+ EXTRA_ENTRYPOINTS: tuple[tuple[str, str], ...] = (
+     (".github/workflows/shorts.yml", "src.run_shorts_publish"),
++    (".github/workflows/face_publish.yml", "src.run_shorts_publish"),  # DN2026_0003
+ )
+ 
+ 
+@@ -254,7 +256,8 @@ CANON_DRY_RUN = (
+     "${{ github.event_name == 'workflow_dispatch' && "
+     "(inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}"
+ )
+-DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml", "shorts.yml")
++DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml", "shorts.yml",
++                     "face_publish.yml")  # DN2026_0003
+ 
+ 
+ def _load_yaml(name: str) -> dict:
+diff --git a/src/run_shorts_publish.py b/src/run_shorts_publish.py
+index 3f1748b..cac835a 100644
+--- a/src/run_shorts_publish.py
++++ b/src/run_shorts_publish.py
+@@ -58,6 +58,46 @@ def _notify(message: str) -> None:
+     notifier.send(_env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_ALERT_CHAT_ID"), message)
+ 
+ 
++# ── DN2026_0003 : 발행 거래 분리 ─────────────────────────────────────────────
++#   Facebook 게시는 별도 워크플로(face_publish.yml), Threads 동영상은 shorts.yml publish job 이 맡는다.
++#   같은 러너 코드를 쓰되 아래 3개 환경변수로 범위를 정한다.
++#     SHORTS_PUBLISH_CHANNELS : 게시할 채널 (face / threads / face,threads — 미설정 시 둘 다, 하위 호환)
++#     SHORTS_TARGET_DATE      : 게시할 회차 날짜 YYYY-MM-DD(KST). 미설정 시 오늘. 미게시분 수동 재게시용.
++#     SHORTS_IGNORE_WINDOW    : true 면 채널 시간대를 무시하고 지금부터 게시(마스터 수동 실행 전용).
++_ANY_TIME_WINDOW = ("00:00", "23:59")
++
++
++def _publish_channels() -> set[str]:
++    raw = _env("SHORTS_PUBLISH_CHANNELS")
++    allowed = {shorts_plan.CHANNEL_FACE, shorts_plan.CHANNEL_THREADS}
++    if not raw:
++        return allowed
++    chosen = {part.strip().lower() for part in raw.split(",") if part.strip()}
++    unknown = chosen - allowed
++    if unknown:
++        raise ValueError(f"SHORTS_PUBLISH_CHANNELS 알 수 없는 채널: {sorted(unknown)}")
++    return chosen
++
++
++def _target_date(now: dt.datetime) -> dt.date:
++    raw = _env("SHORTS_TARGET_DATE")
++    if not raw:
++        return now.date()
++    try:
++        target = dt.date.fromisoformat(raw)
++    except ValueError as exc:
++        raise ValueError(f"SHORTS_TARGET_DATE 형식 오류(YYYY-MM-DD): {raw}") from exc
++    if target > now.date():
++        raise ValueError(f"SHORTS_TARGET_DATE 가 미래 날짜입니다: {raw}")
++    if target != now.date():
++        log.info("지정 회차 날짜로 게시: %s (오늘 %s)", target, now.date())
++    return target
++
++
++def _ignore_window() -> bool:
++    return _env("SHORTS_IGNORE_WINDOW").lower() in ("true", "1", "yes")
++
++
+ def load_manifest(base: Path) -> dict:
+     path = base / "manifest.json"
+     if not path.exists():
+@@ -364,7 +404,11 @@ def run() -> int:
+     base = Path(_env("SHORTS_OUT_DIR") or "out/shorts")
+     now = dt.datetime.now(KST)
+     manifest = load_manifest(base)
+-    items = fresh_items(manifest, now.date())
++    channels = _publish_channels()   # DN2026_0003
++    target = _target_date(now)       # DN2026_0003
++    log.info("게시 범위: 채널=%s · 회차 날짜=%s · 시간대 무시=%s",
++             ",".join(sorted(channels)), target, _ignore_window())
++    items = fresh_items(manifest, target)
+     if not items:
+         log.info("게시할 오늘 영상 없음")
+         if manifest.get("items"):
+@@ -374,16 +418,21 @@ def run() -> int:
+         return 0
+ 
+     face_reason = safety.face_block_reason()
+-    face_items = [i for i in items if shorts_plan.CHANNEL_FACE in i.get("channels", [])]
+-    threads_items = [i for i in items if shorts_plan.CHANNEL_THREADS in i.get("channels", [])][:1]
+-    if face_reason:
++    # DN2026_0003 : 이 실행이 맡은 채널만 게시한다
++    face_items = ([i for i in items if shorts_plan.CHANNEL_FACE in i.get("channels", [])]
++                  if shorts_plan.CHANNEL_FACE in channels else [])
++    threads_items = ([i for i in items if shorts_plan.CHANNEL_THREADS in i.get("channels", [])][:1]
++                     if shorts_plan.CHANNEL_THREADS in channels else [])
++    if face_reason and face_items:
+         log.info("Facebook 게시 안 함 — %s", face_reason)
+         face_items = []
+     # DN2026_0002 : 채널별 시간대로 각각 계산 → (영상, 시각, 채널) 항목을 시각순 병합.
+     #   첫 편은 Facebook·Threads 공용 영상일 수 있으므로 채널 단위로 따로 게시한다.
+-    face_schedule = shorts_plan.publish_schedule(
+-        now, len(face_items), window=config.SHORTS_FACE_PUBLISH_WINDOW)
+-    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items))
++    # DN2026_0003 : 수동 실행(SHORTS_IGNORE_WINDOW)은 시간대 무시 — 지금 + 첫 편 지연부터 게시
++    face_window = _ANY_TIME_WINDOW if _ignore_window() else config.SHORTS_FACE_PUBLISH_WINDOW
++    threads_window = _ANY_TIME_WINDOW if _ignore_window() else None
++    face_schedule = shorts_plan.publish_schedule(now, len(face_items), window=face_window)
++    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items), window=threads_window)
+     planned = sorted(
+         [(i, t, shorts_plan.CHANNEL_FACE) for i, t in zip(face_items, face_schedule, strict=False)]
+         + [(i, t, shorts_plan.CHANNEL_THREADS)
+diff --git a/tests/test_shorts_v17.py b/tests/test_shorts_v17.py
+index aa4f1c8..0c20634 100644
+--- a/tests/test_shorts_v17.py
++++ b/tests/test_shorts_v17.py
+@@ -1164,3 +1164,144 @@ class TestDN2026_0002Runner:
+         at = lambda h, m: dt.datetime.combine(today, dt.time(h, m), tzinfo=KST)  # noqa: E731
+         assert at(6, 11) <= waits[0] <= at(6, 46)          # 첫 Facebook — 06:06 + 5~40분
+         assert any(at(10, 5) <= w <= at(10, 40) for w in waits)  # Threads — 10:00 + 5~40분
++
++
++# ---------------------------------------------------------------------------
++# DN2026_0003 — 발행 거래 분리 (Facebook 게시 = face_publish.yml)
++# ---------------------------------------------------------------------------
++
++
++class TestDN2026_0003Workflows:
++    def _wf(self, name):
++        return yaml.safe_load((WF / name).read_text("utf-8"))
++
++    def test_shorts_publish_job_is_threads_only(self):
++        job = self._wf("shorts.yml")["jobs"]["publish"]
++        env = job["steps"][-1]["env"]
++        assert env["SHORTS_PUBLISH_CHANNELS"] == "threads"
++
++    def test_shorts_dispatches_face_pipeline_after_build(self):
++        job = self._wf("shorts.yml")["jobs"]["dispatch_face"]
++        assert job["needs"] == "build" and "has_items" in job["if"]
++        assert job["permissions"] == {"actions": "write"}
++        run = job["steps"][0]["run"]
++        assert "gh workflow run face_publish.yml" in run
++        assert "build_run_id=\"${{ github.run_id }}\"" in run and "timing=window" in run
++
++    def test_face_publish_workflow_shape(self):
++        wf = self._wf("face_publish.yml")
++        on = wf.get(True) or wf.get("on")
++        inputs = on["workflow_dispatch"]["inputs"]
++        assert set(inputs) == {"mode", "timing", "build_run_id", "target_date"}
++        assert inputs["mode"]["default"] == "dry_run"
++        assert wf["permissions"] == {"contents": "read", "actions": "read"}
++        job = wf["jobs"]["publish"]
++        assert job["concurrency"]["cancel-in-progress"] is False
++        step = job["steps"][-1]
++        assert step["run"] == "python -m src.run_shorts_publish"
++        assert step["env"]["SHORTS_PUBLISH_CHANNELS"] == "face"
++        assert "THREADS_LONG_LIVED_TOKEN" not in step["env"]   # Threads 자격 증명 미보유
++        dl = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/download-artifact"))
++        assert dl["with"]["run-id"] == "${{ steps.art.outputs.run_id }}"
++
++
++class TestDN2026_0003Runner:
++    @pytest.fixture
++    def env(self, monkeypatch, tmp_path, cfg):
++        from src import run_shorts_publish as rp
++        monkeypatch.setenv("SHORTS_OUT_DIR", str(tmp_path))
++        monkeypatch.setenv("FACE_PAGE_ID", "123")
++        monkeypatch.setenv("FACE_PAGE_TOKEN", "EAA" + "t" * 30)
++        monkeypatch.setenv("THREADS_LONG_LIVED_TOKEN", "THAA" + "x" * 40)
++        monkeypatch.setenv("THREADS_USER_ID", "1234567890123456")
++        monkeypatch.setattr(rp, "_notify", lambda m: None)
++        waits: list[dt.datetime] = []
++        monkeypatch.setattr(rp, "_sleep_until", waits.append)
++        state = {"now": dt.datetime(2026, 10, 5, 22, 23, tzinfo=KST)}   # 오늘 실제 제외된 시각
++
++        class _DT(dt.datetime):
++            @classmethod
++            def now(cls, tz=None):
++                n = state["now"]
++                return n if tz is None or tz == KST else n.astimezone(tz)
++
++        monkeypatch.setattr(rp.dt, "datetime", _DT)
++        return rp, tmp_path, state, waits
++
++    def _clients(self, rp, monkeypatch):
++        face = mock.Mock()
++        face.recent_descriptions.return_value = []
++        face.publish_reel.return_value = ("v1", face_client.ReelStatus(
++            "ready", "complete", "complete", "complete", ""))
++        monkeypatch.setattr(rp, "FaceClient", mock.Mock(return_value=face))
++        threads = mock.Mock(side_effect=AssertionError("Threads 클라이언트 생성 금지"))
++        monkeypatch.setattr(rp, "_threads_client", threads)
++        return face
++
++    def test_face_only_manual_now_publishes_backlog_after_window(self, env, monkeypatch, cfg):
++        rp, tmp, state, waits = env
++        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True, SHORTS_THREADS_ENABLED=True)
++        _manifest(tmp, ["sv-20261005-1"])          # face+threads 공용 영상
++        monkeypatch.setenv("DRY_RUN", "false")
++        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "face")
++        monkeypatch.setenv("SHORTS_IGNORE_WINDOW", "true")
++        face = self._clients(rp, monkeypatch)
++        assert rp.run() == 0
++        face.publish_reel.assert_called_once()
++        assert len(waits) == 1
++        assert state["now"] + dt.timedelta(minutes=5) <= waits[0] <= state["now"] + dt.timedelta(minutes=40)
++
++    def test_face_window_mode_still_excludes_after_22(self, env, monkeypatch, cfg):
++        rp, tmp, state, waits = env
++        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True)
++        _manifest(tmp, ["sv-20261005-1"], channels=(("face",),))
++        monkeypatch.setenv("DRY_RUN", "false")
++        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "face")
++        face = self._clients(rp, monkeypatch)
++        assert rp.run() == 0
++        face.publish_reel.assert_not_called()
++
++    def test_target_date_publishes_previous_day_after_midnight(self, env, monkeypatch, cfg):
++        rp, tmp, state, waits = env
++        state["now"] = dt.datetime(2026, 10, 6, 0, 30, tzinfo=KST)
++        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True)
++        _manifest(tmp, ["sv-20261005-1"], channels=(("face",),))
++        monkeypatch.setenv("DRY_RUN", "false")
++        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "face")
++        monkeypatch.setenv("SHORTS_IGNORE_WINDOW", "true")
++        face = self._clients(rp, monkeypatch)
++        assert rp.run() == 0
++        face.publish_reel.assert_not_called()       # 날짜 미지정 → 신선도 제외
++        monkeypatch.setenv("SHORTS_TARGET_DATE", "2026-10-05")
++        assert rp.run() == 0
++        face.publish_reel.assert_called_once()      # 지정 회차 날짜 → 게시
++
++    def test_threads_only_skips_face(self, env, monkeypatch, cfg):
++        rp, tmp, state, waits = env
++        state["now"] = dt.datetime(2026, 10, 5, 5, 40, tzinfo=KST)
++        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True, SHORTS_THREADS_ENABLED=True)
++        _manifest(tmp, ["sv-20261005-1"])
++        monkeypatch.setenv("DRY_RUN", "false")
++        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "threads")
++        monkeypatch.setattr(rp, "FaceClient", mock.Mock(side_effect=AssertionError("FB 생성 금지")))
++        threads = mock.Mock()
++        threads.get_my_posts.return_value = []
++        threads.publish_video_post.return_value = "p1"
++        monkeypatch.setattr(rp, "_threads_client", lambda: threads)
++        monkeypatch.setattr(rp.media_host, "publish_file", lambda v, n: f"https://raw/{n}")
++        monkeypatch.setattr(rp.media_host, "verify", lambda u: "video/mp4")
++        assert rp.run() == 0
++        threads.publish_video_post.assert_called_once()
++
++    @pytest.mark.parametrize("name,value", [("SHORTS_PUBLISH_CHANNELS", "facebook"),
++                                            ("SHORTS_TARGET_DATE", "2026/10/05"),
++                                            ("SHORTS_TARGET_DATE", "2026-10-07")])
++    def test_invalid_inputs_fail_closed(self, env, monkeypatch, cfg, name, value):
++        rp, tmp, state, waits = env
++        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True)
++        _manifest(tmp, ["sv-20261005-1"], channels=(("face",),))
++        monkeypatch.setenv("DRY_RUN", "false")
++        monkeypatch.setenv(name, value)
++        face = self._clients(rp, monkeypatch)
++        assert rp.main() != 0
++        face.publish_reel.assert_not_called()
+-- 
+2.43.0
+
