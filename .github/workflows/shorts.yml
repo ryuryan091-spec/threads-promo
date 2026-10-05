@@ -2,13 +2,20 @@ name: 📘🧵 Meta Shorts (Facebook · Threads)
 
 # v1.7.0 60초 숏폼 — Facebook 페이지 릴스 + Threads 동영상 (DESIGN_V17_SHORTS.md)
 #   build   : 영상 생성 + 텔레그램 미리보기. Meta 쓰기 없음.
-#   publish : environment 'meta-publish' 승인(마스터) 뒤에만 실행. 그날 분량을 시간대 안에서 간격을 두고 게시.
-# build cron KST 08:19 — 정각·반각 회피, CHAT 첫 트리거(09:04)와 45분 간격.
+#   publish : build 직후 자동 실행. 그날 분량을 채널별 시간대 안에서 간격을 두고 게시.
+#
+# DN2026_0002 (2026-10-05 마스터 결정) — ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춤
+#   - build cron  : 매일 KST 08:19 → 월~토 KST 05:06 (일요일 휴식 고정, 무작위 휴식일 폐지)
+#   - 승인 게이트 : environment 'meta-publish' 제거 → 완전 자동 게시
+#   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +5~40분) / Threads 10:00~22:00 유지 (src/config.py)
+#   - build 는 영상 생성 시간을 고려해 게시 하한(06:06)보다 1시간 먼저 시작한다.
+#   - 차단 스위치는 그대로: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED · SHORTS_BUILD_ENABLED
 # Facebook 전용 값은 FACE_ 접두(Threads 와 공유하지 않는 값).
 
 "on":
   schedule:
-    - cron: "19 23 * * *"     # KST 08:19
+    # DN2026_0002 : "19 23 * * *"(매일 KST 08:19) → UTC 일~금 20:06 = KST 월~토 05:06
+    - cron: "6 20 * * 0-5"
   workflow_dispatch:
     inputs:
       mode:
@@ -57,7 +64,8 @@ jobs:
           FACE_ENABLED: ${{ vars.FACE_ENABLED || 'false' }}
           FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
           FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
-          SHORTS_WEEKLY_REST_DAYS: ${{ vars.SHORTS_WEEKLY_REST_DAYS || '1' }}
+          # DN2026_0002 : 기본값 '1' → '0' (휴식일은 cron 일요일 제외로 고정)
+          SHORTS_WEEKLY_REST_DAYS: ${{ vars.SHORTS_WEEKLY_REST_DAYS || '0' }}
           SHORTS_IMAGE_MODEL: ${{ vars.SHORTS_IMAGE_MODEL }}
           SHORTS_TTS_MODEL: ${{ vars.SHORTS_TTS_MODEL }}
           SHORTS_TTS_VOICE: ${{ vars.SHORTS_TTS_VOICE }}
@@ -105,8 +113,7 @@ jobs:
     needs: build
     if: needs.build.outputs.has_items == 'true'
     runs-on: ubuntu-latest
-    # 승인 게이트: Settings › Environments › meta-publish › Required reviewers = 마스터
-    environment: meta-publish
+    # DN2026_0002 : 승인 게이트(environment: meta-publish) 제거 — build 직후 자동 게시
     concurrency:
       group: threads-shorts-publish
       cancel-in-progress: true

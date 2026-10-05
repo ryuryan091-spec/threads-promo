@@ -33,7 +33,7 @@ jobs:
           FACE_RAMP_START: ${{ vars.FACE_RAMP_START }}
           FACE_DAILY_MAX: ${{ vars.FACE_DAILY_MAX || '3' }}
           FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
-          SHORTS_WEEKLY_REST_DAYS: ${{ vars.SHORTS_WEEKLY_REST_DAYS || '1' }}
+          SHORTS_WEEKLY_REST_DAYS: ${{ vars.SHORTS_WEEKLY_REST_DAYS || '0' }}  # DN2026_0002
           # 정기 실행(schedule)의 DRY_RUN 식과 같다(shorts.yml)
           DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
           FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
