@@ -144,7 +144,11 @@ def _at(today: dt.date, hhmm: str) -> dt.datetime:
 
 
 def publish_schedule(
-    now: dt.datetime, count: int, *, rng: random.Random | None = None
+    now: dt.datetime,
+    count: int,
+    *,
+    rng: random.Random | None = None,
+    window: tuple[str, str] | None = None,  # DN2026_0002 : 채널별 시간대 (None=Threads 기본값)
 ) -> list[dt.datetime]:
     """승인(=publish job 시작) 시각 now 부터 count 편의 게시 시각(KST).
 
@@ -158,12 +162,21 @@ def publish_schedule(
     if count <= 0:
         return []
     local = now.astimezone(KST)
-    start = _at(local.date(), config.SHORTS_PUBLISH_WINDOW[0])
-    end = _at(local.date(), config.SHORTS_PUBLISH_WINDOW[1])
+    # DN2026_0002 : 시간대를 인자로 받는다 (Facebook=SHORTS_FACE_PUBLISH_WINDOW)
+    win = window or config.SHORTS_PUBLISH_WINDOW
+    start = _at(local.date(), win[0])
+    end = _at(local.date(), win[1])
     limit = min(end, local + dt.timedelta(minutes=config.SHORTS_JOB_BUDGET_MIN))
-    first = max(local, start) + dt.timedelta(minutes=rng.randint(*config.SHORTS_FIRST_JITTER_MIN))
+    base = max(local, start)
+    first = base + dt.timedelta(minutes=rng.randint(*config.SHORTS_FIRST_JITTER_MIN))
     if first > limit:
-        return []
+        # DN2026_0002 : build 가 05:06 에 시작하면 publish job 이 일찍 떠서 job 예산 끝(시작+300분)이
+        #   Threads 시간대 시작(10:00) 직후에 걸릴 수 있다. 이때 지연값이 예산을 넘으면 Threads 편이
+        #   통째로 빠지므로, 시간대 끝을 넘지 않는 한 남은 예산 안에서 지연을 다시 뽑는다.
+        #   (시간대 끝이 한계인 경우는 기존대로 게시하지 않는다.)
+        if not (base < limit < end):
+            return []
+        first = base + dt.timedelta(minutes=rng.uniform(0, (limit - base).total_seconds() / 60))
     remaining = (limit - first).total_seconds() / 60
     k = count
     while k > 1 and remaining / (k - 1) < config.SHORTS_GAP_FLOOR_MIN:

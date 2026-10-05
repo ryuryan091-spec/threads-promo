@@ -3,7 +3,7 @@
 | 항목 | 내용 |
 |---|---|
 | 버전 | config 1.7.0 · safety 1.1.0 · threads_client 1.4.0 · notifier 1.2.0 · redact 1.2.0 · verify_repo 1.7.0 · 신규 모듈 1.0.0 |
-| 워크플로 | `.github/workflows/shorts.yml` (build → publish, publish 는 environment `meta-publish` 승인 필수) |
+| 워크플로 | `.github/workflows/shorts.yml` (build → publish 자동 — DN2026_0002 로 `meta-publish` 승인 게이트 제거) |
 | 테스트 | `tests/test_shorts_v17.py` (103건, 실제 ffmpeg 렌더 E2E · 기존 파이프라인 상호작용 · 점검 반영 · GOC 단독 포함) |
 | 선행 | P0 — v1.6.0 이 `src/src` · `tests/tests` · `scripts/scripts` 에 들어가 있던 배포 위치 결함 수정(이 패키지에 반영). verify_repo 검사 12 로 재발 방지 |
 
@@ -14,12 +14,13 @@
 
 ## 2. 흐름
 ```
-shorts.yml (KST 08:19)
+shorts.yml (KST 월~토 05:06 — DN2026_0002, 이전: 매일 08:19)
  [build]  SHORTS_BUILD_ENABLED · 휴식일 · 램프 → 오늘 N편 계획
           mood_source(테마·분위기) → 대본(Claude) → 이미지 5장(Gemini) → TTS(Gemini) → ffmpeg → ffprobe 검사
           manifest.json + mp4 → artifact(3일) · 텔레그램 미리보기
- [publish] (has_items 일 때만) environment meta-publish 승인 대기
-          오늘 content_id 만(신선도) → 게시 시각(10~22시, 첫 편 5~40분 지연, 편간 120~200분, job 330분 안)
+ [publish] (has_items 일 때만) build 직후 자동 시작 (DN2026_0002)
+          오늘 content_id 만(신선도) → 게시 시각(채널별 시간대: Facebook 06:06~22시 · Threads 10~22시,
+          첫 편 5~40분 지연, 편간 120~200분, job 300분 안)
           편마다: Facebook 릴스(같은 설명 있으면 건너뜀) → 첫 편만 Threads 동영상(킬 스위치·워밍업·총량 재확인)
           결과 알림 + "앱에서 AI 정보 표시" 안내
 ```
@@ -61,7 +62,7 @@ F1 EDT 시장 서사(항상 첫 편) · F2 개념 해설 · F3 이번 주 관전
 | FACE_ENABLED | Variable | false |
 | FACE_RAMP_START | Variable | (없음 = 0편) |
 | FACE_DAILY_MAX | Variable | 3 |
-| SHORTS_WEEKLY_REST_DAYS | Variable | 1 |
+| SHORTS_WEEKLY_REST_DAYS | Variable | 0 (DN2026_0002 — 휴식일은 cron 일요일 제외로 고정) |
 | SHORTS_IMAGE_MODEL / SHORTS_TTS_MODEL / SHORTS_TTS_VOICE | Variable | gemini-3.1-flash-image / gemini-3.1-flash-tts-preview / Charon |
 | FACE_PAGE_ID · FACE_PAGE_TOKEN | Secret | — |
 | GEMINI_API_SUB_PAY_KEY | Secret | — |

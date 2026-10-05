@@ -664,9 +664,10 @@ class TestConfigAndWorkflow:
     def _wf(self):
         return yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))
 
-    def test_publish_requires_environment_and_write(self):
+    def test_publish_runs_without_approval_gate_and_write(self):
+        # DN2026_0002 : 승인 게이트(environment: meta-publish) 제거 — build 직후 자동 게시
         job = self._wf()["jobs"]["publish"]
-        assert job["environment"] == "meta-publish"
+        assert "environment" not in job
         assert job["permissions"]["contents"] == "write"
         assert job["needs"] == "build"
         assert "has_items" in job["if"]
@@ -1046,3 +1047,120 @@ class TestGocOnlyOnFacebook:
         entry = rb.build_one(item, mood_source.Mood("none"), claude_key="k", gemini_key="g",
                              used_types=set(), used_hooks=[], base=tmp_path, used_captions=set())
         assert got == {"script_char": "GOC", "image_char": "GOC"} and entry["character"] == "GOC"
+
+
+# ---------------------------------------------------------------------------
+# DN2026_0002 — Facebook 릴스를 ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춤
+# ---------------------------------------------------------------------------
+
+
+class TestDN2026_0002:
+    def _now(self, hh, mm=0):
+        return dt.datetime.combine(DAY, dt.time(hh, mm), tzinfo=KST)
+
+    def test_build_cron_is_mon_to_sat_0506_kst(self):
+        wf = yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))
+        on = wf.get(True) or wf.get("on")
+        assert [e["cron"] for e in on["schedule"]] == ["6 20 * * 0-5"]
+        # UTC 일~금 20:06 → KST 월~토 05:06 (일요일 미실행)
+        kst_days = set()
+        for utc_wd in (6, 0, 1, 2, 3, 4):  # cron 0-5 = UTC 일~금 (Python weekday: 일=6)
+            base = dt.datetime(2026, 10, 4, 20, 6, tzinfo=dt.UTC)  # 2026-10-04 = 일요일
+            shift = (utc_wd - 6) % 7
+            kst = (base + dt.timedelta(days=shift)).astimezone(KST)
+            assert kst.strftime("%H:%M") == "05:06"
+            kst_days.add(kst.weekday())
+        assert kst_days == {0, 1, 2, 3, 4, 5}  # 월~토
+
+    def test_rest_day_default_disabled(self):
+        assert config.SHORTS_WEEKLY_REST_DAYS == 0
+        body = (WF / "shorts.yml").read_text("utf-8")
+        assert "vars.SHORTS_WEEKLY_REST_DAYS || '0'" in body
+
+    def test_face_window_starts_0606_with_jitter(self):
+        for seed in range(200):
+            out = shorts_plan.publish_schedule(
+                self._now(5, 30), 1, rng=random.Random(seed),
+                window=config.SHORTS_FACE_PUBLISH_WINDOW)
+            assert self._now(6, 11) <= out[0] <= self._now(6, 46)
+
+    def test_threads_window_unchanged(self):
+        assert config.SHORTS_PUBLISH_WINDOW == ("10:00", "22:00")
+        out = shorts_plan.publish_schedule(self._now(5, 30), 1, rng=random.Random(1))
+        assert self._now(10, 5) <= out[0] <= self._now(10, 40)
+
+    def test_face_three_posts_fit_job_budget_from_early_start(self):
+        timeout = yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))["jobs"]["publish"][
+            "timeout-minutes"]
+        rng = random.Random(11)
+        for _ in range(2000):
+            start = self._now(5, rng.randint(10, 59))
+            out = shorts_plan.publish_schedule(start, 3, rng=rng,
+                                               window=config.SHORTS_FACE_PUBLISH_WINDOW)
+            assert out and out[0] >= self._now(6, 11)
+            used = (out[-1] - start).total_seconds() / 60
+            assert used + 35 + 5 <= timeout
+
+
+    def test_threads_kept_when_publish_starts_right_after_early_build(self):
+        # publish 가 05:07 에 시작 → 예산 끝 10:07. Threads 첫 편이 빠지지 않고 10:00~10:07 안에 들어와야 한다.
+        for seed in range(300):
+            start = self._now(5, 7)
+            out = shorts_plan.publish_schedule(start, 1, rng=random.Random(seed))
+            assert len(out) == 1
+            assert self._now(10, 0) <= out[0] <= start + dt.timedelta(
+                minutes=config.SHORTS_JOB_BUDGET_MIN)
+
+    def test_window_end_still_blocks(self):
+        # 시간대 끝(22:00) 이후로는 여전히 게시하지 않는다(기존 규칙 유지).
+        assert shorts_plan.publish_schedule(self._now(22, 1), 1, rng=random.Random(1)) == []
+
+
+class TestDN2026_0002Runner:
+    @pytest.fixture
+    def env(self, monkeypatch, tmp_path, cfg):
+        from src import run_shorts_publish as rp
+        monkeypatch.setenv("SHORTS_OUT_DIR", str(tmp_path))
+        monkeypatch.setenv("FACE_PAGE_ID", "123")
+        monkeypatch.setenv("FACE_PAGE_TOKEN", "EAA" + "t" * 30)
+        monkeypatch.setenv("THREADS_LONG_LIVED_TOKEN", "THAA" + "x" * 40)
+        monkeypatch.setenv("THREADS_USER_ID", "1234567890123456")
+        monkeypatch.setattr(rp, "_notify", lambda m: None)
+        waits: list[dt.datetime] = []
+        monkeypatch.setattr(rp, "_sleep_until", waits.append)
+        fixed = dt.datetime.combine(dt.datetime.now(KST).date(), dt.time(5, 40), tzinfo=KST)
+
+        class _DT(dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed if tz is None or tz == KST else fixed.astimezone(tz)
+
+        monkeypatch.setattr(rp.dt, "datetime", _DT)
+        return rp, tmp_path, fixed, waits
+
+    def test_shared_video_posted_once_per_channel_on_own_window(self, env, monkeypatch, cfg):
+        rp, tmp, fixed, waits = env
+        today = fixed.date()
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True, SHORTS_THREADS_ENABLED=True)
+        ids = [f"sv-{today:%Y%m%d}-1", f"sv-{today:%Y%m%d}-2"]
+        _manifest(tmp, ids)  # 1편: face+threads 공용, 2편: face
+        monkeypatch.setenv("DRY_RUN", "false")
+        face = mock.Mock()
+        face.recent_descriptions.return_value = []
+        face.publish_reel.return_value = ("v1", face_client.ReelStatus(
+            "ready", "complete", "complete", "complete", ""))
+        monkeypatch.setattr(rp, "FaceClient", mock.Mock(return_value=face))
+        threads = mock.Mock()
+        threads.get_my_posts.return_value = []
+        threads.publish_video_post.return_value = "p1"
+        monkeypatch.setattr(rp, "_threads_client", lambda: threads)
+        monkeypatch.setattr(rp.media_host, "publish_file", lambda v, n: f"https://raw/{n}")
+        monkeypatch.setattr(rp.media_host, "verify", lambda u: "video/mp4")
+
+        assert rp.run() == 0
+        assert face.publish_reel.call_count == 2          # 공용 1편 + 2편, 중복 없음
+        threads.publish_video_post.assert_called_once()   # 공용 1편만
+        assert waits == sorted(waits) and len(waits) == 3
+        at = lambda h, m: dt.datetime.combine(today, dt.time(h, m), tzinfo=KST)  # noqa: E731
+        assert at(6, 11) <= waits[0] <= at(6, 46)          # 첫 Facebook — 06:06 + 5~40분
+        assert any(at(10, 5) <= w <= at(10, 40) for w in waits)  # Threads — 10:00 + 5~40분

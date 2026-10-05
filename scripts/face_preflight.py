@@ -82,7 +82,7 @@ def check_secrets(r: Report) -> bool:
 
 
 def variable_warnings(today: dt.date) -> list[str]:
-    """정기 실행(KST 08:19)이 Facebook 게시까지 가지 못하게 하는 설정값."""
+    """정기 실행(KST 월~토 05:06 — DN2026_0002)이 Facebook 게시까지 가지 못하게 하는 설정값."""
     out = []
     if _env("DRY_RUN").lower() not in ("false", "0", "no"):
         out.append(f"DRY_RUN={_env('DRY_RUN') or '(미설정→true)'} — 정기 실행이 dry_run(게시 안 함)")

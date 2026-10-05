@@ -2,7 +2,8 @@
 
 흐름
   1) build artifact 의 manifest.json 읽기 → 오늘(KST) 콘텐츠만 남김(신선도)
-  2) 게시 시각 계산(shorts_plan.publish_schedule): 시간대 10~22시 · 첫 편 지연 · 편간 2~3시간대 간격
+  2) 게시 시각 계산(shorts_plan.publish_schedule): 첫 편 지연 · 편간 2~3시간대 간격
+     DN2026_0002 : 채널별 시간대 — Facebook 06:06~22시, Threads 10~22시. 채널별로 따로 계산해 시각순 병합.
   3) 편마다 대기 → Facebook 릴스(중복 설명이면 건너뜀) → (첫 편만) Threads 동영상
      Threads 는 게시 직전에 킬 스위치·워밍업·하루 총량(DAILY_POST_BUDGET)을 다시 본다.
   4) 결과 알림 + 'AI 정보 표시는 앱에서' 안내
@@ -378,13 +379,23 @@ def run() -> int:
     if face_reason:
         log.info("Facebook 게시 안 함 — %s", face_reason)
         face_items = []
-    ordered = [i for i in items if i in face_items or i in threads_items]
-    schedule = shorts_plan.publish_schedule(now, len(ordered))
+    # DN2026_0002 : 채널별 시간대로 각각 계산 → (영상, 시각, 채널) 항목을 시각순 병합.
+    #   첫 편은 Facebook·Threads 공용 영상일 수 있으므로 채널 단위로 따로 게시한다.
+    face_schedule = shorts_plan.publish_schedule(
+        now, len(face_items), window=config.SHORTS_FACE_PUBLISH_WINDOW)
+    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items))
+    planned = sorted(
+        [(i, t, shorts_plan.CHANNEL_FACE) for i, t in zip(face_items, face_schedule, strict=False)]
+        + [(i, t, shorts_plan.CHANNEL_THREADS)
+           for i, t in zip(threads_items, threads_schedule, strict=False)],
+        key=lambda entry: entry[1],
+    )
     log.info("게시 계획: %s", ", ".join(
-        f"{i['content_id']}@{t.strftime('%H:%M')}" for i, t in zip(ordered, schedule, strict=False)))
-    dropped = ordered[len(schedule):]
-    for item in dropped:
-        log.warning("게시 시간대·job 예산을 넘어 제외 %s", item["content_id"])
+        f"{i['content_id']}({ch})@{t.strftime('%H:%M')}" for i, t, ch in planned))
+    dropped = ([(i, shorts_plan.CHANNEL_FACE) for i in face_items[len(face_schedule):]]
+               + [(i, shorts_plan.CHANNEL_THREADS) for i in threads_items[len(threads_schedule):]])
+    for item, ch in dropped:
+        log.warning("게시 시간대·job 예산을 넘어 제외 %s(%s)", item["content_id"], ch)
 
     if _dry_run():
         log.info("DRY_RUN — 대기·게시 없이 종료")
@@ -392,18 +403,20 @@ def run() -> int:
 
     face = FaceClient(_env("FACE_PAGE_ID"), _env("FACE_PAGE_TOKEN")) if face_items else None
     threads = _threads_client() if threads_items and safety.shorts_threads_allowed() else None
-    results: list[str] = [f"제외(시간 초과) {d['content_id']}" for d in dropped]
+    results: list[str] = [f"제외(시간 초과) {d['content_id']}({ch})" for d, ch in dropped]
     notes: list[str] = []
     ledger = _open_ledger(notes) if face and config.FACE_STORY_ENABLED else None
     if ledger is not None and face is not None:
         ledger.reconcile(face, now.date())
     pending: list[tuple[dict, str]] = []
     failed = False
-    for item, at in zip(ordered, schedule, strict=False):
+    for item, at, channel in planned:  # DN2026_0002 : 채널 단위 항목
         _sleep_until(at)
         on_session = None
         skip: str | None = None
-        if face and item in face_items:
+        do_face = channel == shorts_plan.CHANNEL_FACE and face is not None
+        do_threads = channel == shorts_plan.CHANNEL_THREADS and threads is not None
+        if do_face:
             skip = ledger_guard(face, ledger, item, pending) if ledger is not None else None
             if skip is not None:
                 results.append(skip)
@@ -415,7 +428,7 @@ def run() -> int:
 
                 def on_session(vid: str, _item: dict = item) -> None:
                     ledger.record(_item, face_story.STATUS_PENDING, video_id=vid, quiet=True)
-        if face and item in face_items and skip is None:
+        if do_face and skip is None:
             try:
                 outcome = face_outcome(face, item, base, with_ids=ledger is not None, on_session=on_session)
                 results.append(outcome.message)
@@ -443,7 +456,7 @@ def run() -> int:
                     ledger.record(item, state, video_id=exc.video_id, error=str(exc))
                     if state == face_story.STATUS_PENDING and exc.video_id:
                         pending.append((item, exc.video_id))
-        if threads and item in threads_items:
+        if do_threads:
             try:
                 results.append(post_threads(threads, item, base))
             except (ThreadsApiError, ContainerNotReadyError, media_host.MediaHostError) as exc:
