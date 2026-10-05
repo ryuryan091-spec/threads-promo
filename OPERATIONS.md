@@ -551,6 +551,15 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. �
 7. **게시 후**: 앱에서 각 게시물 'AI 정보' 표시를 켠다.
 8. **즉시 정지**: `AUTOMATION_ENABLED=false` 또는 `FACE_ENABLED=false` / `SHORTS_THREADS_ENABLED=false`. (DN2026_0002: 승인 게이트가 없으므로 정지는 이 Variables 로만 한다.)
 
+### DN2026_0003 — Facebook 게시 분리 (face_publish.yml)
+
+- 자동: shorts.yml build 성공 → `dispatch_face` job 이 `📘 Facebook Reels Publish` 를 기동(timing=window, 06:06~22:00).
+  shorts.yml 의 publish job 은 Threads 동영상만 게시한다.
+- **미게시분 재게시(수동)**: Actions › 📘 Facebook Reels Publish › Run workflow
+  - mode=`live`, timing=`now`(시간대 무시, 지금+5~40분), build_run_id 비움(최신 artifact), target_date 비움(오늘)
+  - 자정(KST)이 지났으면 target_date=`YYYY-MM-DD`(회차 날짜) 입력. artifact 보관 3일 이내만 가능.
+  - 같은 설명(캡션) 게시물이 이미 있으면 건너뛰므로 재실행해도 중복 게시되지 않는다.
+
 ## v1.8.0 Facebook 숏폼 스토리 연속성 (Notion 회차 원장) 운영 절차
 
 설계: `DESIGN_V18_FACE_STORY.md` · Notion 「Facebook 숏폼 스토리 연속성 상세설계 v1.0」

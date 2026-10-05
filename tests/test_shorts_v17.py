@@ -1164,3 +1164,144 @@ class TestDN2026_0002Runner:
         at = lambda h, m: dt.datetime.combine(today, dt.time(h, m), tzinfo=KST)  # noqa: E731
         assert at(6, 11) <= waits[0] <= at(6, 46)          # 첫 Facebook — 06:06 + 5~40분
         assert any(at(10, 5) <= w <= at(10, 40) for w in waits)  # Threads — 10:00 + 5~40분
+
+
+# ---------------------------------------------------------------------------
+# DN2026_0003 — 발행 거래 분리 (Facebook 게시 = face_publish.yml)
+# ---------------------------------------------------------------------------
+
+
+class TestDN2026_0003Workflows:
+    def _wf(self, name):
+        return yaml.safe_load((WF / name).read_text("utf-8"))
+
+    def test_shorts_publish_job_is_threads_only(self):
+        job = self._wf("shorts.yml")["jobs"]["publish"]
+        env = job["steps"][-1]["env"]
+        assert env["SHORTS_PUBLISH_CHANNELS"] == "threads"
+
+    def test_shorts_dispatches_face_pipeline_after_build(self):
+        job = self._wf("shorts.yml")["jobs"]["dispatch_face"]
+        assert job["needs"] == "build" and "has_items" in job["if"]
+        assert job["permissions"] == {"actions": "write"}
+        run = job["steps"][0]["run"]
+        assert "gh workflow run face_publish.yml" in run
+        assert "build_run_id=\"${{ github.run_id }}\"" in run and "timing=window" in run
+
+    def test_face_publish_workflow_shape(self):
+        wf = self._wf("face_publish.yml")
+        on = wf.get(True) or wf.get("on")
+        inputs = on["workflow_dispatch"]["inputs"]
+        assert set(inputs) == {"mode", "timing", "build_run_id", "target_date"}
+        assert inputs["mode"]["default"] == "dry_run"
+        assert wf["permissions"] == {"contents": "read", "actions": "read"}
+        job = wf["jobs"]["publish"]
+        assert job["concurrency"]["cancel-in-progress"] is False
+        step = job["steps"][-1]
+        assert step["run"] == "python -m src.run_shorts_publish"
+        assert step["env"]["SHORTS_PUBLISH_CHANNELS"] == "face"
+        assert "THREADS_LONG_LIVED_TOKEN" not in step["env"]   # Threads 자격 증명 미보유
+        dl = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/download-artifact"))
+        assert dl["with"]["run-id"] == "${{ steps.art.outputs.run_id }}"
+
+
+class TestDN2026_0003Runner:
+    @pytest.fixture
+    def env(self, monkeypatch, tmp_path, cfg):
+        from src import run_shorts_publish as rp
+        monkeypatch.setenv("SHORTS_OUT_DIR", str(tmp_path))
+        monkeypatch.setenv("FACE_PAGE_ID", "123")
+        monkeypatch.setenv("FACE_PAGE_TOKEN", "EAA" + "t" * 30)
+        monkeypatch.setenv("THREADS_LONG_LIVED_TOKEN", "THAA" + "x" * 40)
+        monkeypatch.setenv("THREADS_USER_ID", "1234567890123456")
+        monkeypatch.setattr(rp, "_notify", lambda m: None)
+        waits: list[dt.datetime] = []
+        monkeypatch.setattr(rp, "_sleep_until", waits.append)
+        state = {"now": dt.datetime(2026, 10, 5, 22, 23, tzinfo=KST)}   # 오늘 실제 제외된 시각
+
+        class _DT(dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                n = state["now"]
+                return n if tz is None or tz == KST else n.astimezone(tz)
+
+        monkeypatch.setattr(rp.dt, "datetime", _DT)
+        return rp, tmp_path, state, waits
+
+    def _clients(self, rp, monkeypatch):
+        face = mock.Mock()
+        face.recent_descriptions.return_value = []
+        face.publish_reel.return_value = ("v1", face_client.ReelStatus(
+            "ready", "complete", "complete", "complete", ""))
+        monkeypatch.setattr(rp, "FaceClient", mock.Mock(return_value=face))
+        threads = mock.Mock(side_effect=AssertionError("Threads 클라이언트 생성 금지"))
+        monkeypatch.setattr(rp, "_threads_client", threads)
+        return face
+
+    def test_face_only_manual_now_publishes_backlog_after_window(self, env, monkeypatch, cfg):
+        rp, tmp, state, waits = env
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True, SHORTS_THREADS_ENABLED=True)
+        _manifest(tmp, ["sv-20261005-1"])          # face+threads 공용 영상
+        monkeypatch.setenv("DRY_RUN", "false")
+        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "face")
+        monkeypatch.setenv("SHORTS_IGNORE_WINDOW", "true")
+        face = self._clients(rp, monkeypatch)
+        assert rp.run() == 0
+        face.publish_reel.assert_called_once()
+        assert len(waits) == 1
+        assert state["now"] + dt.timedelta(minutes=5) <= waits[0] <= state["now"] + dt.timedelta(minutes=40)
+
+    def test_face_window_mode_still_excludes_after_22(self, env, monkeypatch, cfg):
+        rp, tmp, state, waits = env
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True)
+        _manifest(tmp, ["sv-20261005-1"], channels=(("face",),))
+        monkeypatch.setenv("DRY_RUN", "false")
+        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "face")
+        face = self._clients(rp, monkeypatch)
+        assert rp.run() == 0
+        face.publish_reel.assert_not_called()
+
+    def test_target_date_publishes_previous_day_after_midnight(self, env, monkeypatch, cfg):
+        rp, tmp, state, waits = env
+        state["now"] = dt.datetime(2026, 10, 6, 0, 30, tzinfo=KST)
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True)
+        _manifest(tmp, ["sv-20261005-1"], channels=(("face",),))
+        monkeypatch.setenv("DRY_RUN", "false")
+        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "face")
+        monkeypatch.setenv("SHORTS_IGNORE_WINDOW", "true")
+        face = self._clients(rp, monkeypatch)
+        assert rp.run() == 0
+        face.publish_reel.assert_not_called()       # 날짜 미지정 → 신선도 제외
+        monkeypatch.setenv("SHORTS_TARGET_DATE", "2026-10-05")
+        assert rp.run() == 0
+        face.publish_reel.assert_called_once()      # 지정 회차 날짜 → 게시
+
+    def test_threads_only_skips_face(self, env, monkeypatch, cfg):
+        rp, tmp, state, waits = env
+        state["now"] = dt.datetime(2026, 10, 5, 5, 40, tzinfo=KST)
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True, SHORTS_THREADS_ENABLED=True)
+        _manifest(tmp, ["sv-20261005-1"])
+        monkeypatch.setenv("DRY_RUN", "false")
+        monkeypatch.setenv("SHORTS_PUBLISH_CHANNELS", "threads")
+        monkeypatch.setattr(rp, "FaceClient", mock.Mock(side_effect=AssertionError("FB 생성 금지")))
+        threads = mock.Mock()
+        threads.get_my_posts.return_value = []
+        threads.publish_video_post.return_value = "p1"
+        monkeypatch.setattr(rp, "_threads_client", lambda: threads)
+        monkeypatch.setattr(rp.media_host, "publish_file", lambda v, n: f"https://raw/{n}")
+        monkeypatch.setattr(rp.media_host, "verify", lambda u: "video/mp4")
+        assert rp.run() == 0
+        threads.publish_video_post.assert_called_once()
+
+    @pytest.mark.parametrize("name,value", [("SHORTS_PUBLISH_CHANNELS", "facebook"),
+                                            ("SHORTS_TARGET_DATE", "2026/10/05"),
+                                            ("SHORTS_TARGET_DATE", "2026-10-07")])
+    def test_invalid_inputs_fail_closed(self, env, monkeypatch, cfg, name, value):
+        rp, tmp, state, waits = env
+        cfg(AUTOMATION_ENABLED=True, FACE_ENABLED=True)
+        _manifest(tmp, ["sv-20261005-1"], channels=(("face",),))
+        monkeypatch.setenv("DRY_RUN", "false")
+        monkeypatch.setenv(name, value)
+        face = self._clients(rp, monkeypatch)
+        assert rp.main() != 0
+        face.publish_reel.assert_not_called()

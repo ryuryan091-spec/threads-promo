@@ -68,6 +68,7 @@ REQUIRED_FILES = [
     "scripts/reply_audit.py",
     ".github/workflows/shorts.yml",        # v1.7.0 숏폼
     ".github/workflows/face_preflight.yml",  # v1.8.6 Facebook 사전 점검(읽기 전용)
+    ".github/workflows/face_publish.yml",    # DN2026_0003 Facebook 릴스 게시 분리
     "scripts/face_preflight.py",
 ]
 
@@ -86,6 +87,7 @@ WORKFLOW_ENTRYPOINTS = {
 # 한 워크플로가 두 모듈을 실행하는 경우(v1.7.0 shorts.yml: build job · publish job)
 EXTRA_ENTRYPOINTS: tuple[tuple[str, str], ...] = (
     (".github/workflows/shorts.yml", "src.run_shorts_publish"),
+    (".github/workflows/face_publish.yml", "src.run_shorts_publish"),  # DN2026_0003
 )
 
 
@@ -254,7 +256,8 @@ CANON_DRY_RUN = (
     "${{ github.event_name == 'workflow_dispatch' && "
     "(inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}"
 )
-DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml", "shorts.yml")
+DRY_RUN_WORKFLOWS = ("publish.yml", "reply.yml", "chat.yml", "story.yml", "shorts.yml",
+                     "face_publish.yml")  # DN2026_0003
 
 
 def _load_yaml(name: str) -> dict:

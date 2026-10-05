@@ -18,7 +18,8 @@ shorts.yml (KST 월~토 05:06 — DN2026_0002, 이전: 매일 08:19)
  [build]  SHORTS_BUILD_ENABLED · 휴식일 · 램프 → 오늘 N편 계획
           mood_source(테마·분위기) → 대본(Claude) → 이미지 5장(Gemini) → TTS(Gemini) → ffmpeg → ffprobe 검사
           manifest.json + mp4 → artifact(3일) · 텔레그램 미리보기
- [publish] (has_items 일 때만) build 직후 자동 시작 (DN2026_0002)
+ [publish] (has_items 일 때만) build 직후 자동 시작 (DN2026_0002) — DN2026_0003: Threads 전용
+ [dispatch_face] DN2026_0003 — face_publish.yml(📘 Facebook Reels Publish) 기동 → Facebook 게시는 별도 파이프라인
           오늘 content_id 만(신선도) → 게시 시각(채널별 시간대: Facebook 06:06~22시 · Threads 10~22시,
           첫 편 5~40분 지연, 편간 120~200분, job 300분 안)
           편마다: Facebook 릴스(같은 설명 있으면 건너뜀) → 첫 편만 Threads 동영상(킬 스위치·워밍업·총량 재확인)

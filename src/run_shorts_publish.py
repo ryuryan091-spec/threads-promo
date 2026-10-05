@@ -58,6 +58,46 @@ def _notify(message: str) -> None:
     notifier.send(_env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_ALERT_CHAT_ID"), message)
 
 
+# ── DN2026_0003 : 발행 거래 분리 ─────────────────────────────────────────────
+#   Facebook 게시는 별도 워크플로(face_publish.yml), Threads 동영상은 shorts.yml publish job 이 맡는다.
+#   같은 러너 코드를 쓰되 아래 3개 환경변수로 범위를 정한다.
+#     SHORTS_PUBLISH_CHANNELS : 게시할 채널 (face / threads / face,threads — 미설정 시 둘 다, 하위 호환)
+#     SHORTS_TARGET_DATE      : 게시할 회차 날짜 YYYY-MM-DD(KST). 미설정 시 오늘. 미게시분 수동 재게시용.
+#     SHORTS_IGNORE_WINDOW    : true 면 채널 시간대를 무시하고 지금부터 게시(마스터 수동 실행 전용).
+_ANY_TIME_WINDOW = ("00:00", "23:59")
+
+
+def _publish_channels() -> set[str]:
+    raw = _env("SHORTS_PUBLISH_CHANNELS")
+    allowed = {shorts_plan.CHANNEL_FACE, shorts_plan.CHANNEL_THREADS}
+    if not raw:
+        return allowed
+    chosen = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    unknown = chosen - allowed
+    if unknown:
+        raise ValueError(f"SHORTS_PUBLISH_CHANNELS 알 수 없는 채널: {sorted(unknown)}")
+    return chosen
+
+
+def _target_date(now: dt.datetime) -> dt.date:
+    raw = _env("SHORTS_TARGET_DATE")
+    if not raw:
+        return now.date()
+    try:
+        target = dt.date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"SHORTS_TARGET_DATE 형식 오류(YYYY-MM-DD): {raw}") from exc
+    if target > now.date():
+        raise ValueError(f"SHORTS_TARGET_DATE 가 미래 날짜입니다: {raw}")
+    if target != now.date():
+        log.info("지정 회차 날짜로 게시: %s (오늘 %s)", target, now.date())
+    return target
+
+
+def _ignore_window() -> bool:
+    return _env("SHORTS_IGNORE_WINDOW").lower() in ("true", "1", "yes")
+
+
 def load_manifest(base: Path) -> dict:
     path = base / "manifest.json"
     if not path.exists():
@@ -364,7 +404,11 @@ def run() -> int:
     base = Path(_env("SHORTS_OUT_DIR") or "out/shorts")
     now = dt.datetime.now(KST)
     manifest = load_manifest(base)
-    items = fresh_items(manifest, now.date())
+    channels = _publish_channels()   # DN2026_0003
+    target = _target_date(now)       # DN2026_0003
+    log.info("게시 범위: 채널=%s · 회차 날짜=%s · 시간대 무시=%s",
+             ",".join(sorted(channels)), target, _ignore_window())
+    items = fresh_items(manifest, target)
     if not items:
         log.info("게시할 오늘 영상 없음")
         if manifest.get("items"):
@@ -374,16 +418,21 @@ def run() -> int:
         return 0
 
     face_reason = safety.face_block_reason()
-    face_items = [i for i in items if shorts_plan.CHANNEL_FACE in i.get("channels", [])]
-    threads_items = [i for i in items if shorts_plan.CHANNEL_THREADS in i.get("channels", [])][:1]
-    if face_reason:
+    # DN2026_0003 : 이 실행이 맡은 채널만 게시한다
+    face_items = ([i for i in items if shorts_plan.CHANNEL_FACE in i.get("channels", [])]
+                  if shorts_plan.CHANNEL_FACE in channels else [])
+    threads_items = ([i for i in items if shorts_plan.CHANNEL_THREADS in i.get("channels", [])][:1]
+                     if shorts_plan.CHANNEL_THREADS in channels else [])
+    if face_reason and face_items:
         log.info("Facebook 게시 안 함 — %s", face_reason)
         face_items = []
     # DN2026_0002 : 채널별 시간대로 각각 계산 → (영상, 시각, 채널) 항목을 시각순 병합.
     #   첫 편은 Facebook·Threads 공용 영상일 수 있으므로 채널 단위로 따로 게시한다.
-    face_schedule = shorts_plan.publish_schedule(
-        now, len(face_items), window=config.SHORTS_FACE_PUBLISH_WINDOW)
-    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items))
+    # DN2026_0003 : 수동 실행(SHORTS_IGNORE_WINDOW)은 시간대 무시 — 지금 + 첫 편 지연부터 게시
+    face_window = _ANY_TIME_WINDOW if _ignore_window() else config.SHORTS_FACE_PUBLISH_WINDOW
+    threads_window = _ANY_TIME_WINDOW if _ignore_window() else None
+    face_schedule = shorts_plan.publish_schedule(now, len(face_items), window=face_window)
+    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items), window=threads_window)
     planned = sorted(
         [(i, t, shorts_plan.CHANNEL_FACE) for i, t in zip(face_items, face_schedule, strict=False)]
         + [(i, t, shorts_plan.CHANNEL_THREADS)
