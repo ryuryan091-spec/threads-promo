@@ -7,7 +7,7 @@ name: 📘🧵 Meta Shorts (Facebook · Threads)
 # DN2026_0002 (2026-10-05 마스터 결정) — ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춤
 #   - build cron  : 매일 KST 08:19 → 월~토 KST 05:06 (일요일 휴식 고정, 무작위 휴식일 폐지)
 #   - 승인 게이트 : environment 'meta-publish' 제거 → 완전 자동 게시
-#   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +5~40분) / Threads 10:00~22:00 유지 (src/config.py)
+#   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +1~10분 — DN2026_0004) / Threads 10:00~22:00 유지 (src/config.py)
 #   - build 는 영상 생성 시간을 고려해 게시 하한(06:06)보다 1시간 먼저 시작한다.
 #   - 차단 스위치는 그대로: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED · SHORTS_BUILD_ENABLED
 #
