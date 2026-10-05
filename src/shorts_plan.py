@@ -149,10 +149,11 @@ def publish_schedule(
     *,
     rng: random.Random | None = None,
     window: tuple[str, str] | None = None,  # DN2026_0002 : 채널별 시간대 (None=Threads 기본값)
+    immediate: bool = False,  # DN2026_0004 : True 면 첫 편 지연 없이 바로(수동 즉시 게시)
 ) -> list[dt.datetime]:
     """승인(=publish job 시작) 시각 now 부터 count 편의 게시 시각(KST).
 
-    - 첫 편: max(now, 시간대 시작) + SHORTS_FIRST_JITTER_MIN
+    - 첫 편: max(now, 시간대 시작) + SHORTS_FIRST_JITTER_MIN (DN2026_0004: immediate 면 지연 0)
     - 남은 시간 = min(시간대 끝, job 예산 끝) - 첫 편. 편간 간격은 SHORTS_GAP_MIN 범위에서 무작위로 뽑되
       남은 시간에 다 들어가도록 상한을 줄인다. 그래도 간격이 SHORTS_GAP_FLOOR_MIN 보다 짧아지면
       뒤 편부터 뺀다(몰아서 올리지 않는다).
@@ -168,7 +169,9 @@ def publish_schedule(
     end = _at(local.date(), win[1])
     limit = min(end, local + dt.timedelta(minutes=config.SHORTS_JOB_BUDGET_MIN))
     base = max(local, start)
-    first = base + dt.timedelta(minutes=rng.randint(*config.SHORTS_FIRST_JITTER_MIN))
+    # DN2026_0004 : 수동 즉시 게시는 첫 편 지연 없음, 그 외는 안티봇 무작위 지연(1~10분)
+    jitter = 0 if immediate else rng.randint(*config.SHORTS_FIRST_JITTER_MIN)
+    first = base + dt.timedelta(minutes=jitter)
     if first > limit:
         # DN2026_0002 : build 가 05:06 에 시작하면 publish job 이 일찍 떠서 job 예산 끝(시작+300분)이
         #   Threads 시간대 시작(10:00) 직후에 걸릴 수 있다. 이때 지연값이 예산을 넘으면 Threads 편이

@@ -707,12 +707,16 @@ SHORTS_TTS_ATTEMPTS = 2
 # 게시 시간대(KST)와 편간 간격
 # DN2026_0002 : 채널별 게시 시간대 분리 (마스터 결정 2026-10-05)
 #   - Threads 동영상: 기존 10:00~22:00 유지
-#   - Facebook 릴스 : ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춰 06:06 시작 (첫 편 지연 5~40분 유지)
+#   - Facebook 릴스 : ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춰 06:06 시작 (첫 편 지연 — DN2026_0004 로 1~10분)
 SHORTS_PUBLISH_WINDOW = ("10:00", "22:00")          # Threads
 SHORTS_FACE_PUBLISH_WINDOW = ("06:06", "22:00")     # DN2026_0002 : Facebook
-SHORTS_FIRST_JITTER_MIN = (5, 40)
-SHORTS_GAP_MIN = (120, 200)
-SHORTS_GAP_FLOOR_MIN = 90       # 남은 시간에 맞추려 간격을 줄일 때의 하한(미만이면 뒤 편을 뺀다)
+# DN2026_0004 (2026-10-05 마스터 결정) — 게시 대기 단축
+#   - 수동 즉시 게시(timing=now): 첫 편 지연 없이 바로 게시 (shorts_plan.publish_schedule immediate)
+#   - 그 외 모든 지연(정기 첫 편 · 편간 간격)은 안티봇 무작위 1~10분
+#   - 이전 값: 첫 편 5~40분 · 편간 120~200분 · 간격 하한 90분
+SHORTS_FIRST_JITTER_MIN = (1, 10)
+SHORTS_GAP_MIN = (1, 10)
+SHORTS_GAP_FLOOR_MIN = 1        # 남은 시간에 맞추려 간격을 줄일 때의 하한(미만이면 뒤 편을 뺀다)
 # publish job timeout(350분) − 준비 여유(약 5분) − 마지막 편 최악 소요(FB 업로드 10 + 처리 10 + Threads 약 15분)
 #   마지막 편 "시작"이 이 안에 들어오면 job 이 끝까지 돈다(점검 2026-10-04: 330 → 300).
 SHORTS_JOB_BUDGET_MIN = 300

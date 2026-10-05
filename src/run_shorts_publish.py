@@ -2,7 +2,7 @@
 
 흐름
   1) build artifact 의 manifest.json 읽기 → 오늘(KST) 콘텐츠만 남김(신선도)
-  2) 게시 시각 계산(shorts_plan.publish_schedule): 첫 편 지연 · 편간 2~3시간대 간격
+  2) 게시 시각 계산(shorts_plan.publish_schedule): 첫 편 지연 · 편간 간격 (DN2026_0004: 둘 다 1~10분, 수동 즉시는 첫 편 0)
      DN2026_0002 : 채널별 시간대 — Facebook 06:06~22시, Threads 10~22시. 채널별로 따로 계산해 시각순 병합.
   3) 편마다 대기 → Facebook 릴스(중복 설명이면 건너뜀) → (첫 편만) Threads 동영상
      Threads 는 게시 직전에 킬 스위치·워밍업·하루 총량(DAILY_POST_BUDGET)을 다시 본다.
@@ -431,8 +431,11 @@ def run() -> int:
     # DN2026_0003 : 수동 실행(SHORTS_IGNORE_WINDOW)은 시간대 무시 — 지금 + 첫 편 지연부터 게시
     face_window = _ANY_TIME_WINDOW if _ignore_window() else config.SHORTS_FACE_PUBLISH_WINDOW
     threads_window = _ANY_TIME_WINDOW if _ignore_window() else None
-    face_schedule = shorts_plan.publish_schedule(now, len(face_items), window=face_window)
-    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items), window=threads_window)
+    # DN2026_0004 : 수동 즉시 게시(SHORTS_IGNORE_WINDOW=true)는 첫 편 지연 없이 바로 게시
+    face_schedule = shorts_plan.publish_schedule(
+        now, len(face_items), window=face_window, immediate=_ignore_window())
+    threads_schedule = shorts_plan.publish_schedule(
+        now, len(threads_items), window=threads_window, immediate=_ignore_window())
     planned = sorted(
         [(i, t, shorts_plan.CHANNEL_FACE) for i, t in zip(face_items, face_schedule, strict=False)]
         + [(i, t, shorts_plan.CHANNEL_THREADS)

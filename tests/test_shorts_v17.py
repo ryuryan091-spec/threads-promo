@@ -144,7 +144,8 @@ class TestSchedule:
 
     def test_before_window_waits_for_start(self):
         out = shorts_plan.publish_schedule(self._now(8, 30), 1, rng=random.Random(1))
-        assert out and out[0] >= self._now(10, 5) and out[0] <= self._now(10, 40)
+        # DN2026_0004 : 지연 5~40분 → 1~10분
+        assert out and out[0] >= self._now(10, 1) and out[0] <= self._now(10, 10)
 
     def test_gaps_and_budget(self):
         out = shorts_plan.publish_schedule(self._now(11), 3, rng=random.Random(2))
@@ -154,12 +155,15 @@ class TestSchedule:
         assert all(t <= self._now(11) + dt.timedelta(minutes=config.SHORTS_JOB_BUDGET_MIN) for t in out)
 
     def test_after_window_posts_nothing(self):
-        assert shorts_plan.publish_schedule(self._now(21, 50), 3, rng=random.Random(3)) == []
+        # DN2026_0004 : 지연이 1~10분이 되어 21:50 은 시간대 안 → 시간대 종료 후(22:01)로 검증
+        assert shorts_plan.publish_schedule(self._now(22, 1), 3, rng=random.Random(3)) == []
 
     def test_late_drops_tail(self):
-        out = shorts_plan.publish_schedule(self._now(19), 3, rng=random.Random(4))
-        assert 1 <= len(out) < 3
-        assert all(t <= self._now(22) for t in out)
+        # DN2026_0004 : 편간 1~10분 — 시간대 끝 직전(21:50)이면 끝(22:00)을 넘는 편은 뺀다
+        for seed in range(200):
+            out = shorts_plan.publish_schedule(self._now(21, 50), 3, rng=random.Random(seed))
+            assert 1 <= len(out) <= 3
+            assert all(t <= self._now(22) for t in out)
 
     def test_early_approval_fits_three_by_compressing(self):
         out = shorts_plan.publish_schedule(self._now(9, 13), 3, rng=random.Random(5))
@@ -1082,12 +1086,12 @@ class TestDN2026_0002:
             out = shorts_plan.publish_schedule(
                 self._now(5, 30), 1, rng=random.Random(seed),
                 window=config.SHORTS_FACE_PUBLISH_WINDOW)
-            assert self._now(6, 11) <= out[0] <= self._now(6, 46)
+            assert self._now(6, 7) <= out[0] <= self._now(6, 16)  # DN2026_0004 : 지연 5~40분 → 1~10분
 
     def test_threads_window_unchanged(self):
         assert config.SHORTS_PUBLISH_WINDOW == ("10:00", "22:00")
         out = shorts_plan.publish_schedule(self._now(5, 30), 1, rng=random.Random(1))
-        assert self._now(10, 5) <= out[0] <= self._now(10, 40)
+        assert self._now(10, 1) <= out[0] <= self._now(10, 10)  # DN2026_0004 : 지연 5~40분 → 1~10분
 
     def test_face_three_posts_fit_job_budget_from_early_start(self):
         timeout = yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))["jobs"]["publish"][
@@ -1097,7 +1101,7 @@ class TestDN2026_0002:
             start = self._now(5, rng.randint(10, 59))
             out = shorts_plan.publish_schedule(start, 3, rng=rng,
                                                window=config.SHORTS_FACE_PUBLISH_WINDOW)
-            assert out and out[0] >= self._now(6, 11)
+            assert out and out[0] >= self._now(6, 7)  # DN2026_0004 : 지연 5~40분 → 1~10분
             used = (out[-1] - start).total_seconds() / 60
             assert used + 35 + 5 <= timeout
 
@@ -1162,8 +1166,8 @@ class TestDN2026_0002Runner:
         threads.publish_video_post.assert_called_once()   # 공용 1편만
         assert waits == sorted(waits) and len(waits) == 3
         at = lambda h, m: dt.datetime.combine(today, dt.time(h, m), tzinfo=KST)  # noqa: E731
-        assert at(6, 11) <= waits[0] <= at(6, 46)          # 첫 Facebook — 06:06 + 5~40분
-        assert any(at(10, 5) <= w <= at(10, 40) for w in waits)  # Threads — 10:00 + 5~40분
+        assert at(6, 7) <= waits[0] <= at(6, 16)           # 첫 Facebook — 06:06 + 1~10분 (DN2026_0004)
+        assert any(at(10, 1) <= w <= at(10, 10) for w in waits)  # Threads — 10:00 + 1~10분 (DN2026_0004)
 
 
 # ---------------------------------------------------------------------------
@@ -1249,7 +1253,7 @@ class TestDN2026_0003Runner:
         assert rp.run() == 0
         face.publish_reel.assert_called_once()
         assert len(waits) == 1
-        assert state["now"] + dt.timedelta(minutes=5) <= waits[0] <= state["now"] + dt.timedelta(minutes=40)
+        assert waits[0] == state["now"]   # DN2026_0004 : 수동 즉시 게시 — 첫 편 지연 없음
 
     def test_face_window_mode_still_excludes_after_22(self, env, monkeypatch, cfg):
         rp, tmp, state, waits = env
@@ -1305,3 +1309,42 @@ class TestDN2026_0003Runner:
         face = self._clients(rp, monkeypatch)
         assert rp.main() != 0
         face.publish_reel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# DN2026_0004 — 즉시 게시 · 안티봇 지연 1~10분
+# ---------------------------------------------------------------------------
+
+
+class TestDN2026_0004:
+    def _now(self, hh, mm=0):
+        return dt.datetime.combine(DAY, dt.time(hh, mm), tzinfo=KST)
+
+    def test_config_values(self):
+        assert config.SHORTS_FIRST_JITTER_MIN == (1, 10)
+        assert config.SHORTS_GAP_MIN == (1, 10)
+        assert config.SHORTS_GAP_FLOOR_MIN == 1
+
+    def test_immediate_first_post_has_no_delay(self):
+        now = self._now(22, 54)
+        out = shorts_plan.publish_schedule(now, 1, rng=random.Random(1),
+                                           window=("00:00", "23:59"), immediate=True)
+        assert out == [now]
+
+    def test_immediate_following_posts_gap_1_to_10(self):
+        now = self._now(14, 0)
+        for seed in range(300):
+            out = shorts_plan.publish_schedule(now, 3, rng=random.Random(seed),
+                                               window=("00:00", "23:59"), immediate=True)
+            assert out[0] == now and len(out) == 3
+            gaps = [(b - a).total_seconds() / 60 for a, b in zip(out, out[1:], strict=False)]
+            assert all(1 <= g <= 10 for g in gaps)
+
+    def test_regular_delays_all_within_1_to_10(self):
+        for seed in range(300):
+            out = shorts_plan.publish_schedule(self._now(5, 30), 3, rng=random.Random(seed),
+                                               window=config.SHORTS_FACE_PUBLISH_WINDOW)
+            assert self._now(6, 7) <= out[0] <= self._now(6, 16)
+            gaps = [(b - a).total_seconds() / 60 for a, b in zip(out, out[1:], strict=False)]
+            assert len(out) == 3 and all(1 <= g <= 10 for g in gaps)
+            assert out[-1] <= self._now(6, 36)   # 3편 모두 06:07~06:36 안에 끝난다

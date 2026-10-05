@@ -556,7 +556,7 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. �
 - 자동: shorts.yml build 성공 → `dispatch_face` job 이 `📘 Facebook Reels Publish` 를 기동(timing=window, 06:06~22:00).
   shorts.yml 의 publish job 은 Threads 동영상만 게시한다.
 - **미게시분 재게시(수동)**: Actions › 📘 Facebook Reels Publish › Run workflow
-  - mode=`live`, timing=`now`(시간대 무시, 지금+5~40분), build_run_id 비움(최신 artifact), target_date 비움(오늘)
+  - mode=`live`, timing=`now`(시간대 무시, **지연 없이 즉시** — DN2026_0004, 2편째부터 1~10분 간격), build_run_id 비움(최신 artifact), target_date 비움(오늘)
   - 자정(KST)이 지났으면 target_date=`YYYY-MM-DD`(회차 날짜) 입력. artifact 보관 3일 이내만 가능.
   - 같은 설명(캡션) 게시물이 이미 있으면 건너뛰므로 재실행해도 중복 게시되지 않는다.
 
