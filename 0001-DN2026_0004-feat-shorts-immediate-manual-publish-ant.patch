@@ -1,0 +1,262 @@
+From 34cf745b2257b67fa6d39e01e4ee26117987c9ce Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 14:26:26 +0000
+Subject: [PATCH] DN2026_0004 feat(shorts): immediate manual publish, anti-bot
+ delays 1-10 min
+
+- timing=now (SHORTS_IGNORE_WINDOW): first post without delay
+- SHORTS_FIRST_JITTER_MIN 5-40 -> 1-10, SHORTS_GAP_MIN 120-200 -> 1-10, GAP_FLOOR 90 -> 1
+- docs/tests updated; change points tagged DN2026_0004
+---
+ .github/workflows/shorts.yml |  2 +-
+ DESIGN_V17_SHORTS.md         |  2 +-
+ OPERATIONS.md                |  2 +-
+ src/config.py                | 12 ++++---
+ src/run_shorts_publish.py    |  9 +++--
+ src/shorts_plan.py           |  7 ++--
+ tests/test_shorts_v17.py     | 65 ++++++++++++++++++++++++++++++------
+ 7 files changed, 76 insertions(+), 23 deletions(-)
+
+diff --git a/.github/workflows/shorts.yml b/.github/workflows/shorts.yml
+index 48a477a..f495712 100644
+--- a/.github/workflows/shorts.yml
++++ b/.github/workflows/shorts.yml
+@@ -7,7 +7,7 @@ name: 📘🧵 Meta Shorts (Facebook · Threads)
+ # DN2026_0002 (2026-10-05 마스터 결정) — ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춤
+ #   - build cron  : 매일 KST 08:19 → 월~토 KST 05:06 (일요일 휴식 고정, 무작위 휴식일 폐지)
+ #   - 승인 게이트 : environment 'meta-publish' 제거 → 완전 자동 게시
+-#   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +5~40분) / Threads 10:00~22:00 유지 (src/config.py)
++#   - 게시 시간대 : Facebook 06:06~22:00(첫 편 +1~10분 — DN2026_0004) / Threads 10:00~22:00 유지 (src/config.py)
+ #   - build 는 영상 생성 시간을 고려해 게시 하한(06:06)보다 1시간 먼저 시작한다.
+ #   - 차단 스위치는 그대로: DRY_RUN · AUTOMATION_ENABLED · FACE_ENABLED · SHORTS_BUILD_ENABLED
+ #
+diff --git a/DESIGN_V17_SHORTS.md b/DESIGN_V17_SHORTS.md
+index 14fcb52..f179fdd 100644
+--- a/DESIGN_V17_SHORTS.md
++++ b/DESIGN_V17_SHORTS.md
+@@ -21,7 +21,7 @@ shorts.yml (KST 월~토 05:06 — DN2026_0002, 이전: 매일 08:19)
+  [publish] (has_items 일 때만) build 직후 자동 시작 (DN2026_0002) — DN2026_0003: Threads 전용
+  [dispatch_face] DN2026_0003 — face_publish.yml(📘 Facebook Reels Publish) 기동 → Facebook 게시는 별도 파이프라인
+           오늘 content_id 만(신선도) → 게시 시각(채널별 시간대: Facebook 06:06~22시 · Threads 10~22시,
+-          첫 편 5~40분 지연, 편간 120~200분, job 300분 안)
++          첫 편 1~10분 지연, 편간 1~10분 — DN2026_0004 (수동 즉시 게시는 첫 편 지연 0), job 300분 안)
+           편마다: Facebook 릴스(같은 설명 있으면 건너뜀) → 첫 편만 Threads 동영상(킬 스위치·워밍업·총량 재확인)
+           결과 알림 + "앱에서 AI 정보 표시" 안내
+ ```
+diff --git a/OPERATIONS.md b/OPERATIONS.md
+index 666df17..6718de6 100644
+--- a/OPERATIONS.md
++++ b/OPERATIONS.md
+@@ -556,7 +556,7 @@ v1.5.0: CHAT 구역은 판정 창(+앞 5분)을 빼고 자동 산출됩니다. 
+ - 자동: shorts.yml build 성공 → `dispatch_face` job 이 `📘 Facebook Reels Publish` 를 기동(timing=window, 06:06~22:00).
+   shorts.yml 의 publish job 은 Threads 동영상만 게시한다.
+ - **미게시분 재게시(수동)**: Actions › 📘 Facebook Reels Publish › Run workflow
+-  - mode=`live`, timing=`now`(시간대 무시, 지금+5~40분), build_run_id 비움(최신 artifact), target_date 비움(오늘)
++  - mode=`live`, timing=`now`(시간대 무시, **지연 없이 즉시** — DN2026_0004, 2편째부터 1~10분 간격), build_run_id 비움(최신 artifact), target_date 비움(오늘)
+   - 자정(KST)이 지났으면 target_date=`YYYY-MM-DD`(회차 날짜) 입력. artifact 보관 3일 이내만 가능.
+   - 같은 설명(캡션) 게시물이 이미 있으면 건너뛰므로 재실행해도 중복 게시되지 않는다.
+ 
+diff --git a/src/config.py b/src/config.py
+index 78d264f..5878b47 100644
+--- a/src/config.py
++++ b/src/config.py
+@@ -707,12 +707,16 @@ SHORTS_TTS_ATTEMPTS = 2
+ # 게시 시간대(KST)와 편간 간격
+ # DN2026_0002 : 채널별 게시 시간대 분리 (마스터 결정 2026-10-05)
+ #   - Threads 동영상: 기존 10:00~22:00 유지
+-#   - Facebook 릴스 : ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춰 06:06 시작 (첫 편 지연 5~40분 유지)
++#   - Facebook 릴스 : ICG 웹툰 X 발행(월~토 KST 06:06)에 맞춰 06:06 시작 (첫 편 지연 — DN2026_0004 로 1~10분)
+ SHORTS_PUBLISH_WINDOW = ("10:00", "22:00")          # Threads
+ SHORTS_FACE_PUBLISH_WINDOW = ("06:06", "22:00")     # DN2026_0002 : Facebook
+-SHORTS_FIRST_JITTER_MIN = (5, 40)
+-SHORTS_GAP_MIN = (120, 200)
+-SHORTS_GAP_FLOOR_MIN = 90       # 남은 시간에 맞추려 간격을 줄일 때의 하한(미만이면 뒤 편을 뺀다)
++# DN2026_0004 (2026-10-05 마스터 결정) — 게시 대기 단축
++#   - 수동 즉시 게시(timing=now): 첫 편 지연 없이 바로 게시 (shorts_plan.publish_schedule immediate)
++#   - 그 외 모든 지연(정기 첫 편 · 편간 간격)은 안티봇 무작위 1~10분
++#   - 이전 값: 첫 편 5~40분 · 편간 120~200분 · 간격 하한 90분
++SHORTS_FIRST_JITTER_MIN = (1, 10)
++SHORTS_GAP_MIN = (1, 10)
++SHORTS_GAP_FLOOR_MIN = 1        # 남은 시간에 맞추려 간격을 줄일 때의 하한(미만이면 뒤 편을 뺀다)
+ # publish job timeout(350분) − 준비 여유(약 5분) − 마지막 편 최악 소요(FB 업로드 10 + 처리 10 + Threads 약 15분)
+ #   마지막 편 "시작"이 이 안에 들어오면 job 이 끝까지 돈다(점검 2026-10-04: 330 → 300).
+ SHORTS_JOB_BUDGET_MIN = 300
+diff --git a/src/run_shorts_publish.py b/src/run_shorts_publish.py
+index cac835a..4018637 100644
+--- a/src/run_shorts_publish.py
++++ b/src/run_shorts_publish.py
+@@ -2,7 +2,7 @@
+ 
+ 흐름
+   1) build artifact 의 manifest.json 읽기 → 오늘(KST) 콘텐츠만 남김(신선도)
+-  2) 게시 시각 계산(shorts_plan.publish_schedule): 첫 편 지연 · 편간 2~3시간대 간격
++  2) 게시 시각 계산(shorts_plan.publish_schedule): 첫 편 지연 · 편간 간격 (DN2026_0004: 둘 다 1~10분, 수동 즉시는 첫 편 0)
+      DN2026_0002 : 채널별 시간대 — Facebook 06:06~22시, Threads 10~22시. 채널별로 따로 계산해 시각순 병합.
+   3) 편마다 대기 → Facebook 릴스(중복 설명이면 건너뜀) → (첫 편만) Threads 동영상
+      Threads 는 게시 직전에 킬 스위치·워밍업·하루 총량(DAILY_POST_BUDGET)을 다시 본다.
+@@ -431,8 +431,11 @@ def run() -> int:
+     # DN2026_0003 : 수동 실행(SHORTS_IGNORE_WINDOW)은 시간대 무시 — 지금 + 첫 편 지연부터 게시
+     face_window = _ANY_TIME_WINDOW if _ignore_window() else config.SHORTS_FACE_PUBLISH_WINDOW
+     threads_window = _ANY_TIME_WINDOW if _ignore_window() else None
+-    face_schedule = shorts_plan.publish_schedule(now, len(face_items), window=face_window)
+-    threads_schedule = shorts_plan.publish_schedule(now, len(threads_items), window=threads_window)
++    # DN2026_0004 : 수동 즉시 게시(SHORTS_IGNORE_WINDOW=true)는 첫 편 지연 없이 바로 게시
++    face_schedule = shorts_plan.publish_schedule(
++        now, len(face_items), window=face_window, immediate=_ignore_window())
++    threads_schedule = shorts_plan.publish_schedule(
++        now, len(threads_items), window=threads_window, immediate=_ignore_window())
+     planned = sorted(
+         [(i, t, shorts_plan.CHANNEL_FACE) for i, t in zip(face_items, face_schedule, strict=False)]
+         + [(i, t, shorts_plan.CHANNEL_THREADS)
+diff --git a/src/shorts_plan.py b/src/shorts_plan.py
+index afb7a56..702c7ac 100644
+--- a/src/shorts_plan.py
++++ b/src/shorts_plan.py
+@@ -149,10 +149,11 @@ def publish_schedule(
+     *,
+     rng: random.Random | None = None,
+     window: tuple[str, str] | None = None,  # DN2026_0002 : 채널별 시간대 (None=Threads 기본값)
++    immediate: bool = False,  # DN2026_0004 : True 면 첫 편 지연 없이 바로(수동 즉시 게시)
+ ) -> list[dt.datetime]:
+     """승인(=publish job 시작) 시각 now 부터 count 편의 게시 시각(KST).
+ 
+-    - 첫 편: max(now, 시간대 시작) + SHORTS_FIRST_JITTER_MIN
++    - 첫 편: max(now, 시간대 시작) + SHORTS_FIRST_JITTER_MIN (DN2026_0004: immediate 면 지연 0)
+     - 남은 시간 = min(시간대 끝, job 예산 끝) - 첫 편. 편간 간격은 SHORTS_GAP_MIN 범위에서 무작위로 뽑되
+       남은 시간에 다 들어가도록 상한을 줄인다. 그래도 간격이 SHORTS_GAP_FLOOR_MIN 보다 짧아지면
+       뒤 편부터 뺀다(몰아서 올리지 않는다).
+@@ -168,7 +169,9 @@ def publish_schedule(
+     end = _at(local.date(), win[1])
+     limit = min(end, local + dt.timedelta(minutes=config.SHORTS_JOB_BUDGET_MIN))
+     base = max(local, start)
+-    first = base + dt.timedelta(minutes=rng.randint(*config.SHORTS_FIRST_JITTER_MIN))
++    # DN2026_0004 : 수동 즉시 게시는 첫 편 지연 없음, 그 외는 안티봇 무작위 지연(1~10분)
++    jitter = 0 if immediate else rng.randint(*config.SHORTS_FIRST_JITTER_MIN)
++    first = base + dt.timedelta(minutes=jitter)
+     if first > limit:
+         # DN2026_0002 : build 가 05:06 에 시작하면 publish job 이 일찍 떠서 job 예산 끝(시작+300분)이
+         #   Threads 시간대 시작(10:00) 직후에 걸릴 수 있다. 이때 지연값이 예산을 넘으면 Threads 편이
+diff --git a/tests/test_shorts_v17.py b/tests/test_shorts_v17.py
+index 0c20634..7ea634b 100644
+--- a/tests/test_shorts_v17.py
++++ b/tests/test_shorts_v17.py
+@@ -144,7 +144,8 @@ class TestSchedule:
+ 
+     def test_before_window_waits_for_start(self):
+         out = shorts_plan.publish_schedule(self._now(8, 30), 1, rng=random.Random(1))
+-        assert out and out[0] >= self._now(10, 5) and out[0] <= self._now(10, 40)
++        # DN2026_0004 : 지연 5~40분 → 1~10분
++        assert out and out[0] >= self._now(10, 1) and out[0] <= self._now(10, 10)
+ 
+     def test_gaps_and_budget(self):
+         out = shorts_plan.publish_schedule(self._now(11), 3, rng=random.Random(2))
+@@ -154,12 +155,15 @@ class TestSchedule:
+         assert all(t <= self._now(11) + dt.timedelta(minutes=config.SHORTS_JOB_BUDGET_MIN) for t in out)
+ 
+     def test_after_window_posts_nothing(self):
+-        assert shorts_plan.publish_schedule(self._now(21, 50), 3, rng=random.Random(3)) == []
++        # DN2026_0004 : 지연이 1~10분이 되어 21:50 은 시간대 안 → 시간대 종료 후(22:01)로 검증
++        assert shorts_plan.publish_schedule(self._now(22, 1), 3, rng=random.Random(3)) == []
+ 
+     def test_late_drops_tail(self):
+-        out = shorts_plan.publish_schedule(self._now(19), 3, rng=random.Random(4))
+-        assert 1 <= len(out) < 3
+-        assert all(t <= self._now(22) for t in out)
++        # DN2026_0004 : 편간 1~10분 — 시간대 끝 직전(21:50)이면 끝(22:00)을 넘는 편은 뺀다
++        for seed in range(200):
++            out = shorts_plan.publish_schedule(self._now(21, 50), 3, rng=random.Random(seed))
++            assert 1 <= len(out) <= 3
++            assert all(t <= self._now(22) for t in out)
+ 
+     def test_early_approval_fits_three_by_compressing(self):
+         out = shorts_plan.publish_schedule(self._now(9, 13), 3, rng=random.Random(5))
+@@ -1082,12 +1086,12 @@ class TestDN2026_0002:
+             out = shorts_plan.publish_schedule(
+                 self._now(5, 30), 1, rng=random.Random(seed),
+                 window=config.SHORTS_FACE_PUBLISH_WINDOW)
+-            assert self._now(6, 11) <= out[0] <= self._now(6, 46)
++            assert self._now(6, 7) <= out[0] <= self._now(6, 16)  # DN2026_0004 : 지연 5~40분 → 1~10분
+ 
+     def test_threads_window_unchanged(self):
+         assert config.SHORTS_PUBLISH_WINDOW == ("10:00", "22:00")
+         out = shorts_plan.publish_schedule(self._now(5, 30), 1, rng=random.Random(1))
+-        assert self._now(10, 5) <= out[0] <= self._now(10, 40)
++        assert self._now(10, 1) <= out[0] <= self._now(10, 10)  # DN2026_0004 : 지연 5~40분 → 1~10분
+ 
+     def test_face_three_posts_fit_job_budget_from_early_start(self):
+         timeout = yaml.safe_load((WF / "shorts.yml").read_text("utf-8"))["jobs"]["publish"][
+@@ -1097,7 +1101,7 @@ class TestDN2026_0002:
+             start = self._now(5, rng.randint(10, 59))
+             out = shorts_plan.publish_schedule(start, 3, rng=rng,
+                                                window=config.SHORTS_FACE_PUBLISH_WINDOW)
+-            assert out and out[0] >= self._now(6, 11)
++            assert out and out[0] >= self._now(6, 7)  # DN2026_0004 : 지연 5~40분 → 1~10분
+             used = (out[-1] - start).total_seconds() / 60
+             assert used + 35 + 5 <= timeout
+ 
+@@ -1162,8 +1166,8 @@ class TestDN2026_0002Runner:
+         threads.publish_video_post.assert_called_once()   # 공용 1편만
+         assert waits == sorted(waits) and len(waits) == 3
+         at = lambda h, m: dt.datetime.combine(today, dt.time(h, m), tzinfo=KST)  # noqa: E731
+-        assert at(6, 11) <= waits[0] <= at(6, 46)          # 첫 Facebook — 06:06 + 5~40분
+-        assert any(at(10, 5) <= w <= at(10, 40) for w in waits)  # Threads — 10:00 + 5~40분
++        assert at(6, 7) <= waits[0] <= at(6, 16)           # 첫 Facebook — 06:06 + 1~10분 (DN2026_0004)
++        assert any(at(10, 1) <= w <= at(10, 10) for w in waits)  # Threads — 10:00 + 1~10분 (DN2026_0004)
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -1249,7 +1253,7 @@ class TestDN2026_0003Runner:
+         assert rp.run() == 0
+         face.publish_reel.assert_called_once()
+         assert len(waits) == 1
+-        assert state["now"] + dt.timedelta(minutes=5) <= waits[0] <= state["now"] + dt.timedelta(minutes=40)
++        assert waits[0] == state["now"]   # DN2026_0004 : 수동 즉시 게시 — 첫 편 지연 없음
+ 
+     def test_face_window_mode_still_excludes_after_22(self, env, monkeypatch, cfg):
+         rp, tmp, state, waits = env
+@@ -1305,3 +1309,42 @@ class TestDN2026_0003Runner:
+         face = self._clients(rp, monkeypatch)
+         assert rp.main() != 0
+         face.publish_reel.assert_not_called()
++
++
++# ---------------------------------------------------------------------------
++# DN2026_0004 — 즉시 게시 · 안티봇 지연 1~10분
++# ---------------------------------------------------------------------------
++
++
++class TestDN2026_0004:
++    def _now(self, hh, mm=0):
++        return dt.datetime.combine(DAY, dt.time(hh, mm), tzinfo=KST)
++
++    def test_config_values(self):
++        assert config.SHORTS_FIRST_JITTER_MIN == (1, 10)
++        assert config.SHORTS_GAP_MIN == (1, 10)
++        assert config.SHORTS_GAP_FLOOR_MIN == 1
++
++    def test_immediate_first_post_has_no_delay(self):
++        now = self._now(22, 54)
++        out = shorts_plan.publish_schedule(now, 1, rng=random.Random(1),
++                                           window=("00:00", "23:59"), immediate=True)
++        assert out == [now]
++
++    def test_immediate_following_posts_gap_1_to_10(self):
++        now = self._now(14, 0)
++        for seed in range(300):
++            out = shorts_plan.publish_schedule(now, 3, rng=random.Random(seed),
++                                               window=("00:00", "23:59"), immediate=True)
++            assert out[0] == now and len(out) == 3
++            gaps = [(b - a).total_seconds() / 60 for a, b in zip(out, out[1:], strict=False)]
++            assert all(1 <= g <= 10 for g in gaps)
++
++    def test_regular_delays_all_within_1_to_10(self):
++        for seed in range(300):
++            out = shorts_plan.publish_schedule(self._now(5, 30), 3, rng=random.Random(seed),
++                                               window=config.SHORTS_FACE_PUBLISH_WINDOW)
++            assert self._now(6, 7) <= out[0] <= self._now(6, 16)
++            gaps = [(b - a).total_seconds() / 60 for a, b in zip(out, out[1:], strict=False)]
++            assert len(out) == 3 and all(1 <= g <= 10 for g in gaps)
++            assert out[-1] <= self._now(6, 36)   # 3편 모두 06:07~06:36 안에 끝난다
+-- 
+2.43.0
+
