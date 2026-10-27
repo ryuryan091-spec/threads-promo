@@ -15,7 +15,7 @@ threads-promo 에 **함께 두지만 분리해 운영**한다 (DN2026_0069 — �
 | `p76_health.yml` | 매일 09:10 | 페이지 접근·토큰 권한·노션 스키마·휴재 중 본편 승인·예약 작업 누락 점검 | 항상 실행(읽기만) |
 | `p76_calendar.yml` | 매일 21:28 | DB-05 실제 발행 기준으로 21일치 DB-09 upsert (완결 다음 날부터 7일 휴재) | `PAGE76_ENABLED` |
 | `p76_hiatus_publish.yml` | 매일 20:05 + 0~40분 | DB-09 휴재콘텐츠 `승인`+`검수완료` 1건 → 사진 게시 | `+ PAGE76_HIATUS_PUBLISH_ENABLED` |
-| `p76_insights.yml` | 매일 06:20 | 발행 후 D1·D3·D7 반응·댓글수·공유수·팔로워 → DB-08 | `+ PAGE76_INSIGHTS_ENABLED` |
+| `p76_insights.yml` | 매일 06:20 | 페이지 게시물 목록에서 게시 후 D1·D3·D7 피드 게시물의 반응·댓글수·공유수·팔로워 → DB-08 (게시일→회차는 DB-09·기준점으로 매칭) | `+ PAGE76_INSIGHTS_ENABLED` |
 
 캘린더는 21:45 예약 작업 전에 돌고, CHAT 트리거(21:19)와 6분 이상 떨어지도록 21:28 에 둔다.
 CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests/p76` 를 함께 돌린다.

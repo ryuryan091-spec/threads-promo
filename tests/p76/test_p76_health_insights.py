@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from p76_fake import DB08, DB09, DB11, FAKE_PAGE_ID, FakeResp, add_episode, err, kst
+from p76_fake import DB08, DB09, DB11, FAKE_PAGE_ID, FakeResp, add_episode, err
 
 from p76 import cli, run_health, run_insights, safety, settings
 from p76.runlog import RunLog
@@ -144,17 +144,26 @@ def test_disabled_pipeline_exits_without_work(fake_notion, env):
     assert called == [] and fake_notion.calls == []
 
 
-# ── T1-15 insights ───────────────────────────────────────
+# ── T1-15 insights (페이지 게시물 목록 기준) ──────────────
+def post(pid, created, status="added_photos"):
+    return {"id": pid, "created_time": created, "status_type": status}
+
+
 @pytest.fixture
-def insights_env(fake_notion, fake_graph):
+def insights_env(fake_notion, fake_graph, env):
+    env(PAGE76_SCHEDULE_ANCHOR="21@2026-10-26")
     g = fake_graph
     g.handlers[("GET", f"{FAKE_PAGE_ID}?id,name,followers_count")] = FakeResp(200, {"followers_count": 321})
+    # TODAY=11-12: 11-09(D3) #035 피드 + 릴스, 11-10(D2) 휴재 1일차, 11-11(D1) 휴재 콘텐츠 없음
+    g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = FakeResp(200, {"data": [
+        post("61_35", "2026-11-09T11:31:00+0000"),
+        post("61_35r", "2026-11-09T11:40:00+0000", "added_video"),
+        post("61_h1", "2026-11-10T11:20:00+0000"),
+    ]})
     g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = FakeResp(
         200, {"reactions": {"summary": {"total_count": 40}}})
     g.handlers[("GET", "61_35?comments.summary(total_count).limit(0)")] = FakeResp(
         200, {"comments": {"summary": {"total_count": 7}}})
-    add_episode(fake_notion, 35, date(2026, 11, 9), feed_id="61_35", reel_id="v35")
-    add_episode(fake_notion, 36, date(2026, 11, 10), feed_id="")  # D2 — 대상 아님
     return fake_notion, g
 
 
@@ -171,12 +180,15 @@ def test_t1_15_engagement_saved(insights_env):
     assert len(rows) == 1
     row = rows[0]
     assert fake.val(row, settings.M_KEY) == "#035-D3"
-    assert (fake.val(row, settings.M_REACTIONS), fake.val(row, settings.M_COMMENTS), fake.val(row, settings.M_SHARES),
-            fake.val(row, settings.M_FOLLOWERS), fake.val(row, settings.M_SEASON)) == (40, 7, 0, 321, 2)
+    assert (fake.val(row, settings.M_NO), fake.val(row, settings.M_REACTIONS), fake.val(row, settings.M_COMMENTS),
+            fake.val(row, settings.M_SHARES), fake.val(row, settings.M_FOLLOWERS), fake.val(row, settings.M_SEASON)) == (
+        35, 40, 7, 0, 321, 2)
     assert fake.val(row, settings.M_VIEWS) is None  # read_insights 없음 → 빈칸
     assert "insights:skipped" in fake.val(row, settings.M_RESULT)
     assert "reel:not_collected" in fake.val(row, settings.M_RESULT)
     assert g.writes() == []
+    posts_call = next(c for c in g.calls if c[1].endswith("/posts"))
+    assert "message" not in posts_call[2]["fields"]  # 본문은 가져오지 않는다
 
 
 def test_t1_15_snapshot_idempotent(insights_env):
@@ -197,7 +209,7 @@ def test_t1_15_comments_permission_partial(insights_env):
 
 def test_t1_15_invalid_metric_partial(insights_env, env):
     fake, g = insights_env
-    env(PAGE76_INSIGHTS_METRICS="post_media_view,post_impressions")
+    env(PAGE76_INSIGHTS_METRICS="post_media_view,post_impressions", PAGE76_SCHEDULE_ANCHOR="21@2026-10-26")
 
     def insights(params):
         if "," in params["metric"] or params["metric"] == "post_impressions":
@@ -212,20 +224,63 @@ def test_t1_15_invalid_metric_partial(insights_env, env):
 
 def test_insights_hiatus_content_snapshot(insights_env):
     fake, g = insights_env
-    fake.add(DB09, **{settings.C_KEY: "2026-11-11", settings.C_DATE: "2026-11-11",
-                      settings.C_KIND: settings.KIND_HIATUS_CONTENT, settings.C_STATE: settings.S_DONE,
-                      settings.C_SEASON: 2, settings.C_FEED_ID: "61_h1",
-                      settings.C_PUBLISHED_AT: kst(date(2026, 11, 11))})
     g.handlers[("GET", "61_h1?reactions.summary(total_count).limit(0),shares")] = FakeResp(200, {"shares": {"count": 2}})
     g.handlers[("GET", "61_h1?comments.summary(total_count).limit(0)")] = FakeResp(200, {})
-    run_insights_body()
+    run_insights_body(date(2026, 11, 11))  # 11-10 게시 → D1
     keys = sorted(fake.val(r, settings.M_KEY) for r in fake.rows(DB08))
-    assert keys == ["#035-D3", "H2026-11-11-D1"]
+    assert keys == ["H2026-11-10-D1"]
+
+
+def test_insights_db09_row_overrides_plan(insights_env):
+    """회장이 DB-09 에서 날짜를 바꾼 경우(예: 하루 쉼) 캘린더 행을 따른다."""
+    fake, _ = insights_env
+    fake.add(DB09, **{settings.C_KEY: "2026-11-09", settings.C_DATE: "2026-11-09",
+                      settings.C_KIND: settings.KIND_EPISODE, settings.C_SEASON: 2, settings.C_NO: 34})
+    run_insights_body()
+    assert [fake.val(r, settings.M_KEY) for r in fake.rows(DB08)] == ["#034-D3"]
+
+
+def test_insights_unmapped_without_anchor(insights_env, env):
+    fake, _ = insights_env
+    env(PAGE76_SCHEDULE_ANCHOR="")
+    log = run_insights_body()
+    row = fake.rows(DB08)[0]
+    assert fake.val(row, settings.M_KEY) == "P2026-11-09-D3" and fake.val(row, settings.M_NO) is None
+    assert "unmapped" in fake.val(row, settings.M_RESULT) and log.status == "degraded"
+
+
+def test_insights_multiple_feed_posts_same_day(insights_env):
+    fake, g = insights_env
+    g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = FakeResp(200, {"data": [
+        post("61_late", "2026-11-09T13:00:00+0000"), post("61_35", "2026-11-09T11:31:00+0000")]})
+    log = run_insights_body()
+    row = fake.rows(DB08)[0]
+    assert "multi_post:2" in fake.val(row, settings.M_RESULT) and log.status == "ok"
+    assert not any(c[1].startswith("61_late") for c in g.calls)
+
+
+def test_insights_posts_pagination(insights_env):
+    fake, g = insights_env
+    pages = iter([
+        FakeResp(200, {"data": [post("61_h1", "2026-11-10T11:20:00+0000")],
+                       "paging": {"cursors": {"after": "c1"}, "next": "https://graph.example/next"}}),
+        FakeResp(200, {"data": [post("61_35", "2026-11-09T11:31:00+0000")]}),
+    ])
+    g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = lambda params: next(pages)
+    run_insights_body()
+    assert [fake.val(r, settings.M_KEY) for r in fake.rows(DB08)] == ["#035-D3"]
+
+
+def test_insights_posts_failure_degrades(insights_env):
+    fake, g = insights_env
+    g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = err(100)
+    log = run_insights_body()
+    assert fake.rows(DB08) == [] and any(c.startswith("posts:") for c in log.codes)
 
 
 def test_insights_dry_run_no_writes(insights_env, env):
     fake, _ = insights_env
-    env(PAGE76_MODE="dry_run")
+    env(PAGE76_MODE="dry_run", PAGE76_SCHEDULE_ANCHOR="21@2026-10-26")
     run_insights_body()
     assert fake.writes() == []
 

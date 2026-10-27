@@ -89,6 +89,8 @@ def busy_ledger(fake_notion, fake_graph, monkeypatch):
     g = fake_graph
     g.handlers[("GET", f"{FAKE_PAGE_ID}?id,name,followers_count")] = FakeResp(200, {"followers_count": 1})
     g.handlers[("GET", "debug_token")] = FakeResp(200, {"data": {"is_valid": True, "type": "PAGE", "scopes": []}})
+    g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = FakeResp(200, {"data": [
+        {"id": "61_35", "created_time": "2026-11-09T11:31:00+0000", "status_type": "added_photos"}]})
     g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = FakeResp(200, {})
     g.handlers[("GET", "61_35?comments.summary(total_count).limit(0)")] = FakeResp(200, {})
     return fake_notion, g

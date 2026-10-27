@@ -28,7 +28,7 @@ import requests
 from p76 import safety, settings
 from p76.redact import redact
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = logging.getLogger(__name__)
 READ_RETRY = 2
@@ -96,6 +96,22 @@ def get(path: str, params: dict | None = None) -> tuple[bool, dict, str]:
 
 def page_info() -> tuple[bool, dict, str]:
     return get(settings.PAGE_ID, {"fields": "id,name,followers_count"})
+
+
+def page_posts(since: int, until: int, max_pages: int = 5) -> tuple[bool, list[dict], str]:
+    """페이지 게시물 목록 (since·until = Unix 초). 본문(message)은 가져오지 않는다."""
+    posts: list[dict] = []
+    params = {"fields": "id,created_time,status_type", "since": since, "until": until, "limit": 50}
+    for _ in range(max_pages):
+        ok, body, reason = get(f"{settings.PAGE_ID}/posts", params)
+        if not ok:
+            return False, posts, reason
+        posts += [p for p in body.get("data") or [] if isinstance(p, dict) and p.get("id")]
+        after = ((body.get("paging") or {}).get("cursors") or {}).get("after")
+        if not after or not (body.get("paging") or {}).get("next"):
+            break
+        params = {**params, "after": after}
+    return True, posts, ""
 
 
 def debug_token() -> tuple[bool, dict, str]:
