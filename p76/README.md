@@ -20,6 +20,15 @@ threads-promo 에 **함께 두지만 분리해 운영**한다 (DN2026_0069 — �
 캘린더는 21:45 예약 작업 전에 돌고, CHAT 트리거(21:19)와 6분 이상 떨어지도록 21:28 에 둔다.
 CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests/p76` 를 함께 돌린다.
 
+## Secret 연결
+
+| 코드가 읽는 이름 | 워크플로가 넣는 Secret | 비고 |
+|---|---|---|
+| `FACE_PAGE76_ID` · `FACE_PAGE76_TOKEN` | 같은 이름 | 사건파일 76 페이지 전용 |
+| `PAGE76_NOTION_TOKEN` | `NOTION_TOKEN` | threads-promo 공용 노션 통합(DN2026_0070) — 자비스76·DB-05 에 이 통합을 연결해야 함 |
+| `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | threads-promo 운영 알림 방과 공용 — 메시지 앞에 `[사건파일76]` |
+| `PAGE76_DB05_ID` · `DB08` · `DB09` · `DB11` | 같은 이름 | 원장 4개(읽기 1 + 쓰기 3) |
+
 ## 모드 (`PAGE76_MODE`)
 
 | 모드 | Graph 쓰기 | 노션 쓰기 | 실행 기록(DB-11) |
