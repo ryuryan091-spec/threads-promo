@@ -156,8 +156,8 @@ def insights_env(fake_notion, fake_graph, env):
     g.handlers[("GET", f"{FAKE_PAGE_ID}?id,name,followers_count")] = FakeResp(200, {"followers_count": 321})
     # TODAY=11-12: 11-09(D3) #035 피드 + 릴스, 11-10(D2) 휴재 1일차, 11-11(D1) 휴재 콘텐츠 없음
     g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = FakeResp(200, {"data": [
-        post("61_35", "2026-11-09T11:31:00+0000"),
-        post("61_35r", "2026-11-09T11:40:00+0000", "added_video"),
+        post("61_35", "2026-11-09T11:31:00+0000", "added_video"),   # 회차 릴스
+        post("61_35x", "2026-11-09T13:40:00+0000", "added_video"),  # 같은 날 추가 영상
         post("61_h1", "2026-11-10T11:20:00+0000"),
     ]})
     g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = FakeResp(
@@ -185,7 +185,9 @@ def test_t1_15_engagement_saved(insights_env):
         35, 40, 7, 0, 321, 2)
     assert fake.val(row, settings.M_VIEWS) is None  # read_insights 없음 → 빈칸
     assert "insights:skipped" in fake.val(row, settings.M_RESULT)
-    assert "reel:not_collected" in fake.val(row, settings.M_RESULT)
+    assert "reel:views_not_collected" in fake.val(row, settings.M_RESULT)
+    assert "multi_post:2" in fake.val(row, settings.M_RESULT)
+    assert not any(c[1].startswith("61_35x") for c in g.calls)
     assert g.writes() == []
     posts_call = next(c for c in g.calls if c[1].endswith("/posts"))
     assert "message" not in posts_call[2]["fields"]  # 본문은 가져오지 않는다
@@ -297,5 +299,16 @@ def test_insights_diagnostic_log(insights_env, caplog):
     caplog.set_level(logging.INFO)
     run_insights_body()
     line = next(r.getMessage() for r in caplog.records if "게시물 3건" in r.getMessage())
-    assert "added_photos,added_video" in line and "11-09(D3):피드1·영상1" in line
+    assert "added_photos,added_video" in line and "11-09(D3):피드0·영상2" in line
     assert "61_" not in caplog.text  # 게시물 ID 는 공개 로그에 남기지 않는다
+
+
+def test_insights_earliest_post_regardless_of_type(insights_env):
+    """회차는 릴스로 게시 — 같은 날 사진이 더 늦게 올라와도 가장 이른 영상이 회차다."""
+    fake, g = insights_env
+    g.handlers[("GET", f"{FAKE_PAGE_ID}/posts")] = FakeResp(200, {"data": [
+        post("61_photo", "2026-11-09T14:00:00+0000"), post("61_35", "2026-11-09T11:31:00+0000", "added_video")]})
+    run_insights_body()
+    row = fake.rows(DB08)[0]
+    assert fake.val(row, settings.M_REACTIONS) == 40
+    assert not any(c[1].startswith("61_photo") for c in g.calls)
