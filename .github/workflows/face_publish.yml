@@ -95,13 +95,17 @@ jobs:
           FACE_PAGE_ID: ${{ secrets.FACE_PAGE_ID }}
           FACE_PAGE_TOKEN: ${{ secrets.FACE_PAGE_TOKEN }}
           FACE_STORY_ENABLED: ${{ vars.FACE_STORY_ENABLED || 'false' }}
+          # v1.9.0 Instagram 릴스 — 같은 페이지 토큰으로 같은 영상·캡션을 올린다(기본 꺼짐)
+          INSTA_ENABLED: ${{ vars.INSTA_ENABLED || 'false' }}
+          INSTA_DAILY_MAX: ${{ vars.INSTA_DAILY_MAX || '1' }}
+          INSTA_USER_ID: ${{ vars.INSTA_USER_ID }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           FACE_NOTION_DB_ID: ${{ secrets.FACE_NOTION_DB_ID }}
           PUBLISH_WEEKLY_REST_DAYS: ${{ vars.PUBLISH_WEEKLY_REST_DAYS || '0' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           SHORTS_OUT_DIR: out/shorts
-          SHORTS_PUBLISH_CHANNELS: face
+          SHORTS_PUBLISH_CHANNELS: face,insta
           SHORTS_TARGET_DATE: ${{ inputs.target_date }}
           SHORTS_IGNORE_WINDOW: ${{ inputs.timing == 'now' && 'true' || 'false' }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'live' && 'false' || 'true') || (vars.DRY_RUN || 'true') }}

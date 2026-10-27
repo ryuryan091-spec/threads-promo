@@ -183,6 +183,21 @@ def face_block_reason() -> str | None:
     return None
 
 
+def insta_block_reason() -> str | None:
+    """v1.9.0 Instagram 릴스 게시를 막을 사유. 없으면 None.
+
+    Facebook 과 같은 킬 스위치를 보고, 양은 INSTA_DAILY_MAX(0 이면 게시 없음)로 정한다.
+    Facebook 스위치(FACE_ENABLED)와는 독립이다 — Facebook 만 끄고 Instagram 만 올릴 수 있다.
+    """
+    if not automation_enabled():
+        return "AUTOMATION_ENABLED=false — 계정 보호 모드(킬 스위치). Instagram 게시 없음"
+    if not config.INSTA_ENABLED:
+        return "INSTA_ENABLED=false — Instagram 게시 꺼짐"
+    if int(config.INSTA_DAILY_MAX) <= 0:
+        return "INSTA_DAILY_MAX=0 — Instagram 게시 없음"
+    return None
+
+
 def canned_enabled() -> bool:
     """외국어 댓글 정형 문구 사용 여부(S4). false 면 외국어 댓글은 건너뛴다."""
     return bool(config.REPLY_CANNED_ENABLED)

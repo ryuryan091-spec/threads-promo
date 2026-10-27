@@ -1203,7 +1203,8 @@ class TestDN2026_0003Workflows:
         assert job["concurrency"]["cancel-in-progress"] is False
         step = job["steps"][-1]
         assert step["run"] == "python -m src.run_shorts_publish"
-        assert step["env"]["SHORTS_PUBLISH_CHANNELS"] == "face"
+        # v1.9.0: Instagram 릴스도 이 워크플로가 같은 페이지 토큰으로 올린다(INSTA_ENABLED 로 켬)
+        assert step["env"]["SHORTS_PUBLISH_CHANNELS"] == "face,insta"
         assert "THREADS_LONG_LIVED_TOKEN" not in step["env"]   # Threads 자격 증명 미보유
         dl = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/download-artifact"))
         assert dl["with"]["run-id"] == "${{ steps.art.outputs.run_id }}"

@@ -14,6 +14,11 @@ v1.8.0 (FACE_STORY_ENABLED) — Facebook 회차 원장(Notion, 상세설계 v1.0
   3-2) 루프 끝에 이번 실행의 확인필요를 한 번 더 확인
   원장 실패는 게시 결과·종료코드를 바꾸지 않는다(재게시 없음). 알림에 수동 입력용 값을 싣는다.
 
+v1.9.0 (INSTA_ENABLED) — Instagram 릴스
+  Facebook 릴스 항목(channels 에 face)을 같은 영상·캡션으로 Instagram 에도 올린다. 하루 INSTA_DAILY_MAX 편.
+  Facebook 시간대(06:06~22:00)를 따르고 시각은 따로 계산한다. Facebook 스위치와는 독립.
+  중복 방지는 Instagram 최근 게시물의 캡션 대조(공개되는 쓰기가 media_publish 하나뿐 — insta_client 참고).
+
 DRY_RUN 이면 대기·쓰기 없이 계획만 로그로 남긴다.
 종료코드: 0 정상 · 4 일부 실패 · 7 계정·토큰 사용 불가(회로 차단)
 """
@@ -32,9 +37,10 @@ from zoneinfo import ZoneInfo
 
 from . import config, face_story, media_host, notifier, safety, shorts_plan
 from .face_client import FaceApiError, FaceClient
+from .insta_client import InstaApiError, InstaClient
 from .threads_client import ContainerNotReadyError, ThreadsApiError, ThreadsClient, fetch_user_id
 
-VERSION = "1.2.0"   # v1.8.6: 원장 기반 재게시 방지·세션 전 치명 오류 실패 기록 · v1.8.0: Facebook 회차 원장 기록 · 재조정
+VERSION = "1.3.0"   # v1.9.0: Instagram 릴스 · v1.8.6: 원장 기반 재게시 방지·세션 전 치명 오류 실패 기록 · v1.8.0: 원장
 
 KST = ZoneInfo("Asia/Seoul")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -61,7 +67,8 @@ def _notify(message: str) -> None:
 # ── DN2026_0003 : 발행 거래 분리 ─────────────────────────────────────────────
 #   Facebook 게시는 별도 워크플로(face_publish.yml), Threads 동영상은 shorts.yml publish job 이 맡는다.
 #   같은 러너 코드를 쓰되 아래 3개 환경변수로 범위를 정한다.
-#     SHORTS_PUBLISH_CHANNELS : 게시할 채널 (face / threads / face,threads — 미설정 시 둘 다, 하위 호환)
+#     SHORTS_PUBLISH_CHANNELS : 게시할 채널 (face / threads / insta 를 쉼표로 — 미설정 시 전부, 하위 호환)
+#                               v1.9.0: insta 는 INSTA_ENABLED 가 켜져 있어야 실제로 게시한다.
 #     SHORTS_TARGET_DATE      : 게시할 회차 날짜 YYYY-MM-DD(KST). 미설정 시 오늘. 미게시분 수동 재게시용.
 #     SHORTS_IGNORE_WINDOW    : true 면 채널 시간대를 무시하고 지금부터 게시(마스터 수동 실행 전용).
 _ANY_TIME_WINDOW = ("00:00", "23:59")
@@ -69,7 +76,7 @@ _ANY_TIME_WINDOW = ("00:00", "23:59")
 
 def _publish_channels() -> set[str]:
     raw = _env("SHORTS_PUBLISH_CHANNELS")
-    allowed = {shorts_plan.CHANNEL_FACE, shorts_plan.CHANNEL_THREADS}
+    allowed = {shorts_plan.CHANNEL_FACE, shorts_plan.CHANNEL_THREADS, shorts_plan.CHANNEL_INSTA}
     if not raw:
         return allowed
     chosen = {part.strip().lower() for part in raw.split(",") if part.strip()}
@@ -216,6 +223,30 @@ def post_threads(client: ThreadsClient, item: dict, base: Path) -> str:
     media_host.verify(url)
     post_id = client.publish_video_post(url, caption)
     return f"Threads {item['content_id']}: post_id={post_id} 게시 완료"
+
+
+def post_insta(client: InstaClient, item: dict, base: Path) -> str:
+    """v1.9.0 Instagram 릴스 1편. 반환은 결과 요약. 처리 실패 확정은 InstaApiError(definitive=True)."""
+    cid = item["content_id"]
+    caption = str(item["caption"])
+    same = [mid for mid, cap in client.recent_captions() if cap.strip() == caption.strip()]
+    if same:
+        return f"IG {cid}: 같은 캡션의 게시물이 이미 있어 건너뜀 (media_id={same[0] or '-'})"
+    try:
+        usage, total = client.publishing_limit()
+    except InstaApiError as exc:
+        if safety.is_account_fatal(exc):
+            raise
+        usage, total = None, None
+        log.warning("IG 게시 한도 조회 실패 — 판단 불가로 진행: %s", exc)
+    if usage is not None and total is not None and usage >= total:
+        return f"IG {cid}: 건너뜀 — 24시간 게시 한도 소진({usage}/{total})"
+    result = client.publish_reel(base / item["video"], caption)
+    if not result.media_id:
+        # 컨테이너는 비공개로 남는다(24시간 뒤 만료). 공개된 것이 없으므로 다음 실행에서 다시 올려도 중복이 아니다.
+        return (f"IG {cid}: 처리 시간 초과로 게시하지 않음(container={result.container_id} "
+                f"{result.status}) — 다시 실행하면 새로 올린다")
+    return f"IG {cid}: media_id={result.media_id} 게시 완료"
 
 
 def failure_status(exc: FaceApiError) -> str:
@@ -418,14 +449,21 @@ def run() -> int:
         return 0
 
     face_reason = safety.face_block_reason()
+    insta_reason = safety.insta_block_reason()
     # DN2026_0003 : 이 실행이 맡은 채널만 게시한다
-    face_items = ([i for i in items if shorts_plan.CHANNEL_FACE in i.get("channels", [])]
-                  if shorts_plan.CHANNEL_FACE in channels else [])
+    reels = [i for i in items if shorts_plan.CHANNEL_FACE in i.get("channels", [])]
+    face_items = reels if shorts_plan.CHANNEL_FACE in channels else []
+    # v1.9.0 : Instagram 은 Facebook 릴스 항목을 그대로 쓴다(Facebook 스위치와 독립)
+    insta_items = (reels[:max(0, int(config.INSTA_DAILY_MAX))]
+                   if shorts_plan.CHANNEL_INSTA in channels else [])
     threads_items = ([i for i in items if shorts_plan.CHANNEL_THREADS in i.get("channels", [])][:1]
                      if shorts_plan.CHANNEL_THREADS in channels else [])
     if face_reason and face_items:
         log.info("Facebook 게시 안 함 — %s", face_reason)
         face_items = []
+    if insta_reason and shorts_plan.CHANNEL_INSTA in channels and reels:
+        log.info("Instagram 게시 안 함 — %s", insta_reason)
+        insta_items = []
     # DN2026_0002 : 채널별 시간대로 각각 계산 → (영상, 시각, 채널) 항목을 시각순 병합.
     #   첫 편은 Facebook·Threads 공용 영상일 수 있으므로 채널 단위로 따로 게시한다.
     # DN2026_0003 : 수동 실행(SHORTS_IGNORE_WINDOW)은 시간대 무시 — 지금 + 첫 편 지연부터 게시
@@ -436,16 +474,20 @@ def run() -> int:
         now, len(face_items), window=face_window, immediate=_ignore_window())
     threads_schedule = shorts_plan.publish_schedule(
         now, len(threads_items), window=threads_window, immediate=_ignore_window())
+    insta_schedule = shorts_plan.publish_schedule(
+        now, len(insta_items), window=face_window, immediate=_ignore_window())
     planned = sorted(
         [(i, t, shorts_plan.CHANNEL_FACE) for i, t in zip(face_items, face_schedule, strict=False)]
         + [(i, t, shorts_plan.CHANNEL_THREADS)
-           for i, t in zip(threads_items, threads_schedule, strict=False)],
+           for i, t in zip(threads_items, threads_schedule, strict=False)]
+        + [(i, t, shorts_plan.CHANNEL_INSTA) for i, t in zip(insta_items, insta_schedule, strict=False)],
         key=lambda entry: entry[1],
     )
     log.info("게시 계획: %s", ", ".join(
         f"{i['content_id']}({ch})@{t.strftime('%H:%M')}" for i, t, ch in planned))
     dropped = ([(i, shorts_plan.CHANNEL_FACE) for i in face_items[len(face_schedule):]]
-               + [(i, shorts_plan.CHANNEL_THREADS) for i in threads_items[len(threads_schedule):]])
+               + [(i, shorts_plan.CHANNEL_THREADS) for i in threads_items[len(threads_schedule):]]
+               + [(i, shorts_plan.CHANNEL_INSTA) for i in insta_items[len(insta_schedule):]])
     for item, ch in dropped:
         log.warning("게시 시간대·job 예산을 넘어 제외 %s(%s)", item["content_id"], ch)
 
@@ -455,6 +497,7 @@ def run() -> int:
 
     face = FaceClient(_env("FACE_PAGE_ID"), _env("FACE_PAGE_TOKEN")) if face_items else None
     threads = _threads_client() if threads_items and safety.shorts_threads_allowed() else None
+    insta = InstaClient(_env("FACE_PAGE_ID"), _env("FACE_PAGE_TOKEN"), _env("INSTA_USER_ID")) if insta_items else None
     results: list[str] = [f"제외(시간 초과) {d['content_id']}({ch})" for d, ch in dropped]
     notes: list[str] = []
     ledger = _open_ledger(notes) if face and config.FACE_STORY_ENABLED else None
@@ -508,6 +551,15 @@ def run() -> int:
                     ledger.record(item, state, video_id=exc.video_id, error=str(exc))
                     if state == face_story.STATUS_PENDING and exc.video_id:
                         pending.append((item, exc.video_id))
+        if channel == shorts_plan.CHANNEL_INSTA and insta is not None:
+            try:
+                results.append(post_insta(insta, item, base))
+            except InstaApiError as exc:
+                if safety.is_account_fatal(exc):
+                    raise
+                failed = True
+                kind = "실패(처리 실패 확정)" if exc.definitive else "실패"
+                results.append(f"IG {item['content_id']}: {kind} {exc}")
         if do_threads:
             try:
                 results.append(post_threads(threads, item, base))
@@ -549,14 +601,20 @@ def run() -> int:
 
 
 def face_fatal_message(exc: FaceApiError) -> str:
-    """Facebook 계정·토큰 오류 알림. Threads 재인가 안내가 섞이지 않게 따로 만든다."""
+    """Facebook·Instagram 계정·토큰 오류 알림. Threads 재인가 안내가 섞이지 않게 따로 만든다.
+
+    v1.9.0: Instagram 도 같은 페이지 토큰을 쓰므로 토큰 안내는 같고, 권한 안내와 끄는 스위치만 다르다.
+    """
+    insta = isinstance(exc, InstaApiError)
+    perms = ("instagram_basic · instagram_content_publish · pages_read_engagement" if insta
+             else "pages_manage_posts 등")
     kind = ("페이지 토큰 무효·만료 (code=190 / HTTP 401) — 장기 페이지 토큰 재발급 후 FACE_PAGE_TOKEN 교체"
             if exc.is_auth_error else
-            "권한·접근 문제 (code=200) — 페이지 역할(CREATE_CONTENT)·앱 권한(pages_manage_posts 등) 확인")
+            f"권한·접근 문제 (code=200) — 페이지 역할(CREATE_CONTENT)·앱 권한({perms}) 확인")
     return (
-        f"[Facebook][최우선] 숏폼 게시 — {kind}\n"
+        f"[{'Instagram' if insta else 'Facebook'}][최우선] 숏폼 게시 — {kind}\n"
         "이번 실행의 쓰기를 즉시 멈췄습니다(재시도 없음).\n"
-        "해소 전까지 Variables FACE_ENABLED=false 로 두십시오.\n"
+        f"해소 전까지 Variables {'INSTA_ENABLED' if insta else 'FACE_ENABLED'}=false 로 두십시오.\n"
         f"{exc}"
     )
 

@@ -33,6 +33,8 @@ FORMATS: tuple[str, ...] = (FORMAT_SAGA, FORMAT_CONCEPT, FORMAT_WEEK)
 
 CHANNEL_FACE = "face"
 CHANNEL_THREADS = "threads"
+# v1.9.0 Instagram 릴스. build 단계 채널이 아니다 — Facebook 릴스 항목을 게시 단계에서 Instagram 에도 올린다.
+CHANNEL_INSTA = "insta"
 
 
 def ramp_start() -> dt.date | None:

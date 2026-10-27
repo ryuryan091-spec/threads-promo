@@ -92,6 +92,9 @@ SAFETY_VARIABLE_DEFAULTS: dict[str, str] = {
     "FACE_DAILY_MAX": "3",
     # v1.8.0 Facebook 숏폼 스토리 연속성(Notion 회차 원장). false 면 v1.7.0 과 같은 동작.
     "FACE_STORY_ENABLED": "false",
+    # v1.9.0 Instagram 릴스. Facebook 릴스와 같은 영상·캡션을 같은 페이지 토큰으로 올린다.
+    "INSTA_ENABLED": "false",
+    "INSTA_DAILY_MAX": "1",
 }
 
 
@@ -687,6 +690,21 @@ FACE_REELS_LIST_LIMIT = 25
 FACE_REELS_LIST_FIELDS = "id,description,updated_time"
 FACE_STATUS_POLL_SEC = 20
 FACE_STATUS_MAX_SEC = 600
+
+# v1.9.0 Instagram 릴스 (Instagram API with Facebook Login — 페이지 토큰 FACE_PAGE_TOKEN 재사용)
+#   필요 권한: instagram_basic · instagram_content_publish · pages_read_engagement
+#   IG 사용자 ID 는 실행 시 GET /{page_id}?fields=instagram_business_account 로 찾는다(새 Secret 없음).
+#   Facebook 릴스로 나가는 영상·캡션을 그대로 올린다. 하루 편수는 INSTA_DAILY_MAX 와 Facebook 편수 중 작은 쪽.
+INSTA_ENABLED = _bool_env("INSTA_ENABLED", False)
+INSTA_DAILY_MAX = _safe_int_env("INSTA_DAILY_MAX", 1)
+INSTA_GRAPH_BASE = FACE_GRAPH_BASE
+INSTA_RUPLOAD_BASE = "https://rupload.facebook.com/ig-api-upload/v25.0"   # 문서: ig-api-upload/<버전>/<컨테이너>
+INSTA_SHARE_TO_FEED = True        # 피드·릴스 탭 모두 노출 후보
+INSTA_IS_AI_GENERATED = True      # Meta AI 생성 표시(리스크 가드레일: 투명성 우선)
+INSTA_MEDIA_LIST_LIMIT = 25       # 중복 확인용 최근 게시물 수
+# 문서 권장: 컨테이너 상태는 1분에 한 번, 5분 이내로 확인. 넘기면 게시하지 않는다(컨테이너는 비공개로 남음).
+INSTA_STATUS_POLL_SEC = 60
+INSTA_STATUS_MAX_SEC = 300
 
 # 영상 규격 — Facebook 릴스·Threads 공통으로 만족하는 값
 VIDEO_WIDTH = 1080

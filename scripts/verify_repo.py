@@ -471,7 +471,10 @@ SAFETY_WORKFLOW_KEYS: dict[str, tuple[str, ...]] = {
                    "FACE_STORY_ENABLED"),
     # v1.8.6 Facebook 사전 점검: 정기 실행이 게시까지 가는지 판정하는 키를 같은 식으로 받는다.
     "face_preflight.yml": ("AUTOMATION_ENABLED", "SHORTS_BUILD_ENABLED", "FACE_ENABLED", "FACE_RAMP_START",
-                           "FACE_DAILY_MAX", "FACE_STORY_ENABLED"),
+                           "FACE_DAILY_MAX", "FACE_STORY_ENABLED", "INSTA_ENABLED", "INSTA_DAILY_MAX"),
+    # v1.9.0 Facebook·Instagram 릴스 게시: 킬 스위치와 채널 스위치를 같은 식으로 받는다.
+    "face_publish.yml": ("AUTOMATION_ENABLED", "FACE_ENABLED", "FACE_RAMP_START", "FACE_DAILY_MAX",
+                         "FACE_STORY_ENABLED", "INSTA_ENABLED", "INSTA_DAILY_MAX"),
 }
 
 

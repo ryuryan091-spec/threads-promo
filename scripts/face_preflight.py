@@ -22,6 +22,9 @@
                             유효 여부 · 토큰 종류 · 만료 시각 · 페이지 일치 · 권한(scopes)
                             필요 권한 = Reels Publishing 문서: pages_show_list · pages_read_engagement · pages_manage_posts
                             문서가 호출 토큰 종류를 명시하지 않아 조회 실패는 WARN(판단 불가)으로 둔다.
+  P10 Instagram 계정(v1.2.0) GET /{page_id}?fields=instagram_business_account{id,username}
+  P11 Instagram 권한·한도    scopes 의 instagram_basic · instagram_content_publish · pages_read_engagement
+                            GET /{ig_id}/content_publishing_limit. INSTA_ENABLED=false 면 문제를 WARN 으로 둔다.
   실행 정보(v1.1.0)         실행 시각(KST) · 커밋 · 브랜치 · 워크플로 · 요청 경로(토큰 제외)
 """
 
@@ -39,14 +42,17 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src import config, face_story, safety, shorts_plan  # noqa: E402
 from src.face_client import FaceApiError, FaceClient  # noqa: E402
+from src.insta_client import InstaApiError, InstaClient  # noqa: E402
 from src.redact import redact  # noqa: E402
 
-VERSION = "1.1.0"   # v1.8.7: 토큰 정보·권한(P9) · 실행 정보 · 요청 경로 로그
+VERSION = "1.2.0"   # v1.9.0: Instagram 계정 연결(P10)·권한·한도(P11) · v1.8.7: 토큰 정보·권한(P9)
 KST = ZoneInfo("Asia/Seoul")
 OK, WARN, FAIL, INFO = "OK", "WARN", "FAIL", "INFO"
 REQUIRED_SECRETS = ("FACE_PAGE_ID", "FACE_PAGE_TOKEN", "NOTION_TOKEN", "FACE_NOTION_DB_ID")
 # Reels Publishing 가이드 'Requirements' 의 권한(페이지 CREATE_CONTENT 작업 권한은 토큰 scopes 로 보이지 않는다)
 REQUIRED_SCOPES = ("pages_show_list", "pages_read_engagement", "pages_manage_posts")
+# v1.9.0 Instagram Content Publishing 가이드(Facebook 로그인 경로)의 권한
+INSTA_REQUIRED_SCOPES = ("instagram_basic", "instagram_content_publish", "pages_read_engagement")
 EXPIRY_WARN_DAYS = 7
 
 
@@ -176,7 +182,8 @@ def token_findings(data: dict, page_id: str, now: dt.datetime) -> tuple[str, str
     return status, " · ".join(parts)
 
 
-def check_facebook(r: Report, now: dt.datetime) -> None:
+def check_facebook(r: Report, now: dt.datetime) -> list[str] | None:
+    """Facebook 점검. 반환은 토큰 scopes(조회 실패면 None) — Instagram 점검(P11)이 다시 쓴다."""
     page_id = _env("FACE_PAGE_ID")
     client = FaceClient(page_id, _env("FACE_PAGE_TOKEN"))
     _req("/{page_id}?fields=id,name")
@@ -203,9 +210,54 @@ def check_facebook(r: Report, now: dt.datetime) -> None:
         data = client.token_debug()
     except FaceApiError as exc:
         r.add("P9", "토큰 정보·권한", WARN, f"debug_token 조회 실패 — 판단 불가(문서가 호출 토큰 종류를 명시하지 않음) {exc}")
-        return
+        return None
     status, detail = token_findings(data, page_id, now)
     r.add("P9", "토큰 정보·권한", status, detail)
+    return [str(x) for x in (data.get("scopes") or [])] if data else None
+
+
+def check_instagram(r: Report, scopes: list[str] | None) -> None:
+    """v1.2.0 Instagram 릴스(INSTA_ENABLED) 점검 — 읽기만 한다.
+
+    P10 계정 연결   GET /{page_id}?fields=instagram_business_account{id,username}
+    P11 권한·한도   토큰 scopes(P9 응답)에 INSTA_REQUIRED_SCOPES · GET /{ig_id}/content_publishing_limit
+    INSTA_ENABLED=false 면 문제를 FAIL 대신 WARN 으로 남긴다(Facebook 만 쓰는 운영을 막지 않는다).
+    """
+    bad = FAIL if config.INSTA_ENABLED else WARN
+    client = InstaClient(_env("FACE_PAGE_ID"), _env("FACE_PAGE_TOKEN"), _env("INSTA_USER_ID"))
+    _req("/{page_id}?fields=instagram_business_account{id,username}")
+    try:
+        ig_id, username = client.account()
+    except InstaApiError as exc:
+        r.add("P10", "Instagram 계정 연결", bad, f"{exc}{_hint(exc)}")
+        r.add("P11", "Instagram 권한·한도", bad, "P10 실패로 건너뜀")
+        return
+    r.add("P10", "Instagram 계정 연결", OK, f"@{username or '-'} (IG 사용자 ID {ig_id})")
+
+    parts, status = [], OK
+    if scopes is None:
+        status = WARN
+        parts.append("토큰 scopes 판단 불가(P9 조회 실패)")
+    else:
+        missing = [s for s in INSTA_REQUIRED_SCOPES if s not in scopes]
+        if missing:
+            status = bad
+            parts.append(f"필요 권한 없음: {', '.join(missing)} — 토큰 재발급 시 함께 승인")
+        else:
+            parts.append(f"필요 권한 {len(INSTA_REQUIRED_SCOPES)}개 있음({', '.join(INSTA_REQUIRED_SCOPES)})")
+    _req("/{ig_id}/content_publishing_limit?fields=quota_usage,config")
+    try:
+        usage, total = client.publishing_limit()
+        parts.append(f"24시간 게시 {usage if usage is not None else '-'}/{total if total is not None else '-'}")
+        if usage is not None and total is not None and usage >= total:
+            status = bad
+            parts.append("한도 소진")
+    except InstaApiError as exc:
+        status = bad if status == OK else status
+        parts.append(f"게시 한도 조회 실패 {exc}{_hint(exc)}")
+    if not config.INSTA_ENABLED:
+        parts.append(f"INSTA_ENABLED=false — 게시 꺼짐(켜면 하루 {config.INSTA_DAILY_MAX}편)")
+    r.add("P11", "Instagram 권한·한도", status, " · ".join(parts))
 
 
 def _subcode(exc: FaceApiError) -> int | None:
@@ -270,7 +322,8 @@ def main() -> int:
     check_variables(r, today)
     check_plan(r, today)
     if secrets_ok:
-        check_facebook(r, now)
+        scopes = check_facebook(r, now)
+        check_instagram(r, scopes)
         if safety.tripped() is not None:
             print("       ↳ 참고: 위 '회로 차단' 로그는 공통 Facebook 모듈의 기본 메시지입니다. 이 점검은 쓰기를 하지 않습니다.")
         check_notion(r)
