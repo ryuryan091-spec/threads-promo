@@ -29,6 +29,13 @@ CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests
 | `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | threads-promo 운영 알림 방과 공용 — 메시지 앞에 `[사건파일76]` |
 | `PAGE76_DB05_ID` · `DB08` · `DB09` · `DB11` | 같은 이름 | 원장 4개(읽기 1 + 쓰기 3) |
 
+## 캘린더 기준점
+
+DB-05 에 발행 기록(게시상태 발행완료 + 발행일시)이 없는 반수동 운영에서는 Variable 로 운영 계획을 알려 준다.
+
+- `PAGE76_SCHEDULE_ANCHOR=21@2026-10-26` — #021 이 10-26 에 나갔고 이후 매일 연재(완결 뒤 휴재 포함)
+- DB-05 의 실제 발행 기록이 이 회차보다 앞서면 DB-05 를 기준으로 한다(지연 반영)
+
 ## 모드 (`PAGE76_MODE`)
 
 | 모드 | Graph 쓰기 | 노션 쓰기 | 실행 기록(DB-11) |

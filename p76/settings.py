@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from datetime import date
 
 VERSION = "1.0.0"
 
@@ -40,6 +41,15 @@ def _env_list(name: str, default: str = "") -> tuple[str, ...]:
     return tuple(v.strip() for v in _env(name, default).split(",") if v.strip())
 
 
+def parse_anchor(raw: str | None) -> tuple[int, date] | None:
+    """'21@2026-10-26' → (21, 2026-10-26). 형식이 틀리면 None."""
+    try:
+        no, day = (raw or "").strip().split("@")
+        return int(no), date.fromisoformat(day.strip())
+    except ValueError:
+        return None
+
+
 def parse_mode(raw: str | None) -> tuple[str, bool]:
     """STD-MODE-01·06 단일 파서. (모드, 경고 여부). 빈 값·'-' 은 dry_run, 그 밖 미지정 값은 dry_run + 경고."""
     value = (raw or "").strip().lower()
@@ -67,6 +77,10 @@ def _load() -> dict:
         "HIATUS_PUBLISH_ENABLED": _env_bool("PAGE76_HIATUS_PUBLISH_ENABLED"),
         "INSIGHTS_ENABLED": _env_bool("PAGE76_INSIGHTS_ENABLED"),
         "HIATUS_DAYS": _env_int("PAGE76_HIATUS_DAYS", 7, 1, 21),
+        # 운영 계획 기준점 "회차@KST날짜" (예: 21@2026-10-26). DB-05 에 발행 기록이 없을 때 쓴다(반수동 운영).
+        "SCHEDULE_ANCHOR": parse_anchor(_env("PAGE76_SCHEDULE_ANCHOR")),
+        "SCHEDULE_ANCHOR_INVALID": bool(_env("PAGE76_SCHEDULE_ANCHOR"))
+        and parse_anchor(_env("PAGE76_SCHEDULE_ANCHOR")) is None,
         "CALENDAR_HORIZON_DAYS": _env_int("PAGE76_CALENDAR_HORIZON_DAYS", 21, 7, 60),
         # ── Graph ────────────────────────────────────────────
         # v25.0: 만료 2028-07-29 (fb-page-publisher 와 동일)

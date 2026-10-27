@@ -6,6 +6,7 @@ p76/calendar_plan.py
 기준점 = DB-05 에서 실제 발행된 마지막 회차와 그 발행일(KST). 계획일이 아니라 실제 발행을 따른다.
   - 완결 회(k = L) 다음 날부터 hiatus_days 일 휴재. 1일차 요약·흔적해설 / 가운데 투표 / 마지막 티저.
   - 아직 발행되지 않은 회차는 오늘보다 이른 날에 놓지 않는다(지연되면 뒤로 밀림).
+    단, 기준점이 운영 계획(Variable PAGE76_SCHEDULE_ANCHOR)이면 clamp=False — 계획대로 매일 발행된다고 본다.
 (stdlib calendar 와 이름이 겹치지 않도록 calendar_plan 으로 둔다.)
 """
 from __future__ import annotations
@@ -37,8 +38,9 @@ def content_days(hiatus_days: int) -> dict[int, str]:
     return mapping
 
 
-def plan(anchor_no: int, anchor_day: date, today: date, horizon: int, hiatus_days: int) -> dict[date, Entry]:
-    """today 부터 horizon 일치 캘린더."""
+def plan(anchor_no: int, anchor_day: date, today: date, horizon: int, hiatus_days: int,
+         clamp: bool = True) -> dict[date, Entry]:
+    """today 부터 horizon 일치 캘린더. clamp=False 면 기준점 이후 계획대로 발행된다고 본다."""
     end = today + timedelta(days=horizon - 1)
     contents = content_days(hiatus_days)
     out: dict[date, Entry] = {}
@@ -58,6 +60,6 @@ def plan(anchor_no: int, anchor_day: date, today: date, horizon: int, hiatus_day
             nxt = day + timedelta(days=hiatus_days + 1)
         else:
             nxt = day + timedelta(days=1)
-        cur, day = cur + 1, max(nxt, today)
+        cur, day = cur + 1, max(nxt, today) if clamp else nxt
         put(Entry(day, settings.KIND_EPISODE, locate(cur)[0], number=cur))
     return out

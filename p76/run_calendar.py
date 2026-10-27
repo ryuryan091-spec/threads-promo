@@ -3,7 +3,9 @@ p76/run_calendar.py
 ===================
 DB-09 운영 캘린더 갱신 (매일 21:28 KST, 21:45 예약 작업 전). FR-01~03.
 
-  1. DB-05 에서 실제 발행된 마지막 회차·발행일을 읽는다 (실패 → 갱신 생략 + 알림, 기존 행 유지)
+  1. 기준점: DB-05 에서 실제 발행된 마지막 회차·발행일과 Variable PAGE76_SCHEDULE_ANCHOR(운영 계획) 중
+     회차가 더 앞선 쪽. DB-05 기준이면 지연을 반영하고, 계획 기준이면 계획대로 매일 발행된다고 본다.
+     (DB-05 조회 실패 → 갱신 생략 + 알림, 기존 행 유지)
   2. 오늘부터 21일치를 계산해 캘린더키(날짜)로 upsert
   3. 회장이 손댄 행(게시상태가 초안이 아님 · 본문 있음 · 검수완료)은 덮어쓰지 않는다
   4. 지난 날 행은 조회 대상에서 빼므로 수정하지 않는다
@@ -94,12 +96,20 @@ def body(log: RunLog, today: date | None = None) -> None:
         log.fail(f"db05_read:{e}")
         send(f"캘린더 갱신 생략 — DB-05 조회 실패({e}). 기존 캘린더 유지")
         return
-    if anchor is None:
+    if settings.SCHEDULE_ANCHOR_INVALID:
+        log.degrade("schedule_anchor_invalid")
+        send("캘린더: PAGE76_SCHEDULE_ANCHOR 형식 오류(예: 21@2026-10-26) — DB-05 기준으로만 계산")
+    planned = settings.SCHEDULE_ANCHOR
+    if planned is not None and (anchor is None or planned[0] > anchor.number):
+        number, day, clamp, source = planned[0], planned[1], False, "계획"
+    elif anchor is not None:
+        number, day, clamp, source = anchor.number, anchor.day, True, "DB-05"
+    else:
         log.fail("db05_no_published")
-        send("캘린더 갱신 생략 — DB-05 에 발행완료 회차 없음")
+        send("캘린더 갱신 생략 — DB-05 발행 기록도, PAGE76_SCHEDULE_ANCHOR 도 없음")
         return
 
-    entries = calendar_plan.plan(anchor.number, anchor.day, day0, settings.CALENDAR_HORIZON_DAYS, settings.HIATUS_DAYS)
+    entries = calendar_plan.plan(number, day, day0, settings.CALENDAR_HORIZON_DAYS, settings.HIATUS_DAYS, clamp=clamp)
     try:
         counts = sync(entries, ledger.calendar_rows(day0), log)
     except notion.NotionError as e:
@@ -110,7 +120,7 @@ def body(log: RunLog, today: date | None = None) -> None:
     hiatus = sorted(d for d, e in entries.items() if e.kind != settings.KIND_EPISODE)
     tail = f" · 다음 휴재 {hiatus[0].isoformat()}~{hiatus[-1].isoformat()}" if hiatus else ""
     logger.info(
-        f"[Calendar] 기준 #{anchor.number:03d}({anchor.day.isoformat()}) · {len(entries)}일 · "
+        f"[Calendar] 기준 {source} #{number:03d}({day.isoformat()}) · {len(entries)}일 · "
         + " ".join(f"{k}={v}" for k, v in counts.items()) + f" · mode={settings.MODE}{tail}"
     )
 

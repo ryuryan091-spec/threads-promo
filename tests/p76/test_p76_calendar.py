@@ -156,3 +156,52 @@ def test_calendar_db05_failure_keeps_rows(fake_notion):
 def test_calendar_no_published(fake_notion):
     log = _run(date(2026, 11, 9))
     assert log.codes == ["db05_no_published"]
+
+
+# ── 운영 계획 기준점 (DB-05 발행 기록이 없는 반수동 운영, 2026-10-28 실측) ──
+def test_parse_anchor():
+    assert settings.parse_anchor("21@2026-10-26") == (21, date(2026, 10, 26))
+    assert settings.parse_anchor(" 21 @ 2026-10-26 ") == (21, date(2026, 10, 26))
+    assert settings.parse_anchor("") is None and settings.parse_anchor("21/10-26") is None
+
+
+def test_plan_without_clamp_follows_schedule():
+    out = _plan_nc(21, date(2026, 10, 26), date(2026, 10, 28))
+    assert out[date(2026, 10, 28)].number == 23
+    assert out[date(2026, 11, 9)].number == 35
+    assert out[date(2026, 11, 10)].kind == HC and out[date(2026, 11, 16)].hiatus_day == 7
+    assert out[date(2026, 11, 17)].number == 36
+
+
+def _plan_nc(no, day, today):
+    return calendar_plan.plan(no, day, today, 21, 7, clamp=False)
+
+
+def test_schedule_anchor_used_when_db05_is_behind(fake_notion, env):
+    env(PAGE76_SCHEDULE_ANCHOR="21@2026-10-26")
+    add_episode(fake_notion, 7, date(2026, 10, 13))
+    log = _run(date(2026, 10, 28))
+    rows = {fake_notion.val(p, settings.C_KEY): p for p in fake_notion.rows(DB09)}
+    assert fake_notion.val(rows["2026-10-28"], settings.C_NO) == 23
+    assert fake_notion.val(rows["2026-11-10"], settings.C_CONTENT) == settings.CONTENT_SUMMARY
+    assert log.status == "ok"
+
+
+def test_db05_wins_when_ahead_of_schedule(fake_notion, env):
+    env(PAGE76_SCHEDULE_ANCHOR="21@2026-10-26")
+    add_episode(fake_notion, 35, date(2026, 11, 10))  # 하루 늦은 완결
+    _run(date(2026, 11, 10))
+    rows = {fake_notion.val(p, settings.C_KEY): p for p in fake_notion.rows(DB09)}
+    assert fake_notion.val(rows["2026-11-11"], settings.C_HIATUS_DAY) == 1
+
+
+def test_invalid_anchor_falls_back(fake_notion, env):
+    env(PAGE76_SCHEDULE_ANCHOR="21/10-26")
+    add_episode(fake_notion, 35, date(2026, 11, 9))
+    log = _run(date(2026, 11, 9))
+    assert "schedule_anchor_invalid" in log.codes and log.writes == 21
+
+
+def test_no_anchor_at_all(fake_notion, env):
+    env(PAGE76_SCHEDULE_ANCHOR="")
+    assert _run(date(2026, 11, 9)).codes == ["db05_no_published"]
