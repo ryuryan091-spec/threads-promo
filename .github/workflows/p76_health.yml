@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────
+#  사건파일76 매일 점검 (토큰·권한·노션 스키마·운영 이상)
+#
+#  ⚠️ cron 은 UTC. "10 0 * * *" = KST 매일 09:10  (STD-SCHED-01 — 시각을 바꾸면 이 주석도 함께 수정)
+#  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
+#  threads-promo 통합 운영(DN2026_0069, 공개 레포 위험 수용) — p76/ 패키지만 실행, src/ 와 설정 공유 없음
+#  보안(SEC RR-06): Repository Secret + main 브랜치에서만 실행 · 로그는 공개되므로 날짜·회차·상태·코드만 출력
+# ─────────────────────────────────────────────────────────────
+name: 📕 p76-health
+
+on:
+  schedule:
+    - cron: "10 0 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry_run=쓰기 없음 · shadow=노션 기록만 · live=게시"
+        type: choice
+        options: ["dry_run", "shadow", "live"]
+        default: "dry_run"
+
+concurrency:
+  group: p76-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install --require-hashes -r p76/requirements.txt
+      - name: Run
+        env:
+          PAGE76_ENABLED: ${{ vars.PAGE76_ENABLED }}
+          PAGE76_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.PAGE76_MODE || 'dry_run' }}
+          FACE_PAGE76_ID: ${{ secrets.FACE_PAGE76_ID }}
+          FACE_PAGE76_TOKEN: ${{ secrets.FACE_PAGE76_TOKEN }}
+          PAGE76_NOTION_TOKEN: ${{ secrets.PAGE76_NOTION_TOKEN }}
+          PAGE76_DB05_ID: ${{ secrets.PAGE76_DB05_ID }}
+          PAGE76_DB08_ID: ${{ secrets.PAGE76_DB08_ID }}
+          PAGE76_DB09_ID: ${{ secrets.PAGE76_DB09_ID }}
+          PAGE76_DB11_ID: ${{ secrets.PAGE76_DB11_ID }}
+          PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.PAGE76_TELEGRAM_BOT_TOKEN }}
+          PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.PAGE76_TELEGRAM_CHAT_ID }}
+          PAGE76_APP_ID: ${{ secrets.PAGE76_APP_ID }}
+          PAGE76_APP_SECRET: ${{ secrets.PAGE76_APP_SECRET }}
+          PAGE76_EXPECTED_SCOPES: ${{ vars.PAGE76_EXPECTED_SCOPES }}
+          PAGE76_INSIGHTS_METRICS: ${{ vars.PAGE76_INSIGHTS_METRICS }}
+        run: python -m p76.run_health

@@ -35,7 +35,10 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Ruff
-        run: ruff check src scripts tests
+        run: ruff check src scripts tests p76
+
+      - name: Secret pattern scan (p76, T-SEC-07)
+        run: python scripts/p76_secret_scan.py p76 tests/p76 scripts/p76_secret_scan.py .github/workflows
 
       - name: Repo integrity
         run: python scripts/verify_repo.py
