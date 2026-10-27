@@ -89,7 +89,8 @@ def run() -> int:
         # 갱신 실패 시 기존 토큰이 반환된다. 이 경우 만료 시계가 흐른다.
         log.warning("토큰이 갱신되지 않았습니다. 다음 주기에 재시도합니다.")
         _alert_expiry(settings, "주간 갱신 실패 — 다음 주기 재시도 예정.")
-        return 0
+        # Phase 0: 실패가 Actions 에서 녹색으로 보이지 않게 한다. 발행 경로는 영향 없음.
+        return 3
 
     log.info("갱신 완료 — 새 토큰으로 교체되었습니다.")
 

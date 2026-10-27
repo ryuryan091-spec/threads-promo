@@ -104,9 +104,11 @@ def check_env(r: Report) -> None:
     if bad_links:
         r.add("C1", "링크 형식", FAIL, f"https:// 아님: {bad_links}")
 
+    # GH_PAT_SECRETS_WRITE 는 이 워크플로에 주입하지 않는다(Phase 0: 쓰기 PAT 는
+    # publish·token_refresh·bootstrap·verify_token 에만). 미설정은 token_refresh 가 경보한다.
     optional = {
         "TELEGRAM_BOT_TOKEN": "실패 알림", "TELEGRAM_ALERT_CHAT_ID": "실패 알림",
-        "GH_PAT_SECRETS_WRITE": "토큰 갱신값 저장", "TOKEN_ISSUED_AT": "만료 판정",
+        "TOKEN_ISSUED_AT": "만료 판정",
     }
     missing_opt = [f"{k}({v})" for k, v in optional.items() if not _env(k)]
     r.add("C1", "권장 Secret/Variable", WARN if missing_opt else OK,

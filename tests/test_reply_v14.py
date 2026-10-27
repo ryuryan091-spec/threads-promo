@@ -155,8 +155,14 @@ class TestR1Reaction:
 CHOICE_INPUTS = (
     "어느 쪽이 나을지 고민되네요",
     "뭐가 더 좋을까요? 저는 운동이 좋던데",
-    "ETF 뭐가 더 나은지 궁금",
     "A랑 B 중에 뭐가 나은가요?",
+)
+# Phase 0: 투자 판단을 묻는 댓글은 선택형이든 아니든 답하지 않는다(REPLY_INVEST_ADVICE_SKIP).
+INVEST_ADVICE_INPUTS = (
+    "ETF 뭐가 더 나은지 궁금",
+    "지금 들어가도 될까요? 주식 처음이라",
+    "코인 지금 살까요 팔까요",
+    "배당주 추천 좀 해주세요",
 )
 
 
@@ -181,19 +187,22 @@ class TestR2Choice:
         assert reply_engine.compose(d, "원글", "", content.lint_reply) is None
 
     def test_investment_flag_and_hint(self):
-        d = decide("ETF 뭐가 더 나은지 궁금")
-        assert d.investment is True
-        with mock.patch.object(reply_engine, "_call_claude", return_value="그건 제가 판단을 안 하고 있어서요") as call:
+        # 투자 어휘는 있지만 판단을 묻지 않는 댓글은 힌트를 달고 평소처럼 답한다.
+        d = decide("배당 받는 재미가 쏠쏠하네요")
+        assert d.strategy is ReplyStrategy.NORMAL and d.investment is True
+        with mock.patch.object(reply_engine, "_call_claude", return_value="그 재미가 꽤 크죠") as call:
             reply_engine.compose(d, "원글", "k", content.lint_reply)
         prompt = call.call_args.args[2]
         assert "판단을 내리지 않는다" in prompt
         assert "정해진 문장이 아니라" in prompt
-        assert "선택형 지시보다 우선" in prompt
-        assert prompt.index("어느 쪽도 고르지 않습니다") < prompt.index("선택형 지시보다 우선")
 
-    def test_investment_non_choice_question(self):
-        d = decide("지금 들어가도 될까요")
-        assert d.strategy is ReplyStrategy.NORMAL and d.investment
+    @pytest.mark.parametrize("text", INVEST_ADVICE_INPUTS)
+    def test_investment_advice_request_is_skipped(self, text):
+        d = decide(text)
+        assert d.strategy is ReplyStrategy.SKIP and "투자" in d.reason
+        with mock.patch.object(reply_engine, "_call_claude") as call:
+            assert reply_engine.compose(d, "원글", "k", content.lint_reply) is None
+        call.assert_not_called()
 
     def test_plain_comment_has_no_hints(self):
         d = decide("오늘 글 잘 봤습니다")
@@ -645,7 +654,8 @@ class TestR0Audit:
         assert (r1.strategy, r1.kind) == ("reaction", "reaction")
         assert r1.author == "al" + redact.MASK
         assert "@friend" not in r2.comment and "@" + redact.MASK in r2.comment
-        assert r2.strategy == "neutral" and "투자" in r2.reason and r2.kind == "question"
+        # Phase 0: 투자 판단 요청은 답하지 않으므로 문체 범주도 없다("-").
+        assert r2.strategy == "skip" and "투자" in r2.reason and r2.kind == "-"
         assert r3.comment == "(대화 조회 범위 밖)"
         assert "|" not in r1.post_head and "\n" not in r1.post_head
         assert r1.post_time == "10-01 10:00"

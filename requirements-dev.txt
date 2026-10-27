@@ -1,0 +1,5 @@
+# 테스트·린트 전용. 런타임 워크플로는 requirements.txt 만 설치한다.
+pytest==9.1.1
+PyYAML==6.0.3
+ruff==0.17.3
+tzdata==2026.5

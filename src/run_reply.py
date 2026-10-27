@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import antibot, config, content, notifier, reply_engine, safety, watchdog
+from . import antibot, config, content, notifier, redact, reply_engine, safety, watchdog
 from .env import MissingEnvError, Settings, load_settings
 from .main import _acquire_token  # 토큰 확보 로직 재사용
 from .reply_engine import Comment, DialogueTurn, ReplyStrategy
@@ -372,11 +372,12 @@ def _reply_to_comments(
             continue
 
         if dry_run:
+            # Phase 0: 공개 레포 Actions 로그는 누구나 본다. 타인 계정명·언급은 가린다.
             log.info(
                 "DRY_RUN 대상=%s(@%s) 방침=%s(%s) 맥락=%d턴\n  댓글: %s\n  답글: %s",
-                decision.comment.id, decision.comment.username,
+                decision.comment.id, redact.mask_username(decision.comment.username),
                 decision.strategy.value, decision.reason, len(plan.dialogue),
-                decision.comment.text[:60], text,
+                redact.mask_mentions(decision.comment.text[:60]), text,
             )
             sent += 1
             run_texts.insert(0, text)

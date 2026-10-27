@@ -163,6 +163,12 @@ def _acquire_token(settings: Settings) -> str:
         log.info("토큰 갱신 생략 — 주간 갱신 워크플로우가 담당합니다.")
         return settings.threads_token
 
+    # Phase 0: 쓰기 PAT 가 없는 워크플로(chat·reply·story)는 갱신하지 않는다.
+    #   영속화하지 못할 갱신은 만료 시계만 흐트러뜨리고 경보만 남긴다.
+    if not settings.can_persist_token:
+        log.info("토큰 갱신 생략 — 이 워크플로에는 GH_PAT_SECRETS_WRITE 가 없습니다.")
+        return settings.threads_token
+
     return refresh_and_persist(settings)
 
 

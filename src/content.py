@@ -210,7 +210,12 @@ def lint(text: str) -> None:
             f"본문 {len(text)}자 — 상한 {config.TEXT_MAX_LEN}자 초과"
         )
 
-    hit_advice = [t for t in config.FORBIDDEN_ADVICE_TERMS if t in text]
+    # Phase 0: 공백·제로폭 문자 끼워 넣기("매 수", 매+U+200B+수)로 금칙어를 우회하지 못하게 한다.
+    #   금칙어(단어)는 공백을 모두 지운 본문에서, 권유형 구절은 공백을 하나로 접은 본문에서 찾는다.
+    folded = _fold(text)
+    compact = folded.replace(" ", "")
+    hit_advice = [t for t in config.FORBIDDEN_ADVICE_TERMS if t in compact]
+    hit_advice += [t for t in config.FORBIDDEN_ADVICE_PHRASES if t in folded]
     if hit_advice:
         raise ContentPolicyError(f"투자조언성 금칙어 검출: {hit_advice}")
 
@@ -221,6 +226,15 @@ def lint(text: str) -> None:
     hit_tell = [t for t in config.FORBIDDEN_AI_TELL_TERMS if t in text]
     if hit_tell:
         raise ContentPolicyError(f"AI 티 표현 검출: {hit_tell}")
+
+
+_ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u2060\ufeff\u00ad]")
+_SPACES = re.compile(r"\s+")
+
+
+def _fold(text: str) -> str:
+    """제로폭·서식 문자를 지우고 연속 공백을 하나로 접는다(금칙어 대조용)."""
+    return _SPACES.sub(" ", _ZERO_WIDTH.sub("", text))
 
 
 _DIGIT = re.compile(r"[0-9０-９]")
@@ -258,6 +272,23 @@ def lint_reply(text: str) -> None:
     if len(text) > config.REPLY_MAX_LEN:
         raise ContentPolicyError(f"답글 {len(text)}자 — 상한 {config.REPLY_MAX_LEN}자 초과")
     check_no_links(text, label="답글")
+    # Phase 0: 댓글이 종목·전망을 끌어내려 해도(프롬프트 주입 포함) 출력에서 막는다.
+    #   숫자·영문 허용목록 검사는 일상 답글("2년째")을 과도하게 막아 답글에는 두지 않는다.
+    check_forecast_entity(text, label="답글")
+
+
+def check_forecast_entity(text: str, *, label: str) -> None:
+    """시장 전망 표현(REG-03)·기업·인물명(REG-04) 검사."""
+    folded = _fold(text)
+    hit_forecast = [t for t in config.CHAT_FORECAST_TERMS if t in folded]
+    if hit_forecast:
+        raise ContentPolicyError(f"{label}: 시장 전망성 표현 검출: {hit_forecast}")
+
+    hit_entity = [t for t in config.CHAT_ENTITY_TERMS if t in folded]
+    hit_entity += [m.group(0) for m in _entity_suffix_re().finditer(folded)]
+    hit_entity += [m.group(0) for m in _entity_word_re().finditer(folded)]
+    if hit_entity:
+        raise ContentPolicyError(f"{label}: 기업·인물명 검출 (REG-04): {hit_entity}")
 
 
 def _entity_suffix_re() -> re.Pattern[str]:

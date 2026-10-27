@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import requests
 from nacl import encoding, public
 
-from . import config
+from . import config, redact
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +143,7 @@ def refresh_long_lived_token(current_token: str) -> str:
     new_token = body.get("access_token")
     if not new_token:
         raise TokenRefreshError(f"access_token 없음: {body}")
+    redact.register_secret(new_token)
 
     expires_in = body.get("expires_in")
     if expires_in:

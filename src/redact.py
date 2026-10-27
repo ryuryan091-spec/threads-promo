@@ -16,6 +16,10 @@
 v1.1.0
   4. mask_username / mask_mentions : 답글 감사 요약(scripts/reply_audit.py)처럼 타인 댓글을
      Actions 요약에 옮길 때 계정명을 가린다. 자격증명 마스킹과는 별개다.
+
+v1.3.0 (Phase 0)
+  5. register_secret : 실행 중 새로 받은 토큰(갱신·교환 직후)은 등록된 Secret 이 아니라
+     GitHub 이 로그에서 가리지 않는다. 받는 즉시 ::add-mask:: 를 내보내고 redact 대상에 더한다.
 """
 
 from __future__ import annotations
@@ -23,9 +27,11 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import traceback
 
-VERSION = "1.2.0"   # v1.2.0: Facebook 페이지 토큰·Gemini 키 마스킹(v1.7.0 숏폼)
+VERSION = "1.3.0"   # v1.3.0: 실행 중 받은 토큰 마스킹(register_secret), sidestory 키 이름
+# v1.2.0: Facebook 페이지 토큰·Gemini 키 마스킹(v1.7.0 숏폼)
 # v1.1.0: 계정명 가림(mask_username, mask_mentions)
 
 MASK = "***"
@@ -41,8 +47,15 @@ SECRET_ENV_NAMES: tuple[str, ...] = (
     # v1.7.0 숏폼
     "FACE_PAGE_TOKEN",
     "GEMINI_API_SUB_PAY_KEY",
+    # v1.3.0: sidestory 워크플로가 쓰는 키
+    "ANTHROPIC_API_KEY",
+    "SUPABASE_KEY",
+    "NOTION_API_KEY",
 )
 _MIN_SECRET_LEN = 8
+
+# 실행 중 새로 받은 자격증명(register_secret). 환경변수에 없어 이름으로는 찾을 수 없다.
+_RUNTIME_SECRETS: list[str] = []
 
 # 형식 패턴. 실값을 모르는 경우(갱신 직후 새 토큰 등)를 덮는다.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -66,6 +79,7 @@ def _secret_values() -> list[str]:
         value = os.environ.get(name, "").strip()
         if len(value) >= _MIN_SECRET_LEN:
             values.append(value)
+    values.extend(_RUNTIME_SECRETS)
     # 긴 값부터 지워야 부분 문자열 충돌이 없다.
     return sorted(values, key=len, reverse=True)
 
@@ -79,6 +93,21 @@ def redact(text: object) -> str:
     for pattern, repl in _PATTERNS:
         out = pattern.sub(repl, out)
     return out
+
+
+def register_secret(value: object) -> None:
+    """실행 중 받은 자격증명을 가림 대상으로 등록한다.
+
+    GitHub Actions 안이면 ::add-mask:: 를 stdout 에 직접 쓴다. 로깅을 거치면 redact 가
+    값을 먼저 지워 버려 마스크 등록이 되지 않으므로 print 경로를 쓰지 않는다.
+    """
+    text = str(value or "").strip()
+    if len(text) < _MIN_SECRET_LEN or text in _RUNTIME_SECRETS:
+        return
+    _RUNTIME_SECRETS.append(text)
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        sys.stdout.write(f"::add-mask::{text}\n")
+        sys.stdout.flush()
 
 
 _MENTION = re.compile(r"@[A-Za-z0-9_.]+")
