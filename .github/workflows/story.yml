@@ -57,7 +57,6 @@ jobs:
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_LONG_LIVED_TOKEN: ${{ secrets.THREADS_LONG_LIVED_TOKEN }}
-          GH_PAT_SECRETS_WRITE: ${{ secrets.GH_PAT_SECRETS_WRITE }}
           CLAUDE_AI_KEY: ${{ secrets.CLAUDE_AI_KEY }}
           CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}

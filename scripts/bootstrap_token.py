@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src import token_manager  # noqa: E402
+from src import redact, token_manager  # noqa: E402
 
 AUTH_BASE = "https://graph.threads.net"
 API_BASE = "https://graph.threads.net/v1.0"
@@ -181,11 +181,13 @@ def main() -> int:
 
     print(f"[STEP2] 인가 코드 교환 (코드 길이 {len(code)})")
     short_token = exchange_code_for_short_lived(app_id, app_secret, code, redirect_uri)
+    redact.register_secret(short_token)
     print("[STEP2] 완료 — 단기 토큰 획득")
 
     print("[STEP3] 장수명 토큰 교환")
     long_body = exchange_short_for_long_lived(app_secret, short_token)
     long_token = long_body["access_token"]
+    redact.register_secret(long_token)
     expires_days = int(long_body.get("expires_in", 0)) // 86400
     print(f"[STEP3] 완료 — 유효 약 {expires_days}일, 토큰 길이 {len(long_token)}")
 
@@ -197,6 +199,9 @@ def main() -> int:
     print("이 계정 명의로 게시물이 발행됩니다. 의도한 계정이 맞는지 확인하십시오.")
 
     if not args.persist:
+        # 평문 출력은 로컬 전용. 공개 레포 Actions 로그에 토큰을 남기지 않는다.
+        if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+            raise SystemExit("GitHub Actions 에서는 --persist 없이 토큰을 출력하지 않습니다.")
         print("\n===== GitHub Secrets 등록값 =====")
         print("아래 '값 부분만' 복사하십시오. 키 이름과 등호는 포함하지 마십시오.")
         print("\n[THREADS_USER_ID]")

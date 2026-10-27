@@ -1,0 +1,44 @@
+name: ✅ CI
+
+# 모든 push·PR 에서 테스트·린트·레포 무결성을 확인한다.
+# 웹 업로드로 들어온 변경도 main 에 닿는 순간 여기서 걸린다.
+# 시크릿은 주입하지 않는다(네트워크가 필요한 테스트는 skip 된다).
+#
+# sidestory/ 는 별도 앱이며 현재 비활성(누락 모듈) 상태라 린트·테스트 대상에서 뺀다.
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check src scripts tests
+
+      - name: Repo integrity
+        run: python scripts/verify_repo.py
+
+      - name: Pytest
+        run: python -m pytest -q

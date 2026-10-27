@@ -67,6 +67,9 @@ LINK_REPLY_PCT = _safe_int_env("LINK_REPLY_PCT", 0)
 WARMUP_UNTIL = os.environ.get("WARMUP_UNTIL", "").strip()
 # S4 외국어 댓글 정형 문구. false 면 외국어 댓글은 답하지 않고 건너뛴다.
 REPLY_CANNED_ENABLED = _bool_env("REPLY_CANNED_ENABLED", False)
+# Phase 0: 투자 판단을 묻는 댓글(종목·매매 시점·상품 비교)은 답하지 않는다(reply_engine.decide).
+#   Variable 로 열지 않는 코드 상수다. 바꾸려면 리스크 검토 후 코드 변경으로 한다.
+REPLY_INVEST_ADVICE_SKIP = True
 
 # 워크플로 env 기본값 식의 기준값(문자열). 빈 문자열 = 기본값 없음(`${{ vars.X }}`).
 #   v1.6.0 답글 캡 기본값 축소(40/3/4/4/6 → 10/1/2/2/3)도 여기서 함께 검사한다.
@@ -604,6 +607,15 @@ PROMO_CYCLE = 4
 FORBIDDEN_ADVICE_TERMS = (
     "매수", "매도", "목표가", "추천주", "종목추천", "손절가",
     "익절", "풀매수", "몰빵", "수익보장", "확정수익", "리딩",
+)
+
+# Phase 0: 권유형 구절. 금칙어 단어 없이도 매매를 권하는 문장을 막는다.
+#   공백을 하나로 접은 본문에서 찾는다(content._fold). 모든 발행 경로(lint)에 적용된다.
+FORBIDDEN_ADVICE_PHRASES = (
+    "담아볼 만", "담아 볼 만", "비중을 늘", "비중 늘리", "비중을 줄", "비중 줄이",
+    "사 두면", "사두면", "사 둘 만", "사둘 만", "들어가도 돼", "들어가도 될",
+    "들어가셔도", "사셔도", "파셔도", "사도 돼", "사도 될", "팔아도 돼", "팔아도 될",
+    "지금 사세요", "지금 파세요", "지금이 기회",
 )
 
 # Threads가 다운랭크하는 저품질 참여 유도 표현.
