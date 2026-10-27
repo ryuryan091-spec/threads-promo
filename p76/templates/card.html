@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1080px; height: 1350px; overflow: hidden;
+    background: #14161a; color: #f2efe8;
+    font-family: "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  }
+  .card { box-sizing: border-box; width: 1080px; height: 1350px; padding: 96px 88px;
+          display: flex; flex-direction: column; justify-content: space-between;
+          border: 18px solid #2a2d33; }
+  .brand { font-size: 40px; letter-spacing: 6px; color: #c9a86a; font-weight: 700; }
+  .stamp { display: inline-block; margin-top: 28px; padding: 10px 22px; font-size: 32px;
+           border: 3px solid #b5483b; color: #e06a5c; font-weight: 700; letter-spacing: 2px; }
+  .headline { font-size: 68px; line-height: 1.35; font-weight: 800; word-break: keep-all; }
+  .meta { font-size: 32px; color: #9aa0a8; line-height: 1.6; }
+  .notice { font-size: 26px; color: #6f757d; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div>
+    <div class="brand">사건파일 76</div>
+    <div class="stamp">{{label}}</div>
+  </div>
+  <div class="headline">{{headline}}</div>
+  <div>
+    <div class="meta">{{meta}}</div>
+    <div class="notice">※ 여러 사례를 재구성한 픽션입니다.</div>
+  </div>
+</div>
+</body>
+</html>
