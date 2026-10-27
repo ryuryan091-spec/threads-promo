@@ -53,4 +53,5 @@ jobs:
           PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           PAGE76_HIATUS_DAYS: ${{ vars.PAGE76_HIATUS_DAYS }}
+          PAGE76_SCHEDULE_ANCHOR: ${{ vars.PAGE76_SCHEDULE_ANCHOR }}
         run: python -m p76.run_calendar

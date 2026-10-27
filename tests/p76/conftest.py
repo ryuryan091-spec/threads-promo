@@ -11,7 +11,8 @@ def env(monkeypatch):
     """환경변수 설정 → settings 재적재. env(PAGE76_MODE="dry_run") 처럼 덮어쓴다."""
 
     def apply(**overrides: str) -> None:
-        for key in list(BASE_ENV) + ["PAGE76_EXPECTED_SCOPES", "PAGE76_INSIGHTS_METRICS", "PAGE76_HIATUS_DAYS"]:
+        for key in list(BASE_ENV) + ["PAGE76_EXPECTED_SCOPES", "PAGE76_INSIGHTS_METRICS", "PAGE76_HIATUS_DAYS",
+                                   "PAGE76_SCHEDULE_ANCHOR"]:
             monkeypatch.delenv(key, raising=False)
         for key, value in {**BASE_ENV, **overrides}.items():
             monkeypatch.setenv(key, value)
