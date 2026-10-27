@@ -29,7 +29,7 @@ from p76 import calendar_plan, cli, graph, ledger, notion, safety, settings
 from p76.notify import send
 from p76.runlog import RunLog
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,18 @@ def _created_kst(post: dict) -> datetime | None:
         return None
 
 
+def _log_posts(posts: list[dict], by_day: dict, since: date, today: date) -> None:
+    """진단 로그: 날짜별 피드·영상 건수와 게시 유형 값만 (ID·본문 없음 — 공개 로그)."""
+    kinds = sorted({str(p.get("status_type") or "-") for p in posts})
+    days = " ".join(
+        f"{d.strftime('%m-%d')}(D{(today - d).days}):피드{sum('video' not in str(p.get('status_type', '')) for _, p in v)}"
+        f"·영상{sum('video' in str(p.get('status_type', '')) for _, p in v)}"
+        for d, v in sorted(by_day.items())
+    )
+    logger.info(f"[Insights] 게시물 {len(posts)}건 ({since.isoformat()}~{(today - timedelta(days=1)).isoformat()}) "
+                f"· 유형 {','.join(kinds) or '-'} · {days or '날짜 없음'}")
+
+
 def targets(today: date, log: RunLog | None = None) -> list[Target]:
     since = today - timedelta(days=max(settings.SNAPSHOT_DAYS))
     ok, posts, reason = graph.page_posts(_kst_midnight(since), _kst_midnight(today))
@@ -97,6 +109,7 @@ def targets(today: date, log: RunLog | None = None) -> list[Target]:
         created = _created_kst(post)
         if created is not None:
             by_day.setdefault(created.date(), []).append((created, post))
+    _log_posts(posts, by_day, since, today)
     plans = day_plans(since, today)
     out = []
     for day, items in sorted(by_day.items()):

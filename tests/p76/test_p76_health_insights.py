@@ -290,3 +290,12 @@ def test_insights_trip_stops(insights_env):
     g.handlers[("GET", f"{FAKE_PAGE_ID}?id,name,followers_count")] = err(190, 401)
     log = run_insights_body()
     assert log.status == "tripped" and fake.rows(DB08) == []
+
+
+def test_insights_diagnostic_log(insights_env, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    run_insights_body()
+    line = next(r.getMessage() for r in caplog.records if "게시물 3건" in r.getMessage())
+    assert "added_photos,added_video" in line and "11-09(D3):피드1·영상1" in line
+    assert "61_" not in caplog.text  # 게시물 ID 는 공개 로그에 남기지 않는다
