@@ -17,6 +17,8 @@ threads-promo 에 **함께 두지만 분리해 운영**한다 (DN2026_0069 — �
 | `p76_hiatus_publish.yml` | 매일 20:05 + 0~40분 | DB-09 휴재콘텐츠 `승인`+`검수완료` 1건 → 사진 게시 | `+ PAGE76_HIATUS_PUBLISH_ENABLED` |
 | `p76_insights.yml` | 매일 06:20 | 페이지 게시물 목록에서 게시 후 D1·D3·D7 날의 첫 게시물(회차 릴스)의 반응·댓글수·공유수·팔로워 → DB-08 (게시일→회차는 DB-09·기준점으로 매칭) | `+ PAGE76_INSIGHTS_ENABLED` |
 
+| `p76_novel.yml` | 2시간 간격(08:50~22:15) | 사건 소설(B형) 바이블·회차 원고 자동 작성 → 검수 → DB-12, 바이블 묵시 승인(4시간), 승인 회차 게시 | `+ PAGE76_NOVEL_ENABLED` (게시는 `+ PAGE76_NOVEL_PUBLISH_ENABLED`) |
+
 캘린더는 21:45 예약 작업 전에 돌고, CHAT 트리거(21:19)와 6분 이상 떨어지도록 21:28 에 둔다.
 CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests/p76` 를 함께 돌린다.
 
@@ -28,6 +30,29 @@ CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests
 | `PAGE76_NOTION_TOKEN` | `NOTION_TOKEN` | threads-promo 공용 노션 통합(DN2026_0070) — 자비스76·DB-05 에 이 통합을 연결해야 함 |
 | `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | threads-promo 운영 알림 방과 공용 — 메시지 앞에 `[사건파일76]` |
 | `PAGE76_DB05_ID` · `DB08` · `DB09` · `DB11` | 같은 이름 | 원장 4개(읽기 1 + 쓰기 3) |
+
+## 사건 소설 B형 (DSN-P76-NOVEL-001 v0.2 · 002 v0.1)
+
+Claude API(소설 전용 키)로 주 1회 연재 소설(7화)의 원고를 쓴다. **게시는 회장이 DB-12 에서 '승인'한 회차만** 한다.
+
+| 단계 | 내용 |
+|---|---|
+| 바이블 | 시즌 제1화 20일 전, AI 가 소재(창작·소재 메모 PM·게시된 수사일지)를 골라 작성 → 규칙 검사 → 검수(Sonnet) → 통과하면 전용 텔레그램 채널에 알림(09~18시) → **4시간 뒤 첫 점검에서 정본 등록**(D-N7). 검수 플래그가 있으면 자동 등록하지 않음 |
+| 회차 | 정본 바이블의 각 화를 게시일 14일 전부터 1화씩(시즌 개시 전 1~3화 버퍼) → 규칙 검사(재작성 1회) → 검수(6·7화·경계값은 Opus 재검수) → '검토대기' |
+| 게시 | '승인' + 게시일 10시 이후 + 하루 1건. 게시 직전 회장 편집본을 다시 검사하고, 법률 블록(노션 정본, 확인일 90일 이내)을 치환하고, 고정 꼬리말(픽션·AI 고지)을 붙여 카드 사진으로 게시 |
+
+중단: ① DB-12 행의 `중단` 체크 ② 전용 채널에 `중단` 또는 `/p76_stop` ③ Variable `PAGE76_NOVEL_ENABLED=false`. 재개는 노션에서만.
+
+| 이름 | 종류 | 내용 |
+|---|---|---|
+| `PAGE76_CLAUDE_KEY` | Secret | 소설 전용 Anthropic 키(콘솔 월 한도 $30) |
+| `PAGE76_NOVEL_TG_BOT_TOKEN` · `PAGE76_NOVEL_TG_CHAT_ID` | Secret | 소설 전용 봇·비공개 채널(관리자: 회장·봇만) |
+| `PAGE76_DB12_ID` · `PAGE76_NOVEL_PROMPT_PAGE_ID` · `PAGE76_NOVEL_MEMO_PAGE_ID` | Secret | DB-12 · 프롬프트 정본 · 스토리 소재 메모 |
+| `PAGE76_BANNED_TERMS` | Secret | 금칙어(쉼표 구분, 선택). 로컬 대조만 — API·로그에 넣지 않음 |
+| `PAGE76_NOVEL_ENABLED` · `PAGE76_NOVEL_PUBLISH_ENABLED` | Variable | 생성 스위치 · 게시 스위치 |
+| `PAGE76_NOVEL_START` · `PAGE76_NOVEL_BUDGET_USD` | Variable | 시즌 1 제1화 게시일(기본 2026-11-29) · 월 예산(기본 20) |
+
+의존성: `p76/requirements-novel.txt`(anthropic SDK, 해시 고정 · Linux 러너 전용). 프롬프트 본문은 레포에 없고 노션 정본에서 읽는다(제목에 "초안"이 있으면 실행 중지).
 
 ## 캘린더 기준점
 

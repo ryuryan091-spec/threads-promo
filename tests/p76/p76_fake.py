@@ -60,6 +60,28 @@ class FakeNotion:
         self.page_db: dict[str, str] = {}
         self.calls: list[tuple[str, str, dict | None]] = []
         self.fail: Callable[[str, str], Exception | None] = lambda m, p: None
+        self.blocks: dict[str, list[dict]] = {}
+
+    @staticmethod
+    def _readable_block(block: dict) -> dict:
+        """쓰기 형식 블록 → 응답 형식 (rich_text 에 plain_text 추가, id 부여)."""
+        b = json.loads(json.dumps(block))
+        b.setdefault("id", new_id())
+        value = b.get(b.get("type", ""), {})
+        for r in value.get("rich_text") or []:
+            r.setdefault("plain_text", (r.get("text") or {}).get("content", ""))
+        return b
+
+    def set_blocks(self, block_id: str, blocks: list[dict]) -> list[dict]:
+        self.blocks[block_id] = [self._readable_block(b) for b in blocks]
+        return self.blocks[block_id]
+
+    def add_plain_page(self, title: str) -> str:
+        pid = new_id()
+        self.pages[pid] = {"id": pid, "properties": {"title": {"id": "title", "type": "title",
+                                                               "title": [{"plain_text": title}]}}}
+        self.page_db[pid] = ""
+        return pid
 
     def add_db(self, db_id: str, schema: dict[str, str]) -> None:
         self.schemas[db_id] = dict(schema)
@@ -130,7 +152,7 @@ class FakeNotion:
             return {"results": rows[: (body or {}).get("page_size", 100)], "has_more": False}
         if method == "GET" and parts[0] == "databases":
             return {"properties": {n: {"type": k} for n, k in self.schemas[parts[1]].items()}}
-        if method == "GET" and parts[0] == "pages" and len(parts) == 2:
+        if method == "GET" and parts[0] == "pages" and len(parts) == 2 and parts[1] in self.pages:
             return json.loads(json.dumps(self.pages[parts[1]]))
         if method == "GET" and parts[0] == "pages" and parts[2] == "properties":
             text = self.val(self.pages[parts[1]], parts[3].split("?")[0])
@@ -147,11 +169,22 @@ class FakeNotion:
             for name, value in body["properties"].items():
                 kind = self.schemas[db_id][name]
                 page["properties"][name] = {"id": name, "type": kind, **_write_to_read(kind, value)}
+            if body.get("children"):
+                self.set_blocks(page["id"], body["children"])
             return page
+        if parts[0] == "blocks" and method == "GET":
+            return {"results": json.loads(json.dumps(self.blocks.get(parts[1], []))), "has_more": False}
+        if parts[0] == "blocks" and method == "PATCH":
+            self.blocks.setdefault(parts[1], []).extend(self._readable_block(b) for b in body["children"])
+            return {"results": []}
         raise AssertionError(f"unexpected notion call {method} {path}")
 
     def writes(self) -> list[tuple[str, str, dict | None]]:
         return [c for c in self.calls if c[0] == "PATCH" or (c[0] == "POST" and not c[1].endswith("/query"))]
+
+    def page_text(self, page_id: str) -> str:
+        return "\n".join("".join(r.get("plain_text", "") for r in (b.get(b["type"]) or {}).get("rich_text") or [])
+                         for b in self.blocks.get(page_id, []))
 
 
 # ── Graph ─────────────────────────────────────────────────
@@ -215,6 +248,7 @@ FAKE_NOTION_TOKEN = "ntn_" + "Fk7" * 15
 FAKE_BOT = "8123456789:" + "AAf" * 12
 FAKE_PAGE_ID = "61" + "0" * 13
 DB05, DB08, DB09, DB11 = ("d5" * 16, "d8" * 16, "d9" * 16, "db" * 16)
+DB12 = "dc" * 16
 
 BASE_ENV = {
     "PAGE76_ENABLED": "true",

@@ -171,7 +171,7 @@ def test_t_sec_08_workflow_rules(path):
 
 def test_p76_workflow_set():
     assert [p.name for p in WORKFLOWS] == [
-        "p76_calendar.yml", "p76_health.yml", "p76_hiatus_publish.yml", "p76_insights.yml"]
+        "p76_calendar.yml", "p76_health.yml", "p76_hiatus_publish.yml", "p76_insights.yml", "p76_novel.yml"]
 
 
 def test_no_reply_or_dm_endpoints():
