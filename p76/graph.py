@@ -14,7 +14,8 @@ Facebook Graph API (v25.0) — 사건파일 76 페이지 전용.
   - 쓰기는 재시도하지 않는다. 결과 status: ok / failed / unknown
       failed  : 게시되지 않음이 확정 (4xx, 연결 수립 실패)
       unknown : 전송 후 결과 미확정 (읽기 타임아웃, 연결 끊김, 5xx) → 확인필요
-  - 읽기만 재시도(2회). code 190·10·200대·368 은 회로 차단(safety.trip).
+  - 읽기만 재시도(2회). 쓰기의 code 190·10·200대·368, 읽기의 190 은 회로 차단(safety.trip).
+    읽기 권한 부족(10·200대)은 결과 코드로만 돌려준다.
   - 토큰·ID 는 결과·로그에 남기지 않는다. 댓글 쓰기·답글·DM 엔드포인트는 두지 않는다(DSN §9).
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ import requests
 from p76 import safety, settings
 from p76.redact import redact
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 logger = logging.getLogger(__name__)
 READ_RETRY = 2
@@ -88,7 +89,10 @@ def get(path: str, params: dict | None = None) -> tuple[bool, dict, str]:
         except ValueError:
             return False, {}, "invalid_json"
     code, message = _parse_error(resp)
-    _check_trip(code, resp.status_code, "read")
+    # 읽기는 토큰 무효(190·401)만 회로 차단. 권한 부족(10·200대)은 그 지표만 빈칸으로 두고 계속한다
+    # (2026-10-28 실측: 게시물 반응 조회에 pages_read_user_content 필요 — 하나 막혔다고 수집 전체를 멈추지 않음)
+    if classify(code, resp.status_code) == "auth_error":
+        _check_trip(code, resp.status_code, "read")
     reason = f"http_{resp.status_code}:{classify(code, resp.status_code)}:code={code}"
     logger.warning(f"[Graph] GET 실패 {reason}: {redact(message)[:120]}")
     return False, {"error_code": code}, reason
@@ -146,6 +150,8 @@ def post_engagement(post_id: str) -> tuple[dict[str, int | None], list[str]]:
         out["shares"] = int((body.get("shares") or {}).get("count", 0))
     else:
         codes.append(f"reactions:{reason}")
+        if "permission_error" in reason:
+            return out, [*codes, "comments:skipped_same_permission"]
     if safety.tripped():
         return out, codes
     ok, body, reason = get(post_id, {"fields": "comments.summary(total_count).limit(0)"})
