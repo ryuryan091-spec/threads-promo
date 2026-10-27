@@ -54,4 +54,6 @@ jobs:
           PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           PAGE76_INSIGHTS_ENABLED: ${{ vars.PAGE76_INSIGHTS_ENABLED }}
           PAGE76_INSIGHTS_METRICS: ${{ vars.PAGE76_INSIGHTS_METRICS }}
+          PAGE76_SCHEDULE_ANCHOR: ${{ vars.PAGE76_SCHEDULE_ANCHOR }}
+          PAGE76_HIATUS_DAYS: ${{ vars.PAGE76_HIATUS_DAYS }}
         run: python -m p76.run_insights

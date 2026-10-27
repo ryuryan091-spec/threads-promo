@@ -6,7 +6,7 @@ DB-05 회차 원장(읽기 전용)과 DB-09 운영 캘린더 조회 묶음.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 from p76 import notion, settings
 
@@ -23,24 +23,6 @@ class Published:
 
 def _published_filter() -> dict:
     return {"or": [{"property": settings.D5_STATE, "select": {"equals": s}} for s in settings.PUBLISHED_STATES]}
-
-
-def published_episodes(since: date | None = None) -> list[Published]:
-    """발행완료·부분완료 + 발행일시가 있는 회차, 일지번호 오름차순."""
-    flt = _published_filter()
-    if since is not None:
-        # 시간대 차이를 피하려고 하루 앞에서 자르고 KST 날짜는 코드에서 판정한다
-        flt = {"and": [flt, {"property": settings.D5_PUBLISHED_AT,
-                             "date": {"on_or_after": (since - timedelta(days=1)).isoformat()}}]}
-    body = {"filter": flt, "sorts": [{"property": settings.D5_NO, "direction": "ascending"}], "page_size": 100}
-    out = []
-    for page in notion.query(settings.DB05_ID, body):
-        no = notion.number(page, settings.D5_NO)
-        day = notion.kst_date(page, settings.D5_PUBLISHED_AT)
-        if no is None or day is None or (since is not None and day < since):
-            continue
-        out.append(Published(no, day, notion.plain(page, settings.D5_FEED_ID), notion.plain(page, settings.D5_REEL_ID)))
-    return out
 
 
 def last_published() -> Published | None:

@@ -9,8 +9,11 @@ p76/run_insights.py
 read_insights 가 생기면 Variable PAGE76_INSIGHTS_METRICS 로 조회·고유조회·클릭(F-03)이 추가된다.
 릴스 지표는 엔드포인트 미확정(F-04)이라 빈칸 + 결과 코드.
 
-  대상  : DB-05 발행완료·부분완료 중 발행 후 1·3·7일이 오늘인 회차 + DB-09 휴재콘텐츠 발행완료
-  키    : #022-D3 (본편) · H2026-11-10-D1 (휴재 콘텐츠) — 같은 키는 갱신(멱등)
+  대상  : 페이지 게시물 목록(GET /{page-id}/posts)에서 게시 후 1·3·7일인 피드 게시물.
+          반수동 운영이라 DB-05 에 발행일시·피드 ID 가 없어 원장 대신 페이지를 기준으로 삼는다.
+          게시일(KST) → 회차는 DB-09 캘린더 행, 없으면 운영 계획 기준점(PAGE76_SCHEDULE_ANCHOR)으로 맞춘다.
+          같은 날 피드 게시물이 여럿이면 가장 이른 것, 영상(릴스) 게시물은 대상에서 뺀다.
+  키    : #022-D3 (본편) · H2026-11-10-D1 (휴재 콘텐츠) · P2026-10-27-D1 (회차를 못 맞춘 게시물)
   없는 값 : 빈칸(0 으로 채우지 않음, STD-DATA-02) + 수집결과에 코드
 
 사용: python -m p76.run_insights
@@ -20,14 +23,13 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
-from p76 import cli, graph, ledger, notion, safety, settings
+from p76 import calendar_plan, cli, graph, ledger, notion, safety, settings
 from p76.notify import send
 from p76.runlog import RunLog
-from p76.season import locate
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = logging.getLogger(__name__)
 
@@ -39,37 +41,88 @@ class Target:
     season: int | None
     point: str
     feed_id: str
-    reel_id: str
+    has_reel: bool = False
+    codes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DayPlan:
+    kind: str
+    season: int | None
+    number: int | None
 
 
 def today_kst() -> date:
     return datetime.now(notion.KST).date()
 
 
-def targets(today: date) -> list[Target]:
+def _kst_midnight(day: date) -> int:
+    return int(datetime.combine(day, time.min, tzinfo=notion.KST).timestamp())
+
+
+def day_plans(since: date, until: date) -> dict[date, DayPlan]:
+    """게시일 → 회차. DB-09 행이 우선(회장 수정 반영), 빈 날은 운영 계획 기준점으로 계산."""
+    out: dict[date, DayPlan] = {}
+    if settings.SCHEDULE_ANCHOR is not None:
+        no, day = settings.SCHEDULE_ANCHOR
+        if day <= until:
+            horizon = (until - max(since, day)).days + 1
+            for d, e in calendar_plan.plan(no, day, max(since, day), horizon, settings.HIATUS_DAYS,
+                                           clamp=False).items():
+                out[d] = DayPlan(e.kind, e.season, e.number)
+    for page in ledger.calendar_rows(since, until).values():
+        d = notion.kst_date(page, settings.C_DATE)
+        if d is not None:
+            out[d] = DayPlan(notion.select(page, settings.C_KIND), notion.number(page, settings.C_SEASON),
+                             notion.number(page, settings.C_NO))
+    return out
+
+
+def _created_kst(post: dict) -> datetime | None:
+    try:
+        return datetime.strptime(str(post.get("created_time")), "%Y-%m-%dT%H:%M:%S%z").astimezone(notion.KST)
+    except ValueError:
+        return None
+
+
+def targets(today: date, log: RunLog | None = None) -> list[Target]:
     since = today - timedelta(days=max(settings.SNAPSHOT_DAYS))
+    ok, posts, reason = graph.page_posts(_kst_midnight(since), _kst_midnight(today))
+    if not ok:
+        if log is not None:
+            log.degrade(f"posts:{reason}")
+        return []
+    by_day: dict[date, list[tuple[datetime, dict]]] = {}
+    for post in posts:
+        created = _created_kst(post)
+        if created is not None:
+            by_day.setdefault(created.date(), []).append((created, post))
+    plans = day_plans(since, today)
     out = []
-    for ep in ledger.published_episodes(since):
-        age = (today - ep.day).days
-        if age in settings.SNAPSHOT_DAYS:
-            out.append(Target(f"#{ep.number:03d}-D{age}", ep.number, locate(ep.number)[0], f"D{age}",
-                              ep.feed_id, ep.reel_id))
-    for key, page in ledger.calendar_rows(since, today).items():
-        if notion.select(page, settings.C_KIND) != settings.KIND_HIATUS_CONTENT:
+    for day, items in sorted(by_day.items()):
+        age = (today - day).days
+        if age not in settings.SNAPSHOT_DAYS:
             continue
-        if notion.select(page, settings.C_STATE) != settings.S_DONE:
+        feeds = sorted((c, p) for c, p in items if "video" not in str(p.get("status_type", "")))
+        if not feeds:
             continue
-        published = notion.kst_date(page, settings.C_PUBLISHED_AT)
-        age = (today - published).days if published else -1
-        if age in settings.SNAPSHOT_DAYS:
-            out.append(Target(f"H{key}-D{age}", None, notion.number(page, settings.C_SEASON), f"D{age}",
-                              notion.plain(page, settings.C_FEED_ID), ""))
+        codes = (f"multi_post:{len(feeds)}",) if len(feeds) > 1 else ()
+        has_reel = len(feeds) < len(items)
+        feed_id = str(feeds[0][1]["id"])
+        plan = plans.get(day)
+        if plan and plan.kind == settings.KIND_EPISODE and plan.number:
+            out.append(Target(f"#{plan.number:03d}-D{age}", plan.number, plan.season, f"D{age}", feed_id, has_reel, codes))
+        elif plan and plan.kind == settings.KIND_HIATUS_CONTENT:
+            out.append(Target(f"H{day.isoformat()}-D{age}", None, plan.season, f"D{age}", feed_id, has_reel, codes))
+        else:
+            out.append(Target(f"P{day.isoformat()}-D{age}", None, plan.season if plan else None, f"D{age}", feed_id,
+                              has_reel, (*codes, "unmapped")))
     return out
 
 
 def collect(t: Target, followers: int | None) -> tuple[dict, list[str]]:
     values: dict[str, float | int | None] = {settings.M_FOLLOWERS: followers}
-    codes: list[str] = []
+    codes: list[str] = list(t.codes)
     if t.feed_id:
         eng, c = graph.post_engagement(t.feed_id)
         values[settings.M_REACTIONS] = eng["reactions"]
@@ -87,7 +140,7 @@ def collect(t: Target, followers: int | None) -> tuple[dict, list[str]]:
             codes.append("insights:skipped")
     else:
         codes.append("feed:no_id")
-    if t.reel_id:
+    if t.has_reel:
         codes.append("reel:not_collected")
     return values, codes
 
@@ -116,7 +169,7 @@ def body(log: RunLog, today: date | None = None) -> None:
         logger.info("[Insights] PAGE76_INSIGHTS_ENABLED=false — 종료")
         return
     day0 = today or today_kst()
-    todo = targets(day0)
+    todo = targets(day0, log)
     if not todo:
         logger.info("[Insights] 오늘 수집 대상 없음")
         return
@@ -131,7 +184,7 @@ def body(log: RunLog, today: date | None = None) -> None:
         values, codes = collect(t, followers if isinstance(followers, int) else None)
         if safety.tripped():
             break
-        if codes and any(not c.startswith(("insights:skipped", "reel:")) for c in codes):
+        if any(not c.startswith(("insights:skipped", "reel:", "multi_post")) for c in codes):
             log.degrade(f"{t.key}:partial")
         logger.info(f"[Insights] {t.key} 수집 ({len([v for v in values.values() if v is not None])}개 값)")
         if not safety.notion_write_allowed():
