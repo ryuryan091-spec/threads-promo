@@ -312,3 +312,15 @@ def test_insights_earliest_post_regardless_of_type(insights_env):
     row = fake.rows(DB08)[0]
     assert fake.val(row, settings.M_REACTIONS) == 40
     assert not any(c[1].startswith("61_photo") for c in g.calls)
+
+
+def test_insights_read_permission_does_not_trip(insights_env):
+    """2026-10-28 실측: 반응 조회에 pages_read_user_content 필요(code 10). 빈칸 + 코드로 저장하고 계속한다."""
+    fake, g = insights_env
+    g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = err(10)
+    log = run_insights_body()
+    row = fake.rows(DB08)[0]
+    assert log.status == "degraded"
+    assert fake.val(row, settings.M_REACTIONS) is None and fake.val(row, settings.M_FOLLOWERS) == 321
+    assert "permission_error" in fake.val(row, settings.M_RESULT)
+    assert not any("comments.summary" in c[2].get("fields", "") for c in g.calls)
