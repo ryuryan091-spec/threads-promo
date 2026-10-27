@@ -50,6 +50,21 @@ def parse_anchor(raw: str | None) -> tuple[int, date] | None:
         return None
 
 
+def parse_date(raw: str | None) -> date | None:
+    try:
+        return date.fromisoformat((raw or "").strip())
+    except ValueError:
+        return None
+
+
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        value = float(_env(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(value, lo), hi)
+
+
 def parse_mode(raw: str | None) -> tuple[str, bool]:
     """STD-MODE-01·06 단일 파서. (모드, 경고 여부). 빈 값·'-' 은 dry_run, 그 밖 미지정 값은 dry_run + 경고."""
     value = (raw or "").strip().lower()
@@ -111,6 +126,19 @@ def _load() -> dict:
         # ── 알림 ─────────────────────────────────────────────
         "TELEGRAM_BOT_TOKEN": _env("PAGE76_TELEGRAM_BOT_TOKEN"),
         "TELEGRAM_CHAT_ID": _env("PAGE76_TELEGRAM_CHAT_ID"),
+        # ── 사건 소설 B형 (DSN-P76-NOVEL-002) ─────────────────
+        "NOVEL_ENABLED": _env_bool("PAGE76_NOVEL_ENABLED"),
+        "NOVEL_PUBLISH_ENABLED": _env_bool("PAGE76_NOVEL_PUBLISH_ENABLED"),
+        "NOVEL_START": parse_date(_env("PAGE76_NOVEL_START", "2026-11-29")),
+        "NOVEL_BUDGET_USD": _env_float("PAGE76_NOVEL_BUDGET_USD", 20.0, 1.0, 30.0),
+        "CLAUDE_KEY": _env("PAGE76_CLAUDE_KEY"),
+        "NOVEL_TG_BOT_TOKEN": _env("PAGE76_NOVEL_TG_BOT_TOKEN"),
+        "NOVEL_TG_CHAT_ID": _env("PAGE76_NOVEL_TG_CHAT_ID"),
+        "DB12_ID": _env("PAGE76_DB12_ID"),
+        "NOVEL_PROMPT_PAGE_ID": _env("PAGE76_NOVEL_PROMPT_PAGE_ID"),
+        "NOVEL_MEMO_PAGE_ID": _env("PAGE76_NOVEL_MEMO_PAGE_ID"),
+        # 금칙어(DB-06 대체) — 비공개 Secret 으로만 받는다. 로그·API 요청에 넣지 않는다.
+        "BANNED_TERMS": _env_list("PAGE76_BANNED_TERMS"),
         # ── 실행 정보 ────────────────────────────────────────
         "RUN_ID": _env("GITHUB_RUN_ID", "local"),
         "CHROME_BIN": _env("PAGE76_CHROME_BIN"),
@@ -174,5 +202,48 @@ DB11_REQUIRED = {
     R_RUN_ID: "title", R_PIPELINE: "select", R_VERSION: "rich_text", R_MODE: "select", R_STATUS: "select",
     R_ERROR: "rich_text", R_WRITES: "number", R_START: "date", R_END: "date",
 }
+
+# DB-12 소설 원고 (DSN-P76-NOVEL-002 §3)
+N_KEY, N_KIND, N_SEASON, N_EPISODE, N_STATE, N_STOP = "키", "구분", "소설시즌", "화", "상태", "중단"
+N_DUE, N_NOTIFIED_AT, N_REGISTER_AT, N_VERDICT, N_REVIEW_CODES = "게시예정일", "알림시각", "등록예정시각", "검수판정", "검수코드"
+N_MODEL, N_PROMPT_VER, N_HASH, N_CHARS, N_COST = "모델", "프롬프트버전", "원고해시", "글자수", "비용USD"
+N_ATTEMPTS, N_QUOTED, N_FB_ID, N_PUBLISHED_AT, N_RESULT = "시도", "인용일지", "FB게시ID", "게시일시", "결과코드"
+DB12_REQUIRED = {
+    N_KEY: "title", N_KIND: "select", N_SEASON: "number", N_EPISODE: "number", N_STATE: "select",
+    N_STOP: "checkbox", N_DUE: "date", N_NOTIFIED_AT: "date", N_REGISTER_AT: "date", N_VERDICT: "select",
+    N_REVIEW_CODES: "rich_text", N_MODEL: "rich_text", N_PROMPT_VER: "rich_text", N_HASH: "rich_text",
+    N_CHARS: "number", N_COST: "number", N_ATTEMPTS: "number", N_QUOTED: "rich_text", N_FB_ID: "rich_text",
+    N_PUBLISHED_AT: "date", N_RESULT: "rich_text",
+}
+NK_BIBLE, NK_EPISODE, NK_CONTROL = "바이블", "회차", "제어"
+NS_GENERATING, NS_CHECK_FAILED, NS_HELD, NS_REFUSED = "생성중", "검사실패", "보류", "거절확인필요"
+NS_IMPLICIT, NS_EXPLICIT, NS_CANON = "묵시승인대기", "명시승인대기", "정본"
+NS_REVIEW, NS_APPROVED, NS_PUBLISHED, NS_CHECK = "검토대기", "승인", "게시완료", "확인필요"
+NS_STOPPED, NS_DISCARDED = "중단", "폐기"
+
+NOVEL_EPISODES = 7
+NOVEL_BIBLE_LEAD_DAYS = 20       # 시즌 제1화 게시일 20일 전부터 바이블 생성
+NOVEL_EPISODE_LEAD_DAYS = 14     # 회차 게시일 D-14 부터 원고 생성
+NOVEL_BUFFER_EPISODES = 3        # 시즌 개시 전 1~3화는 제1화 D-14 부터 연속 생성
+NOVEL_IMPLICIT_HOURS = 4         # D-N7 묵시 승인 대기
+NOVEL_NOTIFY_HOURS = (9, 18)     # 묵시 승인 알림은 KST 09:00~17:59 에만
+NOVEL_STALE_HOURS = 6            # 직전 실행이 이보다 오래면 묵시 등록 연기
+NOVEL_PUBLISH_HOUR = 10          # 게시는 KST 10시 이후
+NOVEL_REMIND_HOUR = 20           # 미승인 리마인드는 20시대 실행에서
+NOVEL_MAX_ATTEMPTS = 3
+NOVEL_RUN_CAP_USD = 3.0
+NOVEL_LAW_MAX_AGE_DAYS = 90
+NOVEL_STYLE_SAMPLES = (5, 7, 21)  # A형 수사일지 번호 (문체 견본)
+NOVEL_JOURNAL_CANDIDATES = 6
+
+# Claude API (DSN-P76-NOVEL-002 §8). 가격: 1M 토큰당 USD (2026-10 기준, 바뀌면 이 표와 날짜를 함께 고친다)
+MODEL_WRITER, MODEL_REVIEWER = "claude-opus-5-5", "claude-sonnet-5-5"
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+MODEL_PRICES = {  # (입력, 출력, 캐시 읽기)
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.20),
+}
+MODEL_PRICE_UNKNOWN = (10.0, 50.0, 1.0)  # fallback 등 표에 없는 모델은 보수적으로
+CACHE_WRITE_FACTOR = 1.25
 
 reload()

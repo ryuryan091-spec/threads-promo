@@ -153,11 +153,58 @@ def update_page(page_id: str, props: dict) -> None:
     _request("PATCH", f"/pages/{page_id}", {"properties": props})
 
 
-def create_page(db_id: str, props: dict) -> dict:
+def create_page(db_id: str, props: dict, children: list[dict] | None = None) -> dict:
     if not db_id or _norm(db_id) == _norm(settings.DB05_ID):
         raise ReadOnlyViolation("db05_parent")
     safety.guard_notion_write()
-    return _request("POST", "/pages", {"parent": {"database_id": db_id}, "properties": props}, retry=False)
+    body = {"parent": {"database_id": db_id}, "properties": props}
+    if children:
+        body["children"] = children
+    return _request("POST", "/pages", body, retry=False)
+
+
+def append_children(block_id: str, children: list[dict]) -> None:
+    """페이지 끝에 블록 추가 (멱등 아님 → 재시도 없음). 한 번에 100개까지."""
+    if _norm(block_id) in _readonly_pages:
+        raise ReadOnlyViolation("db05_page")
+    safety.guard_notion_write()
+    _request("PATCH", f"/blocks/{block_id}/children", {"children": children}, retry=False)
+
+
+# ── 블록 읽기 ─────────────────────────────────────────────
+def children(block_id: str, max_pages: int = 20) -> Iterator[dict]:
+    cursor = None
+    for _ in range(max_pages):
+        path = f"/blocks/{block_id}/children?page_size=100"
+        if cursor:
+            path += f"&start_cursor={quote(cursor, safe='')}"
+        data = _request("GET", path)
+        yield from data.get("results", [])
+        cursor = data.get("next_cursor")
+        if not data.get("has_more") or not cursor:
+            return
+
+
+def block_text(block: dict) -> str:
+    """제목·문단·코드 블록의 평문. 표 행은 셀을 \\t 로 잇는다."""
+    kind = block.get("type", "")
+    value = block.get(kind) or {}
+    if kind == "table_row":
+        return "\t".join("".join(str(r.get("plain_text", "")) for r in cell) for cell in value.get("cells") or [])
+    return "".join(str(r.get("plain_text", "")) for r in value.get("rich_text") or [])
+
+
+def b_heading(text: str) -> dict:
+    return {"object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": text[:_RICH_CHUNK]}}]}}
+
+
+def b_paragraph(text: str) -> dict:
+    return {"object": "block", "type": "paragraph", "paragraph": v_rich(text)}
+
+
+def b_code(text: str, language: str = "plain text") -> dict:
+    return {"object": "block", "type": "code", "code": {**v_rich(text), "language": language}}
 
 
 # ── 속성 읽기 ─────────────────────────────────────────────
@@ -174,6 +221,11 @@ def plain(page: dict, name: str) -> str:
 def number(page: dict, name: str) -> int | None:
     value = _prop(page, name).get("number")
     return int(value) if isinstance(value, (int, float)) else None
+
+
+def number_f(page: dict, name: str) -> float | None:
+    value = _prop(page, name).get("number")
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def select(page: dict, name: str) -> str:

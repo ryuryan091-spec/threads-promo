@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from p76_fake import BASE_ENV, DB05, DB08, DB09, DB11, FakeGraph, FakeNotion
+from p76_fake import BASE_ENV, DB05, DB08, DB09, DB11, DB12, FakeGraph, FakeNotion
 
 from p76 import graph, notion, safety, settings
 
@@ -40,6 +40,7 @@ def fake_notion(env, monkeypatch):
     fake.add_db(DB08, settings.DB08_REQUIRED)
     fake.add_db(DB09, settings.DB09_REQUIRED)
     fake.add_db(DB11, settings.DB11_REQUIRED)
+    fake.add_db(DB12, settings.DB12_REQUIRED)
     monkeypatch.setattr(notion, "_request", fake.request)
     return fake
 
