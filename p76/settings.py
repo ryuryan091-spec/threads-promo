@@ -20,7 +20,8 @@ MODES = ("dry_run", "shadow", "live")
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
+    """빈 값도 미설정으로 본다 — 워크플로는 등록되지 않은 Variable 을 빈 문자열로 넘긴다."""
+    return (os.getenv(name) or "").strip() or default
 
 
 def _env_bool(name: str, default: str = "false") -> bool:
@@ -76,10 +77,10 @@ def _load() -> dict:
         "APP_ID": _env("PAGE76_APP_ID"),
         "APP_SECRET": _env("PAGE76_APP_SECRET"),
         # 토큰에 있어야 하는 권한(정확히 이 집합 — 추가·누락 모두 경고, SEC C-01).
-        # 2026-10-28 회장 확인 권한. read_insights 등 추가 발급 시 Variable 로 갱신.
+        # 2026-10-28 회장 확인 권한 + public_profile(앱 기본 권한, 실측). read_insights 등 추가 발급 시 Variable 로 갱신.
         "EXPECTED_SCOPES": _env_list(
             "PAGE76_EXPECTED_SCOPES",
-            "pages_show_list,business_management,pages_read_engagement,pages_manage_posts",
+            "pages_show_list,business_management,pages_read_engagement,pages_manage_posts,public_profile",
         ),
         # 게시물 인사이트 지표 (read_insights 필요). 비어 있으면 /insights 호출 생략.
         "INSIGHTS_METRICS": _env_list("PAGE76_INSIGHTS_METRICS"),

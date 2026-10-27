@@ -10,7 +10,8 @@ from p76 import cli, run_health, run_insights, safety, settings
 from p76.runlog import RunLog
 
 TODAY = date(2026, 11, 12)
-SCOPES = ["pages_show_list", "business_management", "pages_read_engagement", "pages_manage_posts"]
+SCOPES = ["pages_show_list", "business_management", "pages_read_engagement", "pages_manage_posts",
+          "public_profile"]
 
 
 # ── T1-12 ────────────────────────────────────────────────
@@ -32,6 +33,13 @@ def test_defaults_are_safe(monkeypatch):
     finally:
         monkeypatch.undo()
         settings.reload()
+
+
+def test_empty_workflow_variables_use_defaults(env):
+    """등록되지 않은 Variable 은 워크플로에서 빈 문자열로 들어온다 (2026-10-28 첫 실행 H2 오경고)."""
+    env(PAGE76_EXPECTED_SCOPES="", PAGE76_HIATUS_DAYS="", PAGE76_MODE="")
+    assert "pages_manage_posts" in settings.EXPECTED_SCOPES and "public_profile" in settings.EXPECTED_SCOPES
+    assert settings.HIATUS_DAYS == 7 and settings.MODE == "dry_run"
 
 
 # ── T1-13 health ─────────────────────────────────────────
@@ -67,7 +75,7 @@ def test_t1_13_token_invalid_190(health_env):
 
 
 @pytest.mark.parametrize("scopes,code", [
-    (SCOPES[:-1], "H2:scope_missing:pages_manage_posts"),
+    ([s for s in SCOPES if s != "pages_manage_posts"], "H2:scope_missing:pages_manage_posts"),
     (SCOPES + ["pages_messaging"], "H2:scope_extra:pages_messaging"),
 ])
 def test_t1_13_scope_drift(health_env, scopes, code):

@@ -32,7 +32,7 @@ CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests
 
 ## 현재 토큰 권한으로 되는 것 / 안 되는 것 (2026-10-28)
 
-토큰 권한: `pages_show_list` · `business_management` · `pages_read_engagement` · `pages_manage_posts`
+토큰 권한: `pages_show_list` · `business_management` · `pages_read_engagement` · `pages_manage_posts` · `public_profile`(앱 기본)
 
 | 기능 | 상태 |
 |---|---|
