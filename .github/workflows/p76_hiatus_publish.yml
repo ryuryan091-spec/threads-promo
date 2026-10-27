@@ -4,6 +4,7 @@
 #  ⚠️ cron 은 UTC. "5 11 * * *" = KST 매일 20:05 (+ 랜덤 0~40분)  (STD-SCHED-01 — 시각을 바꾸면 이 주석도 함께 수정)
 #  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
 #  threads-promo 통합 운영(DN2026_0069, 공개 레포 위험 수용) — p76/ 패키지만 실행, src/ 와 설정 공유 없음
+#  Secret: 노션·텔레그램은 threads-promo 기존 NOTION_TOKEN · TELEGRAM_BOT_TOKEN · TELEGRAM_ALERT_CHAT_ID 재사용(DN2026_0070)
 #  보안(SEC RR-06): Repository Secret + main 브랜치에서만 실행 · 로그는 공개되므로 날짜·회차·상태·코드만 출력
 # ─────────────────────────────────────────────────────────────
 name: 📕 p76-hiatus-publish
@@ -52,12 +53,12 @@ jobs:
           PAGE76_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.PAGE76_MODE || 'dry_run' }}
           FACE_PAGE76_ID: ${{ secrets.FACE_PAGE76_ID }}
           FACE_PAGE76_TOKEN: ${{ secrets.FACE_PAGE76_TOKEN }}
-          PAGE76_NOTION_TOKEN: ${{ secrets.PAGE76_NOTION_TOKEN }}
+          PAGE76_NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           PAGE76_DB05_ID: ${{ secrets.PAGE76_DB05_ID }}
           PAGE76_DB08_ID: ${{ secrets.PAGE76_DB08_ID }}
           PAGE76_DB09_ID: ${{ secrets.PAGE76_DB09_ID }}
           PAGE76_DB11_ID: ${{ secrets.PAGE76_DB11_ID }}
-          PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.PAGE76_TELEGRAM_BOT_TOKEN }}
-          PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.PAGE76_TELEGRAM_CHAT_ID }}
+          PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           PAGE76_HIATUS_PUBLISH_ENABLED: ${{ vars.PAGE76_HIATUS_PUBLISH_ENABLED }}
         run: python -m p76.run_hiatus_publish
