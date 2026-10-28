@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────
+#  사건파일76 사건 소설(B형) — 회차 게시 (DN2026_0072 · 원고 생성 p76_novel.yml 과 분리)
+#
+#  게시일(일요일)에만 돈다. 08시대 첫 실행이 텔레그램에 "HH:MM 이후 발행됩니다"를 보내고,
+#  2시간 뒤 실행이 노션 DB-12 행을 다시 읽어 중단 체크가 없으면 게시한다.
+#  ⚠️ cron 은 UTC. 다른 워크플로·CHAT 트리거와 6분 이상 (STD-SCHED-01 — 시각을 바꾸면 이 주석도 함께 수정)
+#    "17 23 * * 6" = KST 일 08:17 (발행 예고)
+#    "21 1 * * 0"  = KST 일 10:21   "25 2 * * 0" = KST 일 11:25   "34 3 * * 0" = KST 일 12:34   "12 5 * * 0" = KST 일 14:12
+#    (게시 · 예고가 늦게 나간 날의 재예고 · 실패 재시도)
+#  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
+#  스위치: PAGE76_ENABLED + PAGE76_NOVEL_ENABLED + PAGE76_NOVEL_PUBLISH_ENABLED (이 워크플로만 멈추려면 마지막 것을 false)
+#  중단: DB-12 행 중단 체크(게시 직전에 다시 읽음) · 위 Variable · Actions 에서 이 워크플로 비활성화
+#  Secret: 텔레그램은 기존 운영 알림 봇·방(보내기만) · 노션 NOTION_TOKEN · Anthropic 키는 쓰지 않음
+#  보안(SEC RR-06): main 브랜치에서만 · 공개 로그에는 상태·코드만 (원고·프롬프트·노션 ID 없음)
+# ─────────────────────────────────────────────────────────────
+name: 📕 p76-novel-publish
+
+on:
+  schedule:
+    - cron: "17 23 * * 6"
+    - cron: "21 1 * * 0"
+    - cron: "25 2 * * 0"
+    - cron: "34 3 * * 0"
+    - cron: "12 5 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry_run=쓰기 없음 · shadow=예고·노션 기록, 게시 없음 · live=게시 포함"
+        type: choice
+        options: ["dry_run", "shadow", "live"]
+        default: "dry_run"
+
+concurrency:
+  group: p76-novel
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install --require-hashes -r p76/requirements.txt
+      - name: Install Korean fonts (card render)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+      - name: Run
+        env:
+          PAGE76_ENABLED: ${{ vars.PAGE76_ENABLED }}
+          PAGE76_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.PAGE76_MODE || 'dry_run' }}
+          PAGE76_NOVEL_ENABLED: ${{ vars.PAGE76_NOVEL_ENABLED }}
+          PAGE76_NOVEL_PUBLISH_ENABLED: ${{ vars.PAGE76_NOVEL_PUBLISH_ENABLED }}
+          PAGE76_NOVEL_START: ${{ vars.PAGE76_NOVEL_START }}
+          PAGE76_NOVEL_TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PAGE76_NOVEL_TG_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          PAGE76_NOVEL_PROMPT_PAGE_ID: ${{ secrets.PAGE76_NOVEL_PROMPT_PAGE_ID }}
+          PAGE76_BANNED_TERMS: ${{ secrets.PAGE76_BANNED_TERMS }}
+          FACE_PAGE76_ID: ${{ secrets.FACE_PAGE76_ID }}
+          FACE_PAGE76_TOKEN: ${{ secrets.FACE_PAGE76_TOKEN }}
+          PAGE76_NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PAGE76_DB05_ID: ${{ secrets.PAGE76_DB05_ID }}
+          PAGE76_DB11_ID: ${{ secrets.PAGE76_DB11_ID }}
+          PAGE76_DB12_ID: ${{ secrets.PAGE76_DB12_ID }}
+          PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+        run: python -m p76.run_novel_publish

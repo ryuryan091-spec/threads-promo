@@ -17,7 +17,8 @@ threads-promo 에 **함께 두지만 분리해 운영**한다 (DN2026_0069 — �
 | `p76_hiatus_publish.yml` | 매일 20:05 + 0~40분 | DB-09 휴재콘텐츠 `승인`+`검수완료` 1건 → 사진 게시 | `+ PAGE76_HIATUS_PUBLISH_ENABLED` |
 | `p76_insights.yml` | 매일 06:20 | 페이지 게시물 목록에서 게시 후 D1·D3·D7 날의 첫 게시물(회차 릴스)의 반응·댓글수·공유수·팔로워 → DB-08 (게시일→회차는 DB-09·기준점으로 매칭) | `+ PAGE76_INSIGHTS_ENABLED` |
 
-| `p76_novel.yml` | 2시간 간격(08:50~22:15) | 사건 소설(B형) 바이블·회차 원고 자동 작성 → 검수 → DB-12, 바이블 묵시 승인(4시간), 승인 회차 게시 | `+ PAGE76_NOVEL_ENABLED` (게시는 `+ PAGE76_NOVEL_PUBLISH_ENABLED`) |
+| `p76_novel.yml` | 2시간 간격(08:50~22:15) | 사건 소설(B형) 바이블·회차 원고 자동 작성 → 검수 → DB-12, 바이블 묵시 승인(2시간), 전날 안내. **게시하지 않음** | `+ PAGE76_NOVEL_ENABLED` |
+| `p76_novel_publish.yml` | 일요일 08:17 예고 · 10:21 / 11:25 / 12:34 / 14:12 게시·재시도 | 오늘 게시 회차 텔레그램 예고("HH:MM 이후 발행됩니다") → 2시간 뒤 중단 체크 재확인 → 카드 사진 게시 | `+ PAGE76_NOVEL_ENABLED + PAGE76_NOVEL_PUBLISH_ENABLED` |
 
 캘린더는 21:45 예약 작업 전에 돌고, CHAT 트리거(21:19)와 6분 이상 떨어지도록 21:28 에 둔다.
 CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests/p76` 를 함께 돌린다.
@@ -32,17 +33,23 @@ CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests
 | `PAGE76_DB05_ID` · `DB08` · `DB09` · `DB11` | 같은 이름 | 원장 4개(읽기 1 + 쓰기 3) |
 | `PAGE76_CLAUDE_KEY` | `CLAUDE_AI_KEY` | threads-promo 기존 Anthropic 키 공용(DN2026_0071) — 소설은 코드 회로(월 예산)로만 상한 |
 
-## 사건 소설 B형 (DSN-P76-NOVEL-001 v0.2 · 002 v0.1)
+## 사건 소설 B형 (DSN-P76-NOVEL-001 v0.2 · 002 v0.1 · DN2026_0072)
 
-Claude API(기존 `CLAUDE_AI_KEY`)로 주 1회 연재 소설(7화)의 원고를 쓴다. **게시는 회장이 DB-12 에서 '승인'한 회차만** 한다.
+Claude API(기존 `CLAUDE_AI_KEY`)로 주 1회 연재 소설(7화)의 원고를 쓴다. **게시는 텔레그램 예고 2시간 뒤 자동**이며, 회장이 그 사이 노션에서 중단하지 않으면 나간다(DN2026_0072 — D-N2 '명시 승인만' 대체). 원고 생성과 게시는 워크플로가 나뉘어 있다.
 
 | 단계 | 내용 |
 |---|---|
-| 바이블 | 시즌 제1화 20일 전, AI 가 소재(창작·소재 메모 PM·게시된 수사일지)를 골라 작성 → 규칙 검사 → 검수(Sonnet) → 통과하면 전용 텔레그램 채널에 알림(09~18시) → **4시간 뒤 첫 점검에서 정본 등록**(D-N7). 검수 플래그가 있으면 자동 등록하지 않음 |
+| 바이블 | 시즌 제1화 20일 전, AI 가 소재(창작·소재 메모 PM·게시된 수사일지)를 골라 작성 → 규칙 검사 → 검수(Sonnet) → 통과하면 텔레그램 운영 알림 방에 알림(09~18시) → **2시간 뒤 첫 점검에서 정본 등록**(D-N7). 검수 플래그가 있으면 자동 등록하지 않음 |
 | 회차 | 정본 바이블의 각 화를 게시일 14일 전부터 1화씩(시즌 개시 전 1~3화 버퍼) → 규칙 검사(재작성 1회) → 검수(6·7화·경계값은 Opus 재검수) → '검토대기' |
-| 게시 | '승인' + 게시일 10시 이후 + 하루 1건. 게시 직전 회장 편집본을 다시 검사하고, 법률 블록(노션 정본, 확인일 90일 이내)을 치환하고, 고정 꼬리말(픽션·AI 고지)을 붙여 카드 사진으로 게시 |
+| 자동 발행 대상 | `검토대기` + 검수 PASS + 요청 모델(Opus 5.5) 그대로 응답한 회차. 검수 플래그(HUMAN_REQUIRED)·fallback 응답 회차는 회장이 `승인`해야 대상이 된다 |
+| 예고 | 게시일(일) 08시 이후 첫 실행 → 텔레그램 "제m화 — HH:MM 이후 발행됩니다" → 보냈을 때만 `발행예고` + 발행 예정 시각(예고 + 2시간, 10시 이전 불가). 알림이 안 가면 게시하지 않는다 |
+| 게시 | 발행 예정 시각 이후 실행에서 행을 다시 읽어 중단·상태 확인 → 회장 편집본 규칙 재검사 → 법률 블록(노션 정본, 확인일 90일 이내) 치환 → 고정 꼬리말(픽션·AI 고지) → 카드 사진. 하루 1건, 실패는 다음 실행에서 재시도, 검사 실패는 `보류` |
 
-중단: ① DB-12 행의 `중단` 체크 ② 전용 채널에 `중단` 또는 `/p76_stop` ③ Variable `PAGE76_NOVEL_ENABLED=false`. 재개는 노션에서만.
+중단: ① DB-12 행의 `중단` 체크(게시 직전에 다시 읽음) ② Variable `PAGE76_NOVEL_PUBLISH_ENABLED=false`(게시만) · `PAGE76_NOVEL_ENABLED=false`(전체) ③ Actions 에서 `p76-novel-publish` 비활성화. 텔레그램 명령은 받지 않는다(보내기만). 재개는 노션에서만.
+
+DB-12 `상태` 선택지에 `발행예고` 를 추가해 둔다(스키마 변경 없음 — 선택지 1개).
+
+상태: `검토대기`(PASS)·`승인` → `발행예고` → `게시완료` / `확인필요`(응답 미확정) / `보류`(게시 전 검사 실패) / `중단`. 코드는 `승인`으로 바꾸지 못하고, `발행예고`를 거치지 않고는 게시하지 못한다.
 
 **기존 Secret 재사용 — 새로 만들지 않는다**
 
@@ -51,7 +58,8 @@ Claude API(기존 `CLAUDE_AI_KEY`)로 주 1회 연재 소설(7화)의 원고를 
 | `PAGE76_CLAUDE_KEY` | `CLAUDE_AI_KEY` | 없음(CHAT·답글·쇼츠와 같은 키) |
 | `PAGE76_NOTION_TOKEN` | `NOTION_TOKEN` | 노션 연결만 — 아래 표 |
 | `PAGE76_DB05_ID` · `PAGE76_DB11_ID` · `FACE_PAGE76_ID` · `FACE_PAGE76_TOKEN` | 같은 이름(p76 운영에서 등록) | 없음 |
-| `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | 없음(최우선 장애 알림만) |
+| `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | 없음(최우선 장애 알림) |
+| `PAGE76_NOVEL_TG_BOT_TOKEN` · `PAGE76_NOVEL_TG_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | 없음(소설 알림, 앞에 `[사건파일76·소설]`). 보내기만 하므로 같은 봇을 쓰는 다른 파이프라인의 update 를 건드리지 않는다(DN2026_0072) |
 
 **새로 등록하는 Secret (기존에 없는 대상만)**
 
@@ -60,7 +68,6 @@ Claude API(기존 `CLAUDE_AI_KEY`)로 주 1회 연재 소설(7화)의 원고를 
 | `PAGE76_DB12_ID` | 자비스76 하위 「DB-12 소설 원고」 링크의 32자리(**database ID**) | 필수 |
 | `PAGE76_NOVEL_PROMPT_PAGE_ID` | 자비스76 하위 「⚙️ 소설 프롬프트 정본」 페이지 링크의 32자리 | 필수 |
 | `PAGE76_NOVEL_MEMO_PAGE_ID` | 사건파일 76 하위 「🗂️ 스토리 소재 메모 (비공개)」 페이지 링크의 32자리 | 선택 — 없으면 소재 메모 없이 창작·일지만 사용 |
-| `PAGE76_NOVEL_TG_BOT_TOKEN` · `PAGE76_NOVEL_TG_CHAT_ID` | 소설 전용 봇·비공개 채널(관리자: 회장·봇만) | D-N9. getUpdates 로 중단 명령을 읽어 다른 소비자와 봇을 공유하지 않는다 |
 | `PAGE76_BANNED_TERMS` | 금칙어(쉼표 구분) | 선택. 로컬 대조만 — API·로그에 넣지 않음 |
 
 ID 는 토큰이 아니지만 공개 레포의 Actions 로그에서 가려지도록 Secret 에 둔다(값은 레포에 적지 않는다).
@@ -69,7 +76,7 @@ ID 는 토큰이 아니지만 공개 레포의 Actions 로그에서 가려지도
 
 | 이름 | 종류 | 내용 |
 |---|---|---|
-| `PAGE76_NOVEL_ENABLED` · `PAGE76_NOVEL_PUBLISH_ENABLED` | Variable | 생성 스위치 · 게시 스위치 |
+| `PAGE76_NOVEL_ENABLED` · `PAGE76_NOVEL_PUBLISH_ENABLED` | Variable | 전체 스위치 · 게시 파이프라인 스위치 |
 | `PAGE76_NOVEL_START` · `PAGE76_NOVEL_BUDGET_USD` | Variable | 시즌 1 제1화 게시일(기본 2026-11-29) · 월 예산(기본 20) |
 
 의존성: `p76/requirements-novel.txt`(anthropic SDK, 해시 고정 · Linux 러너 전용). 프롬프트 본문은 레포에 없고 노션 정본에서 읽는다(제목에 "초안"이 있으면 실행 중지).

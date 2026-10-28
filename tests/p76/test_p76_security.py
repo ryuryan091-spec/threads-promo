@@ -171,13 +171,15 @@ def test_t_sec_08_workflow_rules(path):
 
 def test_p76_workflow_set():
     assert [p.name for p in WORKFLOWS] == [
-        "p76_calendar.yml", "p76_health.yml", "p76_hiatus_publish.yml", "p76_insights.yml", "p76_novel.yml"]
+        "p76_calendar.yml", "p76_health.yml", "p76_hiatus_publish.yml", "p76_insights.yml", "p76_novel.yml",
+        "p76_novel_publish.yml"]
 
 
 def test_reused_secrets_not_duplicated():
-    """기존 Secret 재사용 (DN2026_0070 노션·텔레그램, DN2026_0071 Anthropic) — 전용 Secret 을 다시 만들지 않는다."""
+    """기존 Secret 재사용 (DN2026_0070 노션·텔레그램, DN2026_0071 Anthropic, DN2026_0072 소설 알림) — 전용 Secret 을 다시 만들지 않는다."""
     reuse = {"PAGE76_CLAUDE_KEY": "CLAUDE_AI_KEY", "PAGE76_NOTION_TOKEN": "NOTION_TOKEN",
-             "PAGE76_TELEGRAM_BOT_TOKEN": "TELEGRAM_BOT_TOKEN", "PAGE76_TELEGRAM_CHAT_ID": "TELEGRAM_ALERT_CHAT_ID"}
+             "PAGE76_TELEGRAM_BOT_TOKEN": "TELEGRAM_BOT_TOKEN", "PAGE76_TELEGRAM_CHAT_ID": "TELEGRAM_ALERT_CHAT_ID",
+             "PAGE76_NOVEL_TG_BOT_TOKEN": "TELEGRAM_BOT_TOKEN", "PAGE76_NOVEL_TG_CHAT_ID": "TELEGRAM_ALERT_CHAT_ID"}
     for path in WORKFLOWS:
         text = path.read_text(encoding="utf-8")
         for env_name, existing in reuse.items():

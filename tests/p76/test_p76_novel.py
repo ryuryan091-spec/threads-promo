@@ -1,4 +1,4 @@
-"""사건 소설(B형) 자동 작성 — TN-01~18 (DSN-P76-NOVEL-002 §10). 합성 데이터만 쓴다."""
+"""사건 소설(B형) 자동 작성·게시 — TN-01~18 (DSN-P76-NOVEL-002 §10 · DN2026_0072). 합성 데이터만 쓴다."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,7 @@ from p76 import (
     novel_store,
     novel_tg,
     run_novel,
+    run_novel_publish,
     settings,
 )
 from p76.notion import KST
@@ -43,17 +44,15 @@ class FakeTG:
 
     def __init__(self):
         self.sent: list[str] = []
-        self.updates: list[dict] = []
-        self.fail_get = False
+        self.urls: list[str] = []
 
     def post(self, url, json=None, timeout=None):
+        self.urls.append(url)
         self.sent.append(json["text"])
         return FakeResp(200, {"ok": True})
 
     def get(self, url, params=None, timeout=None):
-        if self.fail_get:
-            raise requests.exceptions.ConnectionError("synthetic")
-        return FakeResp(200, {"result": [u for u in self.updates if u["update_id"] >= params["offset"]]})
+        raise AssertionError("getUpdates 금지 (DN2026_0072)")
 
 
 class Scripted(novel_llm.FixtureClient):
@@ -156,11 +155,13 @@ def add_canon_bible(fake, n=1):
     return page
 
 
-def add_episode_row(fake, n, m, state, body=None, question="기록을 남겨 본 적이 있나요?", due=None):
+def add_episode_row(fake, n, m, state, body=None, question="기록을 남겨 본 적이 있나요?", due=None,
+                    verdict="PASS", model=None):
     body = body if body is not None else novel_fixtures.episode(
         {"messages": [{"content": [{"text": f"제{m}화"}]}]})["body"]
     page = fake.add(DB12, **{S.N_KEY: f"N{n}-E{m:02d}", S.N_KIND: S.NK_EPISODE, S.N_SEASON: n, S.N_EPISODE: m,
-                             S.N_STATE: state, S.N_DUE: (due or run_novel.due_date(n, m)).isoformat()})
+                             S.N_STATE: state, S.N_DUE: (due or run_novel.due_date(n, m)).isoformat(),
+                             S.N_VERDICT: verdict, S.N_MODEL: model or S.MODEL_WRITER})
     fake.set_blocks(page["id"], novel_store.section_blocks([
         (novel_store.H_BODY, body, "code"), (novel_store.H_QUESTION, question, "code"),
         (novel_store.H_QUOTE, "기록은 남는다.", "code"), (novel_store.H_SUBTITLE, "합성 부제", "code"),
@@ -244,18 +245,19 @@ def test_prompt_page_parse_and_draft_refused(novel, env):
 
 
 # ── TN-01·04 묵시 승인 ───────────────────────────────────
-def test_tn01_implicit_registration_after_4h(novel):
+def test_tn01_implicit_registration_after_2h(novel):
     log, client = run(kst(2026, 11, 9, 10, 44))
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    assert any("묵시 승인 대기" in t for t in novel.tg.sent)
+    assert any("묵시 승인 대기" in t and "12:44 이후" in t and "중단'을 체크" in t for t in novel.tg.sent)
     assert "표식-NB" in json.dumps(client.calls[0]["system"], ensure_ascii=False)
     assert client.calls[0]["fallbacks"] == "default" and client.calls[0]["model"] == S.MODEL_WRITER
+    run(kst(2026, 11, 9, 12, 40))
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT  # 2시간 전
     run(kst(2026, 11, 9, 12, 44))
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    run(kst(2026, 11, 9, 14, 44))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
     assert any("정본 등록" in t for t in novel.tg.sent)
+    assert all(t.startswith("[사건파일76·소설] ") for t in novel.tg.sent)
 
 
 def test_tn04_night_bible_waits_for_daytime_notice(novel):
@@ -266,9 +268,8 @@ def test_tn04_night_bible_waits_for_daytime_notice(novel):
     assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None
     run(kst(2026, 11, 10, 10, 44))
     assert novel.fake.val(bible, S.N_NOTIFIED_AT) is not None
-    run(kst(2026, 11, 10, 12, 44))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    run(kst(2026, 11, 10, 14, 44))
+    run(kst(2026, 11, 10, 12, 44))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
 
 
@@ -280,13 +281,14 @@ def test_tn05_stale_run_defers(novel):
     assert any("연기" in t for t in novel.tg.sent)
 
 
-def test_tn05_unreadable_channel_defers(novel):
+def test_tn03_telegram_is_send_only(novel):
+    """같은 봇을 쓰는 다른 파이프라인의 update 를 건드리지 않는다 — getUpdates·웹훅 호출 없음."""
     run(kst(2026, 11, 9, 10, 44))
     run(kst(2026, 11, 9, 12, 44))
-    novel.tg.fail_get = True
-    log, _ = run(kst(2026, 11, 9, 14, 44))
-    assert novel.fake.val(row(novel.fake, "N1-BIBLE"), S.N_STATE) == S.NS_IMPLICIT
-    assert "tg:poll_failed" in log.codes
+    assert novel.tg.urls and all(u.endswith("/sendMessage") for u in novel.tg.urls)
+    source = "\n".join(p.read_text(encoding="utf-8") for p in (Path(run_novel.__file__).parent).glob("*.py"))
+    for method in ("getUpdates", "setWebhook", "deleteWebhook"):
+        assert f'"{method}"' not in source and f"'{method}'" not in source  # 호출 인자로 쓰이지 않음
 
 
 def test_tn01_notice_not_sent_means_no_timer(novel, env):
@@ -298,52 +300,28 @@ def test_tn01_notice_not_sent_means_no_timer(novel, env):
     assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
 
 
-# ── TN-02·03 중단 ────────────────────────────────────────
-def _post(update_id, text, chat=CHAT, is_bot=False):
-    return {"update_id": update_id, "channel_post": {"chat": {"id": int(chat)}, "text": text,
-                                                     "from": {"is_bot": is_bot}}}
-
-
-def test_tn02_telegram_stop_before_registration(novel):
-    run(kst(2026, 11, 9, 10, 44))
-    run(kst(2026, 11, 9, 12, 44))
-    novel.tg.updates.append(_post(41, "중단"))
-    run(kst(2026, 11, 9, 14, 44))
-    bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_STOPPED
-    assert novel.fake.val(bible, S.N_STOP) is True
-    control = json.loads(novel.fake.val(row(novel.fake, "CONTROL"), S.N_RESULT))
-    assert control["tg_offset"] == 41
-
-
-def test_tn02_stop_after_canon_halts_episodes(novel):
-    bible = add_canon_bible(novel.fake)
-    novel.tg.updates.append(_post(7, "/p76_stop@novelbot"))
-    log, client = run(kst(2026, 11, 15, 10, 44))
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_STOPPED
-    assert rows(novel.fake, S.NK_EPISODE) == [] and client.calls == []
-
-
+# ── TN-02 중단 (노션 체크·스위치) ───────────────────────
 def test_tn02_notion_checkbox_stop(novel):
     run(kst(2026, 11, 9, 10, 44))
     bible = row(novel.fake, "N1-BIBLE")
     bible["properties"][S.N_STOP]["checkbox"] = True
-    run(kst(2026, 11, 9, 14, 44))
+    run(kst(2026, 11, 9, 12, 44))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_STOPPED
+    assert any("중단 접수" in t for t in novel.tg.sent)
+
+
+def test_tn02_stop_after_canon_halts_episodes(novel):
+    bible = add_canon_bible(novel.fake)
+    bible["properties"][S.N_STOP]["checkbox"] = True
+    log, client = run(kst(2026, 11, 15, 10, 44))
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_STOPPED
+    assert rows(novel.fake, S.NK_EPISODE) == [] and client.calls == []
 
 
 def test_tn02_global_switch(novel, env):
     env(PAGE76_NOVEL_ENABLED="false")
     run(kst(2026, 11, 9, 10, 44))
     assert not any(DB12 in c[1] for c in novel.fake.calls)
-
-
-def test_tn03_ignores_other_chats_and_plain_text(novel):
-    run(kst(2026, 11, 9, 10, 44))
-    run(kst(2026, 11, 9, 12, 44))
-    novel.tg.updates += [_post(1, "중단", chat="-100999"), _post(2, "중단은 아직이요"), _post(3, "중단", is_bot=True)]
-    run(kst(2026, 11, 9, 14, 44))
-    assert novel.fake.val(row(novel.fake, "N1-BIBLE"), S.N_STATE) == S.NS_CANON
 
 
 # ── TN-06·08·09 판정·거절 ────────────────────────────────
@@ -437,7 +415,7 @@ def test_cost_accounting():
     assert novel_llm.cost_of("other-model", {"output_tokens": 1_000_000}) == 50.0
 
 
-# ── TN-07·17 게시 ────────────────────────────────────────
+# ── TN-07·17 게시 (p76.run_novel_publish, DN2026_0072) ────
 @pytest.fixture
 def live(novel, env):
     env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
@@ -448,52 +426,156 @@ def live(novel, env):
     return novel
 
 
-def test_tn17_publish_approved_episode(live):
+def pub(when):
+    log = RunLog("novel_publish", "t")
+    run_novel_publish.body(log, now=when)
+    return log
+
+
+def test_tn17_notice_then_publish_after_2h(live):
     e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    run(kst(2026, 11, 29, 9, 50))
-    assert live.graph.writes() == []  # 10시 전
-    run(kst(2026, 11, 29, 10, 44))
+    pub(kst(2026, 11, 29, 7, 50))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_APPROVED and live.tg.sent == []  # 08시 전 예고 없음
+    pub(kst(2026, 11, 29, 8, 17))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    assert any("제1화 — 10:17 이후 발행됩니다." in t and "중단'을 체크" in t for t in live.tg.sent)
+    assert live.graph.writes() == []
+    pub(kst(2026, 11, 29, 10, 10))
+    assert live.graph.writes() == []  # 예고 + 2시간 전
+    pub(kst(2026, 11, 29, 10, 21))
     assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
     assert live.fake.val(e1, S.N_FB_ID) == "61_99"
     caption = live.graph.writes()[0][2]["caption"]
     assert "제1화 합성 문장" in caption and "#사건소설" in caption and "AI의 도움" in caption
-    run(kst(2026, 11, 29, 12, 44))
+    pub(kst(2026, 11, 29, 11, 25))
     assert len(live.graph.writes()) == 1  # 하루 1건·중복 없음
+    assert sum("발행됩니다" in t for t in live.tg.sent) == 1
 
 
-def test_tn07_only_human_approved_is_published(live):
-    add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
+def test_publish_at_not_before_10():
+    ctx = SimpleNamespace(now=kst(2026, 11, 29, 7, 0), today=date(2026, 11, 29))
+    assert run_novel_publish.publish_at(ctx) == kst(2026, 11, 29, 10, 0)
+    ctx = SimpleNamespace(now=kst(2026, 11, 29, 10, 21), today=date(2026, 11, 29))
+    assert run_novel_publish.publish_at(ctx) == kst(2026, 11, 29, 12, 21)
+
+
+def test_tn07_auto_publish_pass_only(live):
+    add_episode_row(live.fake, 1, 1, S.NS_REVIEW, verdict="HUMAN_REQUIRED")
+    pub(kst(2026, 11, 29, 8, 17))
+    assert live.tg.sent == []  # 검수 플래그 회차는 승인 없이 예고하지 않는다
+    add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29), model="claude-opus-4-8")
+    pub(kst(2026, 11, 29, 8, 20))
+    assert live.tg.sent == []  # 요청 모델이 아닌 응답(fallback)도 자동 대상 아님
+    e3 = add_episode_row(live.fake, 1, 3, S.NS_REVIEW, due=date(2026, 11, 29))
+    pub(kst(2026, 11, 29, 8, 25))
+    assert live.fake.val(e3, S.N_STATE) == S.NS_SCHEDULED  # PASS + 요청 모델 → 승인 없이 예고
+    pub(kst(2026, 11, 29, 10, 25))
+    assert live.fake.val(e3, S.N_STATE) == S.NS_PUBLISHED
+
+
+def test_tn07_code_cannot_approve_or_skip_notice(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
+    with pytest.raises(novel_store.TransitionError):
+        novel_store.transition(e1, S.NS_APPROVED)
+    with pytest.raises(novel_store.TransitionError):
+        novel_store.transition(e1, S.NS_PUBLISHED)  # 예고 없이 게시 불가
+
+
+def test_tn02_stop_after_notice_blocks_publish(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    e1["properties"][S.N_STOP]["checkbox"] = True  # 회장이 2시간 안에 중단
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == []
+    assert live.fake.val(e1, S.N_STATE) == S.NS_STOPPED
+
+
+def test_tn02_stop_rechecked_right_before_post(live, monkeypatch):
+    """목록을 읽은 뒤 게시 직전 사이에 체크한 중단도 막는다(행을 다시 읽음)."""
+    import copy
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    stale = copy.deepcopy(live.fake.rows(DB12))  # 실행 시작 때 읽은 목록(중단 전)
+    monkeypatch.setattr(novel_store, "all_rows", lambda: copy.deepcopy(stale))
+    e1["properties"][S.N_STOP]["checkbox"] = True  # 그 뒤 회장이 체크
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == []
+
+
+def test_tn01_notice_not_sent_means_no_publish(live, env):
+    env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
+        PAGE76_NOVEL_TG_BOT_TOKEN="", PAGE76_NOVEL_PROMPT_PAGE_ID=live.prompt_page)
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    log = pub(kst(2026, 11, 29, 8, 17))
+    assert "tg:notice_failed" in log.codes and live.fake.val(e1, S.N_STATE) == S.NS_APPROVED
+    pub(kst(2026, 11, 29, 12, 34))
+    assert live.graph.writes() == []
+
+
+def test_publish_switch_off(live, env):
+    env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="false",
+        PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
+        PAGE76_NOVEL_PROMPT_PAGE_ID=live.prompt_page)
+    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == [] and live.tg.sent == []
+
+
+def test_generation_pipeline_never_posts(live):
+    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
     run(kst(2026, 11, 29, 10, 44))
     assert live.graph.writes() == []
-    with pytest.raises(novel_store.TransitionError):
-        novel_store.transition(row(live.fake, "N1-E01"), S.NS_APPROVED)
+    assert live.fake.val(row(live.fake, "N1-E01"), S.N_STATE) == S.NS_APPROVED
 
 
-def test_tn17_edited_violation_blocks(live):
+def test_tn17_edited_violation_holds(live):
     e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED, body=_body("\n2026-11-29 오후였다."))
-    log, _ = run(kst(2026, 11, 29, 10, 44))
-    assert live.graph.writes() == [] and live.fake.val(e1, S.N_STATE) == S.NS_APPROVED
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == [] and live.fake.val(e1, S.N_STATE) == S.NS_HELD
     assert "R02:real_date" in live.fake.val(e1, S.N_RESULT)
+    pub(kst(2026, 11, 29, 11, 25))
+    assert sum("게시 전 검사 실패" in t for t in live.tg.sent) == 1  # 재시도 실행마다 반복하지 않음
+    e1["properties"][S.N_STATE]["select"] = {"name": S.NS_APPROVED}  # 회장이 고친 뒤 다시 승인
+    pub(kst(2026, 11, 29, 12, 34))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    assert sum("이후 발행됩니다" in t for t in live.tg.sent) == 2
 
 
 def test_tn17_unconfirmed_law_blocks(live):
     add_episode_row(live.fake, 1, 1, S.NS_APPROVED, body=_body("\n{{LAW_1350}}"))
-    run(kst(2026, 11, 29, 10, 44))
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
     assert live.graph.writes() == []
     assert any("LAW:unconfirmed:LAW_1350" in t for t in live.tg.sent)
 
 
 def test_tn17_confirmed_law_substituted(live):
     add_episode_row(live.fake, 1, 1, S.NS_APPROVED, body=_body("\n{{LAW_76_2}}"))
-    run(kst(2026, 11, 29, 10, 44))
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
     caption = live.graph.writes()[0][2]["caption"]
     assert "법률 블록 76의2 합성 문안" in caption and "{{" not in caption
 
 
-def test_remind_unapproved_tomorrow(live):
+def test_publish_failure_retries_next_slot(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(400, {"error": {"code": 100, "message": "합성 오류"}})
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(200, {"id": "p1", "post_id": "61_99"})
+    pub(kst(2026, 11, 29, 11, 25))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
+
+
+def test_remind_day_before(live):
     add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
+    add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29), verdict="HUMAN_REQUIRED")
     run(kst(2026, 11, 28, 20, 25))
-    assert any("아직 승인되지 않음" in t and "N1-E01" in t for t in live.tg.sent)
+    assert any("자동 발행됩니다" in t and "N1-E01" in t and "N1-E02" not in t for t in live.tg.sent)
+    assert any("자동 발행 대상이 아님" in t and "N1-E02" in t for t in live.tg.sent)
 
 
 # ── TN-13·15·16 로그·멱등·모드 ───────────────────────────
@@ -506,11 +588,26 @@ def test_tn16_dry_run_writes_nothing(novel, env):
     assert novel.fake.writes() == [] and novel.tg.sent == []
 
 
-def test_tn16_shadow_never_posts(novel):
+def test_tn16_shadow_never_posts(novel, env):
+    env(PAGE76_MODE="shadow", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
+        PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
+        PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page)
     add_canon_bible(novel.fake)
     add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
-    run(kst(2026, 11, 29, 10, 44))
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
     assert novel.graph.writes() == []
+    assert any("shadow — 실제 게시 없음" in t for t in novel.tg.sent)
+
+
+def test_tn16_publish_dry_run_writes_nothing(novel, env):
+    env(PAGE76_MODE="dry_run", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
+        PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
+        PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page)
+    add_canon_bible(novel.fake)
+    add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    assert novel.fake.writes() == [] and novel.tg.sent == [] and novel.graph.writes() == []
 
 
 def test_tn15_rerun_same_slot_is_idempotent(novel):
@@ -523,8 +620,9 @@ def test_tn15_rerun_same_slot_is_idempotent(novel):
 def test_tn13_logs_clean(live, caplog):
     caplog.set_level(logging.DEBUG)
     add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    run(kst(2026, 11, 15, 12, 44))  # 생성(제2화) + 게시 없음
-    run(kst(2026, 11, 29, 10, 44))  # 게시
+    run(kst(2026, 11, 15, 12, 44))  # 생성(제2화)
+    pub(kst(2026, 11, 29, 8, 17))   # 예고
+    pub(kst(2026, 11, 29, 10, 21))  # 게시
     text = caplog.text
     for secret in ("합성 문장", "표식-NB", "표식-NE", "표식-NR", DB12, live.prompt_page, FAKE_CLAUDE_KEY,
                    FAKE_NOVEL_BOT, CHAT, "법률 블록 76의2"):
