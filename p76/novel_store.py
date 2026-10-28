@@ -6,7 +6,8 @@ DB-12 소설 원고 읽기·쓰기 (DSN-P76-NOVEL-002 §3).
   - 본문·바이블 JSON·메타는 속성이 아니라 행 페이지의 블록(제목 + 코드 블록)에 둔다.
   - dry_run 은 노션에 쓰지 않는다. 대신 메모리 안의 행을 고쳐 같은 실행의 다음 단계가 이어지게 한다.
   - 코드가 쓰는 상태 전이는 ALLOWED 목록만 허용한다. '승인' 으로의 전이는 코드에 없다(사람만).
-  - CONTROL 행: 결과코드 칸에 JSON {tg_offset, month, spent, last_run, budget_alert_day}.
+  - 게시는 반드시 '발행예고'를 거친다(DN2026_0072): 검토대기(PASS)·승인 → 발행예고 → 게시완료.
+  - CONTROL 행: 결과코드 칸에 JSON {month, spent, last_run, budget_alert_day}.
 """
 from __future__ import annotations
 
@@ -33,8 +34,9 @@ ALLOWED: dict[str, set[str]] = {
     S.NS_IMPLICIT: {S.NS_CANON, S.NS_STOPPED},
     S.NS_EXPLICIT: {S.NS_STOPPED},
     S.NS_CANON: {S.NS_STOPPED},
-    S.NS_REVIEW: {S.NS_STOPPED},
-    S.NS_APPROVED: {S.NS_PUBLISHED, S.NS_CHECK, S.NS_STOPPED},
+    S.NS_REVIEW: {S.NS_SCHEDULED, S.NS_STOPPED},
+    S.NS_APPROVED: {S.NS_SCHEDULED, S.NS_STOPPED},
+    S.NS_SCHEDULED: {S.NS_PUBLISHED, S.NS_CHECK, S.NS_HELD, S.NS_STOPPED},
     S.NS_HELD: {S.NS_STOPPED},
     S.NS_REFUSED: {S.NS_STOPPED},
 }

@@ -1,22 +1,22 @@
 """
 p76/run_novel.py
 ================
-사건 소설(B형) 원고 자동 작성·게시 (DSN-P76-NOVEL-001 v0.2 · 002 v0.1). 한 실행 = 아래 순서 1회.
+사건 소설(B형) 원고 자동 작성 (DSN-P76-NOVEL-001 v0.2 · 002 v0.1 · DN2026_0072). 한 실행 = 아래 순서 1회.
+게시는 별도 파이프라인 p76.run_novel_publish 가 맡는다(이 모듈은 게시하지 않는다).
 
-  0 가드      PAGE76_ENABLED · PAGE76_NOVEL_ENABLED (전역 중단 = 수단 ③)
-  1 중단 수집  전용 채널 "중단"·/p76_stop (수단 ②) · DB-12 중단 체크 (수단 ①) → 상태 '중단'
+  0 가드      PAGE76_ENABLED · PAGE76_NOVEL_ENABLED (전역 중단)
+  1 중단 수집  DB-12 중단 체크 → 상태 '중단' (텔레그램 명령은 읽지 않는다 — DN2026_0072)
   2 묵시 등록  바이블 '묵시승인대기' + 등록예정시각 경과 + 중단 없음 → '정본' (D-N7, 바이블만 D-N10)
-              직전 실행이 6시간보다 오래됐거나 채널을 읽지 못했으면 4시간 연기
+              직전 실행이 6시간보다 오래됐으면 2시간 연기
   3 생성      한 실행에 1건: 바이블 재시도 → 회차(정본 바이블, 게시일 D-14) → 다음 시즌 바이블(제1화 D-20)
               작성 Opus 5.5 → 규칙 검사(재작성 1회) → 검수 Sonnet 5.5(6·7화·경계값은 Opus 재검수)
-  4 알림      묵시 승인 알림은 KST 09~18시에만, 보낸 시각 + 4시간이 등록예정시각
-  5 게시      '승인' 회차만 (코드는 '승인'으로 바꾸지 못한다) · 10시 이후 · 하루 1건 · live + PAGE76_NOVEL_PUBLISH_ENABLED
-  6 리마인드   20시대 실행에서 내일 게시 예정인데 미승인인 회차
+  4 알림      묵시 승인 알림은 KST 09~18시에만, 보낸 시각 + 2시간이 등록예정시각
+  6 전날 안내  20시대 실행에서 내일 게시 회차 — 자동 발행 예정 / 회장 '승인'이 있어야 발행되는 회차
 
-  모드     | DB-12 기록 | 텔레그램 | Claude API      | 게시
-  dry_run | 없음        | 없음     | 합성 응답(무료)  | 없음
-  shadow  | 함          | 함       | 함              | 없음
-  live    | 함          | 함       | 함              | 함
+  모드     | DB-12 기록 | 텔레그램 | Claude API
+  dry_run | 없음        | 없음     | 합성 응답(무료)
+  shadow  | 함          | 함       | 함
+  live    | 함          | 함       | 함
 
 원고·프롬프트·노션 ID 는 로그에 남기지 않는다 (공개 레포).
 사용: python -m p76.run_novel
@@ -26,18 +26,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import shutil
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from p76 import (
-    card_render,
     cli,
-    graph,
     notion,
     novel_llm,
     novel_prompts,
@@ -59,13 +54,13 @@ from p76.novel_store import (
 )
 from p76.runlog import RunLog
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = logging.getLogger(__name__)
 S = settings
 SEVERITY = {"PASS": 0, "HUMAN_REQUIRED": 1, "BLOCK": 2}
 VERDICTS = ("PASS", "HUMAN_REQUIRED", "BLOCK")
-DONE_EPISODE_STATES = (S.NS_REVIEW, S.NS_APPROVED, S.NS_PUBLISHED, S.NS_CHECK)
+DONE_EPISODE_STATES = (S.NS_REVIEW, S.NS_APPROVED, S.NS_SCHEDULED, S.NS_PUBLISHED, S.NS_CHECK)
 JOB_ESTIMATE_USD = {"bible": 2.0, "episode": 1.5}
 
 
@@ -83,7 +78,6 @@ class Ctx:
     client: Any = None
     prompts: novel_prompts.Prompts | None = None
     run_cost: float = 0.0
-    tg_unreadable: bool = False
     sent: list[str] = field(default_factory=list)
 
     @property
@@ -123,29 +117,19 @@ def _stop(ctx: Ctx, page: dict, reason: str) -> None:
 
 
 def collect_stops(ctx: Ctx) -> None:
-    offset = int(ctx.ctrl.get("tg_offset", 0) or 0)
-    stop, newest, ok = novel_tg.poll_stop(offset)
-    if ok:
-        ctx.ctrl["tg_offset"] = newest
-    elif novel_tg.configured():
-        ctx.tg_unreadable = True
-        ctx.log.degrade("tg:poll_failed")
+    """DB-12 중단 체크 → 상태 '중단'. 게시 파이프라인도 같은 함수를 쓴다."""
     stopped_keys = []
     for page in ctx.rows:
         if novel_store.kind(page) not in (S.NK_BIBLE, S.NK_EPISODE):
             continue
-        st = novel_store.state(page)
-        if S.NS_STOPPED not in novel_store.ALLOWED.get(st, set()):
+        if S.NS_STOPPED not in novel_store.ALLOWED.get(novel_store.state(page), set()):
             continue
-        if stop and novel_store.kind(page) == S.NK_BIBLE and st in (S.NS_IMPLICIT, S.NS_EXPLICIT, S.NS_CANON):
-            _stop(ctx, page, "telegram")
-            stopped_keys.append(novel_store.key(page))
-        elif notion.checkbox(page, S.N_STOP):
+        if notion.checkbox(page, S.N_STOP):
             _stop(ctx, page, "notion")
             stopped_keys.append(novel_store.key(page))
-    if stop or stopped_keys:
-        names = ", ".join(stopped_keys) or "진행 중인 항목 없음"
-        novel_tg.send("T1d", f"⏸ 중단 접수 — {names}\n재개는 노션 DB-12 에서 상태를 되돌리고 중단 체크를 풀어야 합니다.")
+    if stopped_keys:
+        novel_tg.send("T1d", f"⏸ 중단 접수 — {', '.join(stopped_keys)}\n"
+                             f"재개는 노션 DB-12 에서 상태를 되돌리고 중단 체크를 풀어야 합니다.")
 
 
 # ── 2 묵시 등록 ───────────────────────────────────────────
@@ -167,13 +151,13 @@ def register_implicit(ctx: Ctx) -> None:
         if notified is None or due is None or due > ctx.now:
             continue
         label = novel_store.key(page)
-        if _stale(ctx) or ctx.tg_unreadable:
+        if _stale(ctx):
             later = ctx.now + timedelta(hours=S.NOVEL_IMPLICIT_HOURS)
             novel_store.update(page, {S.N_REGISTER_AT: notion.v_date(later)})
             ctx.log.writes += 1
             ctx.log.degrade("implicit:deferred")
-            why = "중단 명령을 읽지 못함" if ctx.tg_unreadable else "직전 점검이 오래됨"
-            novel_tg.send("T1e", f"⏳ {label} 정본 등록 연기 — {why}. {_hhmm(later)} 이후 첫 점검에서 다시 확인합니다.")
+            novel_tg.send("T1e", f"⏳ {label} 정본 등록 연기 — 직전 점검이 오래됨. "
+                                 f"{_hhmm(later)} 이후 첫 점검에서 다시 확인합니다.")
             continue
         fresh = novel_store.refresh(page)
         page["properties"] = fresh.get("properties", page.get("properties", {}))
@@ -215,7 +199,7 @@ def notify_pending(ctx: Ctx) -> None:
         n = novel_store.season(page)
         text = (f"📖 사건 소설 시즌 {n} 바이블 — 묵시 승인 대기\n{_bible_summary(page)}\n"
                 f"{_hhmm(register_at)} 이후 첫 점검에서 정본으로 등록됩니다.\n"
-                f"멈추려면 이 채널에 '중단' 또는 /p76_stop, 또는 노션 DB-12 행의 중단 체크.")
+                f"멈추려면 노션 DB-12 이 행의 '중단'을 체크해 주세요.")
         if not novel_tg.send("T1", text, novel_tg.page_link(page["id"])):
             ctx.log.degrade("tg:notify_failed")
             continue  # 알림이 안 갔으면 타이머를 시작하지 않는다
@@ -571,98 +555,27 @@ def _budget_alert(ctx: Ctx, code: str) -> None:
                             f"${S.NOVEL_BUDGET_USD:.0f})")
 
 
-# ── 5 게시 ────────────────────────────────────────────────
-def _published_today(ctx: Ctx) -> bool:
-    return any(novel_store.state(p) == S.NS_PUBLISHED and notion.kst_date(p, S.N_PUBLISHED_AT) == ctx.today
-               for p in ctx.rows)
+# ── 6 전날 안내 ───────────────────────────────────────────
+def auto_publishable(page: dict) -> bool:
+    """회장 '승인' 없이 예고 후 자동 발행되는 회차 (DN2026_0072 Q1): 검토대기 + 검수 PASS + 요청 모델 그대로."""
+    return (novel_store.state(page) == S.NS_REVIEW and notion.select(page, S.N_VERDICT) == "PASS"
+            and notion.plain(page, S.N_MODEL) == S.MODEL_WRITER)
 
 
-def publish_candidate(ctx: Ctx) -> dict | None:
-    out = []
-    for page in ctx.rows:
-        if novel_store.kind(page) != S.NK_EPISODE or novel_store.state(page) != S.NS_APPROVED:
-            continue
-        if notion.checkbox(page, S.N_STOP) or notion.plain(page, S.N_FB_ID):
-            continue
-        due = notion.kst_date(page, S.N_DUE)
-        bible = novel_store.find(ctx.rows, novel_store.bible_key(novel_store.season(page)))
-        if due is None or due > ctx.today or bible is None or novel_store.stopped(bible):
-            continue
-        out.append(page)
-    out.sort(key=lambda p: (novel_store.season(p), novel_store.episode(p)))
-    return out[0] if out else None
-
-
-def publish(ctx: Ctx) -> None:
-    if not S.NOVEL_PUBLISH_ENABLED or ctx.kst.hour < S.NOVEL_PUBLISH_HOUR or _published_today(ctx):
-        return
-    row = publish_candidate(ctx)
-    if row is None:
-        return
-    label, n, m = novel_store.key(row), novel_store.season(row), novel_store.episode(row)
-    row["properties"] = novel_store.refresh(row).get("properties", row.get("properties", {}))
-    if novel_store.state(row) != S.NS_APPROVED or notion.checkbox(row, S.N_STOP):
-        return
-    p = _prompts(ctx)
-    secs = novel_store.sections(row)
-    body, question = secs.get(H_BODY, ""), secs.get(H_QUESTION, "")
-    quoted = [int(x) for x in novel_store.json_section(row, H_META).get("quoted_journals") or []]
-    journals = novel_prompts.journal_text(quoted) if quoted else {}
-    errors = [e for e in novel_rules.check_episode(body, m, banned_terms=S.BANNED_TERMS, journals=journals)
-              if not e.startswith(("R01:length", "R09"))]  # 회장 편집으로 분량이 바뀌는 것은 허용
-    errors += novel_rules.question_ok(question)
-    filled, law_errors = novel_rules.fill_laws(body, p.laws, ctx.today)
-    errors += law_errors
-    if errors:
-        ctx.log.fail(f"{label}:publish_check")
-        novel_store.update(row, {S.N_RESULT: notion.v_rich("publish_check:" + ",".join(errors))})
-        novel_tg.send("T5", f"⚠️ {label} 게시 전 검사 실패 — {','.join(errors)}", novel_tg.page_link(row["id"]))
-        return
-    caption = f"{filled.strip()}\n\n{novel_rules.footer(n, m, question)}"
-    work = Path(tempfile.mkdtemp(prefix="p76n_"))
-    try:
-        subtitle = secs.get(H_SUBTITLE, "").strip()
-        headline = secs.get(H_QUOTE, "").strip() or subtitle
-        try:
-            image = card_render.render(f"사건 소설 시즌 {n} · 제{m}화", headline, subtitle, str(work))
-        except card_render.RenderError as e:
-            ctx.log.fail(str(e))
-            novel_tg.send("T5", f"⚠️ {label} 카드 렌더 실패 — {e}")
-            return
-        if settings.MODE != "live":
-            logger.info(f"[Novel][{settings.MODE}] {label} 검사·카드 통과 — 게시 생략")
-            return
-        res = graph.post_photo(image, caption)
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
-    status, reason = res["status"], res.get("reason", "")
-    if status == "ok":
-        novel_store.transition(row, S.NS_PUBLISHED, {S.N_FB_ID: notion.v_rich(res["object_id"]),
-                                                     S.N_PUBLISHED_AT: notion.v_date(ctx.now),
-                                                     S.N_RESULT: notion.v_rich("published")})
-        ctx.log.writes += 2
-        novel_tg.send("T3", f"📤 시즌 {n} 제{m}화 게시 — 24시간 동안 댓글을 직접 확인해 주세요(실명·회사명 숨김).")
-        return
-    if status == "unknown":
-        novel_store.transition(row, S.NS_CHECK, {S.N_RESULT: notion.v_rich(f"unknown:{reason}")})
-        ctx.log.fail(f"unknown:{reason}")
-        novel_tg.send("T5", f"⚠️ {label} 게시 응답 미확정({reason}) — 페이지에서 게시 여부 확인")
-        return
-    ctx.log.fail(f"failed:{reason}")
-    novel_store.update(row, {S.N_RESULT: notion.v_rich(f"failed:{reason}")})
-    novel_tg.send("T5", f"⚠️ {label} 게시 실패 — {reason}")
-
-
-# ── 6 리마인드 ────────────────────────────────────────────
 def remind(ctx: Ctx) -> None:
     if ctx.kst.hour != S.NOVEL_REMIND_HOUR:
         return
     tomorrow = ctx.today + timedelta(days=1)
-    pending = [novel_store.key(p) for p in ctx.rows
-               if novel_store.kind(p) == S.NK_EPISODE and notion.kst_date(p, S.N_DUE) == tomorrow
-               and novel_store.state(p) not in (S.NS_APPROVED, S.NS_PUBLISHED) and not novel_store.stopped(p)]
+    due = [p for p in ctx.rows if novel_store.kind(p) == S.NK_EPISODE and notion.kst_date(p, S.N_DUE) == tomorrow
+           and not novel_store.stopped(p) and novel_store.state(p) not in (S.NS_PUBLISHED, S.NS_SCHEDULED)]
+    auto = [novel_store.key(p) for p in due if novel_store.state(p) == S.NS_APPROVED or auto_publishable(p)]
+    pending = [novel_store.key(p) for p in due if novel_store.key(p) not in auto]
+    if auto:
+        novel_tg.send("T4", f"🗓 내일 게시 예정: {', '.join(auto)} — 08시대 발행 예고 후 2시간 뒤 자동 발행됩니다. "
+                            f"멈추려면 노션 DB-12 중단 체크.")
     if pending:
-        novel_tg.send("T4", f"⏰ 내일 게시 예정인데 아직 승인되지 않음: {', '.join(pending)}")
+        novel_tg.send("T4", f"⏰ 내일 게시 예정인데 자동 발행 대상이 아님(검수 플래그·미완성): {', '.join(pending)} — "
+                            f"노션에서 '승인'해야 발행됩니다.")
 
 
 # ── 진입점 ────────────────────────────────────────────────
@@ -683,7 +596,6 @@ def body(log: RunLog, now: datetime | None = None, client: Any = None) -> None:
         register_implicit(ctx)
         generate(ctx)
         notify_pending(ctx)
-        publish(ctx)
         remind(ctx)
         ctx.ctrl["last_run"] = now.isoformat()
     except novel_prompts.PromptError as e:
