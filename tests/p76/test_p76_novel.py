@@ -600,6 +600,27 @@ def test_tn16_shadow_never_posts(novel, env):
     assert any("shadow — 실제 게시 없음" in t for t in novel.tg.sent)
 
 
+def test_shadow_notice_never_counts_for_live(novel, env):
+    """shadow 예고("실제 게시 없음")만 받은 회차를 같은 날 live 로 바꾸면 live 예고 + 새 2시간 뒤에 게시."""
+    base = {"PAGE76_NOVEL_ENABLED": "true", "PAGE76_DB12_ID": DB12, "PAGE76_NOVEL_PUBLISH_ENABLED": "true",
+            "PAGE76_NOVEL_TG_BOT_TOKEN": FAKE_NOVEL_BOT, "PAGE76_NOVEL_TG_CHAT_ID": CHAT,
+            "PAGE76_NOVEL_PROMPT_PAGE_ID": novel.prompt_page}
+    env(PAGE76_MODE="shadow", **base)
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    novel.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(200, {"id": "p1", "post_id": "61_99"})
+    pub(kst(2026, 11, 29, 8, 17))
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    env(PAGE76_MODE="live", **base)
+    pub(kst(2026, 11, 29, 10, 21))
+    assert novel.graph.writes() == []  # shadow 타이머로 게시하지 않음
+    assert any("12:21 이후 발행됩니다." in t for t in novel.tg.sent)  # live 예고 다시
+    pub(kst(2026, 11, 29, 11, 25))
+    assert novel.graph.writes() == []  # 새 2시간 전
+    pub(kst(2026, 11, 29, 12, 34))
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
+
+
 def test_tn16_publish_dry_run_writes_nothing(novel, env):
     env(PAGE76_MODE="dry_run", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
         PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,

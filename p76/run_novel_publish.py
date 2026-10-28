@@ -9,6 +9,7 @@ p76/run_novel_publish.py
   2 발행 예고  오늘 게시 회차 1건(검토대기+PASS+요청 모델 그대로, 또는 회장 '승인') · KST 08시 이후
               → 텔레그램 "HH:MM 이후 발행됩니다" → 보냈을 때만 '발행예고' + 발행 예정 시각(예고 + 2시간, 10시 이전 불가)
               → 알림이 안 갔으면 타이머를 시작하지 않는다(게시 없음)
+              결과코드에 예고 모드(notice:live / notice:shadow)를 남기고, live 게시는 live 예고가 있는 회차만 한다
   3 게시      '발행예고' + 발행 예정 시각 경과 → 행을 다시 읽어 중단·상태 확인 → 규칙·법률 블록 재검사 → 카드 사진 게시
               하루 1건 · 실패는 다음 실행에서 재시도 · 검사 실패는 '보류'
 
@@ -93,23 +94,34 @@ def notice(ctx: Ctx) -> None:
     row = next((p for p in episodes if novel_store.state(p) == S.NS_APPROVED or auto_publishable(p)), None)
     if row is None:
         return
+    if settings.MODE == "dry_run":
+        logger.info(f"[NovelPub][dry_run] {novel_store.key(row)} 발행 예고 생략 — 예정 {_hm(publish_at(ctx))}")
+        return
+    props = _send_notice(ctx, row)
+    if props is not None:
+        novel_store.transition(row, S.NS_SCHEDULED, props)
+        ctx.log.writes += 1
+
+
+def _notice_mark() -> str:
+    """예고를 보낸 모드. live 게시는 live 예고가 있는 회차만 한다(shadow 예고는 "게시 없음"이라 알렸기 때문)."""
+    return f"notice:{settings.MODE}"
+
+
+def _send_notice(ctx: Ctx, row: dict) -> dict | None:
+    """텔레그램 예고 → 보냈으면 기록할 속성(예고 시각·발행 예정 시각·모드), 못 보냈으면 None."""
     label, n, m = novel_store.key(row), novel_store.season(row), novel_store.episode(row)
     at = publish_at(ctx)
-    if settings.MODE == "dry_run":
-        logger.info(f"[NovelPub][dry_run] {label} 발행 예고 생략 — 예정 {_hm(at)}")
-        return
     shadow = " (shadow — 실제 게시 없음)" if settings.MODE != "live" else ""
     text = (f"📢 사건 소설 시즌 {n} 제{m}화 — {_hm(at)} 이후 발행됩니다{shadow}.\n"
             f"멈추려면 노션 DB-12 이 행의 '중단'을 체크해 주세요"
             f"(또는 GitHub Variable PAGE76_NOVEL_PUBLISH_ENABLED=false).")
     if not novel_tg.send("T6", text, novel_tg.page_link(row["id"])):
         ctx.log.degrade("tg:notice_failed")
-        return  # 알림이 안 갔으면 타이머를 시작하지 않는다
-    novel_store.transition(row, S.NS_SCHEDULED, {S.N_NOTIFIED_AT: notion.v_date(ctx.now),
-                                                 S.N_REGISTER_AT: notion.v_date(at),
-                                                 S.N_RESULT: notion.v_rich("notice:sent")})
-    ctx.log.writes += 1
-    logger.info(f"[NovelPub] {label} 발행 예고 — {_hm(at)} 이후 게시")
+        return None  # 알림이 안 갔으면 타이머를 시작하지 않는다
+    logger.info(f"[NovelPub] {label} 발행 예고({settings.MODE}) — {_hm(at)} 이후 게시")
+    return {S.N_NOTIFIED_AT: notion.v_date(ctx.now), S.N_REGISTER_AT: notion.v_date(at),
+            S.N_RESULT: notion.v_rich(_notice_mark())}
 
 
 # ── 3 게시 ────────────────────────────────────────────────
@@ -127,6 +139,12 @@ def publish(ctx: Ctx) -> None:
         return
     row = next((p for p in _today_episodes(ctx) if novel_store.state(p) == S.NS_SCHEDULED), None)
     if row is None:
+        return
+    if settings.MODE == "live" and _notice_mark() not in notion.plain(row, S.N_RESULT).split("|"):
+        props = _send_notice(ctx, row)  # shadow 예고만 있던 회차 → live 예고부터 다시, 2시간 새로
+        if props is not None:
+            novel_store.update(row, props)
+            ctx.log.writes += 1
         return
     due = notion.date_value(row, S.N_REGISTER_AT)
     if due is None or due > ctx.now:
@@ -182,7 +200,7 @@ def publish(ctx: Ctx) -> None:
         novel_tg.send("T5", f"⚠️ {label} 게시 응답 미확정({reason}) — 페이지에서 게시 여부 확인")
         return
     ctx.log.fail(f"failed:{reason}")
-    novel_store.update(row, {S.N_RESULT: notion.v_rich(f"failed:{reason}")})
+    novel_store.update(row, {S.N_RESULT: notion.v_rich(f"{_notice_mark()}|failed:{reason}")})
     novel_tg.send("T5", f"⚠️ {label} 게시 실패 — {reason}. 다음 실행에서 다시 시도합니다.")
 
 
