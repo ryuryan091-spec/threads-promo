@@ -6,7 +6,8 @@
 #    "44 7 * * *"  = KST 16:44   "44 9 * * *" = KST 18:44   "25 11 * * *" = KST 20:25  "15 13 * * *" = KST 22:15
 #  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
 #  스위치: PAGE76_ENABLED + PAGE76_NOVEL_ENABLED (전역 중단) · 게시는 live + PAGE76_NOVEL_PUBLISH_ENABLED
-#  Secret: 소설 전용 Anthropic 키 PAGE76_CLAUDE_KEY(D-N3) · 소설 전용 텔레그램 봇·채널(D-N9)
+#  Secret: Anthropic 키는 기존 CLAUDE_AI_KEY 재사용(DN2026_0071, D-N3 대체) · 노션은 기존 NOTION_TOKEN(DN2026_0070)
+#          · 소설 전용 텔레그램 봇·채널(D-N9)
 #  보안(SEC RR-06): main 브랜치에서만 · 공개 로그에는 키·상태·코드·비용만 (원고·프롬프트·노션 ID 없음)
 # ─────────────────────────────────────────────────────────────
 name: 📕 p76-novel
@@ -58,7 +59,7 @@ jobs:
           PAGE76_NOVEL_PUBLISH_ENABLED: ${{ vars.PAGE76_NOVEL_PUBLISH_ENABLED }}
           PAGE76_NOVEL_START: ${{ vars.PAGE76_NOVEL_START }}
           PAGE76_NOVEL_BUDGET_USD: ${{ vars.PAGE76_NOVEL_BUDGET_USD }}
-          PAGE76_CLAUDE_KEY: ${{ secrets.PAGE76_CLAUDE_KEY }}
+          PAGE76_CLAUDE_KEY: ${{ secrets.CLAUDE_AI_KEY }}
           PAGE76_NOVEL_TG_BOT_TOKEN: ${{ secrets.PAGE76_NOVEL_TG_BOT_TOKEN }}
           PAGE76_NOVEL_TG_CHAT_ID: ${{ secrets.PAGE76_NOVEL_TG_CHAT_ID }}
           PAGE76_NOVEL_PROMPT_PAGE_ID: ${{ secrets.PAGE76_NOVEL_PROMPT_PAGE_ID }}
