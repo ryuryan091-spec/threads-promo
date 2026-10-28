@@ -30,10 +30,11 @@ CI 는 레포 공용 `ci.yml` 이 `p76` 린트 · 비밀 패턴 검사 · `tests
 | `PAGE76_NOTION_TOKEN` | `NOTION_TOKEN` | threads-promo 공용 노션 통합(DN2026_0070) — 자비스76·DB-05 에 이 통합을 연결해야 함 |
 | `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | threads-promo 운영 알림 방과 공용 — 메시지 앞에 `[사건파일76]` |
 | `PAGE76_DB05_ID` · `DB08` · `DB09` · `DB11` | 같은 이름 | 원장 4개(읽기 1 + 쓰기 3) |
+| `PAGE76_CLAUDE_KEY` | `CLAUDE_AI_KEY` | threads-promo 기존 Anthropic 키 공용(DN2026_0071) — 소설은 코드 회로(월 예산)로만 상한 |
 
 ## 사건 소설 B형 (DSN-P76-NOVEL-001 v0.2 · 002 v0.1)
 
-Claude API(소설 전용 키)로 주 1회 연재 소설(7화)의 원고를 쓴다. **게시는 회장이 DB-12 에서 '승인'한 회차만** 한다.
+Claude API(기존 `CLAUDE_AI_KEY`)로 주 1회 연재 소설(7화)의 원고를 쓴다. **게시는 회장이 DB-12 에서 '승인'한 회차만** 한다.
 
 | 단계 | 내용 |
 |---|---|
@@ -43,12 +44,31 @@ Claude API(소설 전용 키)로 주 1회 연재 소설(7화)의 원고를 쓴�
 
 중단: ① DB-12 행의 `중단` 체크 ② 전용 채널에 `중단` 또는 `/p76_stop` ③ Variable `PAGE76_NOVEL_ENABLED=false`. 재개는 노션에서만.
 
+**기존 Secret 재사용 — 새로 만들지 않는다**
+
+| 코드가 읽는 이름 | 워크플로가 넣는 기존 Secret | 할 일 |
+|---|---|---|
+| `PAGE76_CLAUDE_KEY` | `CLAUDE_AI_KEY` | 없음(CHAT·답글·쇼츠와 같은 키) |
+| `PAGE76_NOTION_TOKEN` | `NOTION_TOKEN` | 노션 연결만 — 아래 표 |
+| `PAGE76_DB05_ID` · `PAGE76_DB11_ID` · `FACE_PAGE76_ID` · `FACE_PAGE76_TOKEN` | 같은 이름(p76 운영에서 등록) | 없음 |
+| `PAGE76_TELEGRAM_BOT_TOKEN` · `PAGE76_TELEGRAM_CHAT_ID` | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALERT_CHAT_ID` | 없음(최우선 장애 알림만) |
+
+**새로 등록하는 Secret (기존에 없는 대상만)**
+
+| 이름 | 값 | 비고 |
+|---|---|---|
+| `PAGE76_DB12_ID` | 자비스76 하위 「DB-12 소설 원고」 링크의 32자리(**database ID**) | 필수 |
+| `PAGE76_NOVEL_PROMPT_PAGE_ID` | 자비스76 하위 「⚙️ 소설 프롬프트 정본」 페이지 링크의 32자리 | 필수 |
+| `PAGE76_NOVEL_MEMO_PAGE_ID` | 사건파일 76 하위 「🗂️ 스토리 소재 메모 (비공개)」 페이지 링크의 32자리 | 선택 — 없으면 소재 메모 없이 창작·일지만 사용 |
+| `PAGE76_NOVEL_TG_BOT_TOKEN` · `PAGE76_NOVEL_TG_CHAT_ID` | 소설 전용 봇·비공개 채널(관리자: 회장·봇만) | D-N9. getUpdates 로 중단 명령을 읽어 다른 소비자와 봇을 공유하지 않는다 |
+| `PAGE76_BANNED_TERMS` | 금칙어(쉼표 구분) | 선택. 로컬 대조만 — API·로그에 넣지 않음 |
+
+ID 는 토큰이 아니지만 공개 레포의 Actions 로그에서 가려지도록 Secret 에 둔다(값은 레포에 적지 않는다).
+
+**노션 연결 (`NOTION_TOKEN` 통합)**: DB-12·프롬프트 정본은 자비스76 하위라 자비스76 연결로 함께 열린다. 소재 메모는 루트 「사건파일 76」 하위라 따로 연결해야 하며, 연결하면 threads-promo 공용 통합이 소재 메모를 읽게 된다(착수 가이드 §3 C3 예외 — 쓰지 않으면 `PAGE76_NOVEL_MEMO_PAGE_ID` 를 등록하지 않는다).
+
 | 이름 | 종류 | 내용 |
 |---|---|---|
-| `PAGE76_CLAUDE_KEY` | Secret | 소설 전용 Anthropic 키(콘솔 월 한도 $30) |
-| `PAGE76_NOVEL_TG_BOT_TOKEN` · `PAGE76_NOVEL_TG_CHAT_ID` | Secret | 소설 전용 봇·비공개 채널(관리자: 회장·봇만) |
-| `PAGE76_DB12_ID` · `PAGE76_NOVEL_PROMPT_PAGE_ID` · `PAGE76_NOVEL_MEMO_PAGE_ID` | Secret | DB-12 · 프롬프트 정본 · 스토리 소재 메모 |
-| `PAGE76_BANNED_TERMS` | Secret | 금칙어(쉼표 구분, 선택). 로컬 대조만 — API·로그에 넣지 않음 |
 | `PAGE76_NOVEL_ENABLED` · `PAGE76_NOVEL_PUBLISH_ENABLED` | Variable | 생성 스위치 · 게시 스위치 |
 | `PAGE76_NOVEL_START` · `PAGE76_NOVEL_BUDGET_USD` | Variable | 시즌 1 제1화 게시일(기본 2026-11-29) · 월 예산(기본 20) |
 
