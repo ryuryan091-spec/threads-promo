@@ -12,6 +12,9 @@ p76/run_novel_publish.py
               결과코드에 예고 모드(notice:live / notice:shadow)를 남기고, live 게시는 live 예고가 있는 회차만 한다
   3 게시      '발행예고' + 발행 예정 시각 경과 → 행을 다시 읽어 중단·상태 확인 → 규칙·법률 블록 재검사 → 카드 사진 게시
               하루 1건 · 실패는 다음 실행에서 재시도 · 검사 실패는 '보류'
+              게시 직전 결과코드에 posting:<run_id> 선점 → 결과 기록 전에 끝난 회차는 다음 실행에서 '확인필요'(재게시 없음)
+              미게시 확정(선점 확인 불일치·회로 차단·게시 실패)이면 표시를 지운다. shadow 실행도 이 표시를 만나면
+              '확인필요' 전이·T5 알림을 한다(게시는 없음 — 모드 표의 shadow 기록 범위)
 
   중단: ① DB-12 행 '중단' 체크(게시 직전에 다시 읽는다) ② Variable PAGE76_NOVEL_PUBLISH_ENABLED=false
         ③ Actions 에서 p76-novel-publish 워크플로 비활성화
@@ -50,7 +53,7 @@ from p76.novel_store import H_BODY, H_META, H_QUESTION, H_QUOTE, H_SUBTITLE
 from p76.run_novel import Ctx, _prompts, auto_publishable, collect_stops
 from p76.runlog import RunLog
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # 1.1.0: 게시 직전 선점(posting:) · 미확정 재게시 차단 · 공개 문구 재검사
 
 logger = logging.getLogger(__name__)
 S = settings
@@ -70,7 +73,10 @@ def _today_episodes(ctx: Ctx) -> list[dict]:
 
 
 def _published_today(ctx: Ctx) -> bool:
-    return any(novel_store.state(p) == S.NS_PUBLISHED and notion.kst_date(p, S.N_PUBLISHED_AT) == ctx.today
+    """오늘 게시가 있었는가 — 게시완료 기록, 또는 오늘 게시예정 회차에 FB게시ID가 적힌 경우(확인필요 처리 후 수기 기록 포함)."""
+    return any((novel_store.state(p) == S.NS_PUBLISHED and notion.kst_date(p, S.N_PUBLISHED_AT) == ctx.today)
+               or (novel_store.kind(p) == S.NK_EPISODE and notion.kst_date(p, S.N_DUE) == ctx.today
+                   and notion.plain(p, S.N_FB_ID))
                for p in ctx.rows)
 
 
@@ -89,8 +95,8 @@ def notice(ctx: Ctx) -> None:
     if ctx.kst.hour < S.NOVEL_PUBLISH_NOTICE_HOUR or _published_today(ctx):
         return
     episodes = _today_episodes(ctx)
-    if any(novel_store.state(p) == S.NS_SCHEDULED for p in episodes):
-        return  # 이미 예고함 — 하루 1건
+    if any(novel_store.state(p) in (S.NS_SCHEDULED, S.NS_CHECK) for p in episodes):
+        return  # 이미 예고함, 또는 오늘 게시 여부 미확정 회차가 있음 — 하루 1건
     row = next((p for p in episodes if novel_store.state(p) == S.NS_APPROVED or auto_publishable(p)), None)
     if row is None:
         return
@@ -134,6 +140,49 @@ def _hold(ctx: Ctx, row: dict, code: str) -> None:
                         f"(오늘 남은 실행이 없으면 게시예정일을 바꿔 주세요).", novel_tg.page_link(row["id"]))
 
 
+POSTING = "posting:"  # 결과코드 선점 표시 — 게시 호출 직전에 쓰고, 결과(게시완료·실패·확인필요)로 덮어쓴다
+
+
+def _claimed(row: dict) -> bool:
+    return any(part.startswith(POSTING) for part in notion.plain(row, S.N_RESULT).split("|"))
+
+
+def _claim(ctx: Ctx, row: dict) -> bool:
+    """게시 직전 선점: 결과코드에 posting:<run_id> 를 쓰고 다시 읽어 확인한다(STD-PUB-01·02).
+
+    게시 성공 뒤 기록이 실패해도 이 표시가 남으므로, 다음 실행은 같은 회차를 다시 게시하지 않고 '확인필요'로 보낸다.
+    기록(NotionError)이 실패하면 예외로 끝나고 게시하지 않는다.
+    """
+    mark = f"{_notice_mark()}|{POSTING}{settings.RUN_ID}"
+    novel_store.update(row, {S.N_RESULT: notion.v_rich(mark)})
+    ctx.log.writes += 1
+    fresh = novel_store.refresh(row)
+    seen = notion.plain(fresh, S.N_RESULT)
+    if seen != mark or novel_store.state(fresh) != S.NS_SCHEDULED or notion.checkbox(fresh, S.N_STOP):
+        ctx.log.degrade("novel_publish:claim_mismatch")
+        logger.info(f"[NovelPub] {novel_store.key(row)} 선점 확인 불일치 — 게시하지 않음")
+        if seen == mark or not _claimed(fresh):  # 게시하지 않음이 확정 → 내 표시를 지워 재시도를 막지 않는다
+            _release(row, "claim_mismatch")
+        return False  # 다른 실행의 posting: 표시가 보이면 그대로 둔다(다음 실행이 확인필요로 보낸다)
+    return True
+
+
+def _release(row: dict, code: str) -> None:
+    """미게시가 확정된 선점 해제 — 결과코드를 예고 표시 + 사유로 덮어쓴다(posting: 제거)."""
+    novel_store.update(row, {S.N_RESULT: notion.v_rich(f"{_notice_mark()}|{code}")})
+
+
+def _unconfirmed(ctx: Ctx, row: dict) -> None:
+    label = novel_store.key(row)
+    novel_store.transition(row, S.NS_CHECK, {S.N_RESULT: notion.v_rich(f"posting_unconfirmed:{settings.RUN_ID}")})
+    ctx.log.writes += 1
+    ctx.log.fail(f"{label}:posting_unconfirmed")
+    novel_tg.send("T5", f"⚠️ {label} 직전 게시 시도의 결과가 기록되지 않았습니다 — 다시 게시하지 않고 '확인필요'로 "
+                        f"옮겼습니다. 페이지에서 게시 여부를 확인해 주세요 — 게시됐으면 FB게시ID를 적어 주세요(오늘 다른 회차는 "
+                        f"게시하지 않습니다). 게시되지 않았으면 '승인'으로 바꾸면 예고부터 다시 진행합니다.",
+                  novel_tg.page_link(row["id"]))
+
+
 def publish(ctx: Ctx) -> None:
     if _published_today(ctx):
         return
@@ -156,6 +205,9 @@ def publish(ctx: Ctx) -> None:
         if notion.checkbox(row, S.N_STOP):
             collect_stops(ctx)
         return
+    if _claimed(row):  # 직전 실행이 게시를 시도했는데 결과를 기록하지 못함 → 다시 게시하지 않는다
+        _unconfirmed(ctx, row)
+        return
     p = _prompts(ctx)
     secs = novel_store.sections(row)
     body, question = secs.get(H_BODY, ""), secs.get(H_QUESTION, "")
@@ -164,6 +216,9 @@ def publish(ctx: Ctx) -> None:
     errors = [e for e in novel_rules.check_episode(body, m, banned_terms=S.BANNED_TERMS, journals=journals)
               if not e.startswith(("R01:length", "R09"))]  # 회장 편집으로 분량이 바뀌는 것은 허용
     errors += novel_rules.question_ok(question)
+    errors += novel_rules.check_public_fields(  # 회장 편집 후에도 카드·꼬리말 문구를 다시 본다
+        {"card_quote": secs.get(H_QUOTE, ""), "subtitle": secs.get(H_SUBTITLE, ""), "question": question},
+        m, banned_terms=S.BANNED_TERMS)
     filled, law_errors = novel_rules.fill_laws(body, p.laws, ctx.today)
     errors += law_errors
     if errors:
@@ -183,7 +238,16 @@ def publish(ctx: Ctx) -> None:
         if settings.MODE != "live":
             logger.info(f"[NovelPub][{settings.MODE}] {label} 검사·카드 통과 — 게시 생략")
             return
-        res = graph.post_photo(image, caption)
+        if not safety.graph_write_allowed():  # 회로 차단 상태면 선점도 하지 않는다
+            ctx.log.degrade("novel_publish:graph_write_blocked")
+            return
+        if not _claim(ctx, row):
+            return
+        try:
+            res = graph.post_photo(image, caption)
+        except safety.Tripped:  # 요청 전 차단(미게시 확정) → 선점 해제 후 그대로 올린다
+            _release(row, "tripped")
+            raise
     finally:
         shutil.rmtree(work, ignore_errors=True)
     status, reason = res["status"], res.get("reason", "")

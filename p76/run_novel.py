@@ -54,7 +54,7 @@ from p76.novel_store import (
 )
 from p76.runlog import RunLog
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"  # 1.2.0: 표지 인용·부제·열린 질문도 규칙 검사·AI 검수 대상
 
 logger = logging.getLogger(__name__)
 S = settings
@@ -398,6 +398,20 @@ def _episode_inputs(ctx: Ctx, n: int, m: int) -> tuple[dict, dict, list[dict]]:
     return bible, arc, [p for p in prevs if p is not None]
 
 
+PUBLIC_LABELS = {"card_quote": "카드 표지 인용", "subtitle": "부제", "question": "열린 질문(캡션 꼬리말)"}
+
+
+def public_fields(ep: dict) -> dict[str, str]:
+    """본문 밖에서 공개되는 문구 — 카드 이미지(표지 인용·부제)와 캡션 꼬리말(열린 질문)."""
+    return {k: str(ep.get(k) or "") for k in novel_rules.PUBLIC_FIELDS}
+
+
+def review_text(body: str, fields: dict[str, str]) -> str:
+    """AI 검수 입력 = 본문 + 공개 문구 전부(게시되는 텍스트는 모두 검수를 거친다)."""
+    extra = "\n\n".join(f"[{PUBLIC_LABELS[k]}]\n{fields[k]}" for k in novel_rules.PUBLIC_FIELDS if fields.get(k))
+    return body if not extra else f"{body}\n\n{extra}"
+
+
 def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
     p = _prompts(ctx)
     bible, arc, prevs = _episode_inputs(ctx, n, m)
@@ -439,7 +453,8 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
         errors = novel_rules.check_episode(
             ep.get("body", ""), m, banned_terms=S.BANNED_TERMS, cliches=p.cliches, prev_bodies=prev_bodies,
             journals=journals, d_plus_end=(ep.get("continuity") or {}).get("d_plus_end"), prev_d_plus_end=prev_d,
-        ) + novel_rules.question_ok(ep.get("question", ""))
+        ) + novel_rules.question_ok(ep.get("question", "")) + novel_rules.check_public_fields(
+            public_fields(ep), m, banned_terms=S.BANNED_TERMS)
         if any(e.startswith("R03") for e in errors):
             _fail_row(ctx, row, S.NS_HELD, "rules:R03")
             return
@@ -452,7 +467,7 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
     writer_fallback = res.fallback
     final = m >= S.NOVEL_EPISODES
     verdict, review_json, _ = review(ctx, row, f"제{m}화 (최종화 여부: {'예' if final else '아니오'})",
-                                     ep["body"], escalate=m >= S.NOVEL_EPISODES - 1)
+                                     review_text(ep["body"], public_fields(ep)), escalate=m >= S.NOVEL_EPISODES - 1)
     if writer_fallback:
         verdict = _worse(verdict, "HUMAN_REQUIRED")
         review_json["final_verdict"] = verdict

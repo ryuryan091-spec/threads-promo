@@ -654,3 +654,259 @@ def test_season_dates():
     assert run_novel.season_start(1) == S.NOVEL_START
     assert run_novel.due_date(1, 7) == S.NOVEL_START + timedelta(weeks=6)
     assert run_novel.season_start(2) == S.NOVEL_START + timedelta(weeks=7)
+
+
+# ── 공개 문구 검사 (치명-1, novel_rules 1.1.0 · run_novel 1.2.0) ─────────────
+@pytest.mark.parametrize("field,text,code", [
+    ("card_quote", "2026-11-29 오후였다.", "R02:real_date@card_quote"),
+    ("card_quote", "비밀단어", "R03:banned_term@card_quote"),
+    ("subtitle", "캐피탈의 밤", "R04:industry@subtitle"),
+    ("subtitle", "서울의 사무실", "R04:place@subtitle"),
+    ("question", "과태료를 아시나요?", "R05:legal_text@question"),
+    ("question", "댓글로 남겨 주세요", "R06:pushy_phrase@question"),
+    ("card_quote", "사망 소식", "R07:harm_term@card_quote"),
+    ("subtitle", "가해자의 얼굴", "R08:convicted_early@subtitle"),
+    ("card_quote", "{{LAW_76_2}}", "R11:placeholder_in_public_field@card_quote"),
+])
+def test_public_fields_rules_catch(field, text, code):
+    fields = {"card_quote": "기록은 남는다.", "subtitle": "합성 부제", "question": "기록을 남겨 본 적이 있나요?"}
+    fields[field] = text
+    assert code in novel_rules.check_public_fields(fields, 2, banned_terms=("비밀단어",))
+
+
+def test_public_fields_clean_and_final_episode():
+    clean = {"card_quote": "기록은 남는다.", "subtitle": "합성 부제", "question": "기록을 남겨 본 적이 있나요?"}
+    assert novel_rules.check_public_fields(clean, 2) == []
+    assert novel_rules.check_public_fields({"subtitle": "가해자의 얼굴"}, S.NOVEL_EPISODES) == []  # 최종화는 허용
+    assert novel_rules.check_public_fields({}, 2) == []
+
+
+def _ep(**over):
+    return {**novel_fixtures.episode({"messages": [{"content": [{"text": "제1화"}]}]}), **over}
+
+
+def test_public_field_banned_term_holds_episode(novel, env):
+    env(PAGE76_BANNED_TERMS="비공개금칙어")
+    add_canon_bible(novel.fake)
+    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep(card_quote="비공개금칙어 한 줄")}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
+    assert novel.fake.val(e1, S.N_RESULT) == "rules:R03"
+    assert len(client.calls) == 1  # 재작성·검수 호출 없음
+
+
+def test_public_field_violation_retries_then_fails(novel):
+    add_canon_bible(novel.fake)
+    bad = _ep(subtitle="서울의 밤")
+    log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    assert "R04:place@subtitle" in novel.fake.val(e1, S.N_RESULT)
+    assert "R04:place@subtitle" in client.calls[1]["messages"][0]["content"][-1]["text"]
+
+
+def test_review_input_includes_public_fields(novel):
+    add_canon_bible(novel.fake)
+    ep = _ep(card_quote="합성 표지 인용 표식", subtitle="합성 부제 표식", question="합성 질문 표식?")
+    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": ep}]))
+    review_call = json.dumps(client.calls[1], ensure_ascii=False)
+    for text in ("합성 표지 인용 표식", "합성 부제 표식", "합성 질문 표식?"):
+        assert text in review_call
+    assert novel.fake.val(row(novel.fake, "N1-E01"), S.N_STATE) == S.NS_REVIEW
+
+
+def test_publish_rechecks_edited_public_fields(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    live.fake.set_blocks(e1["id"], novel_store.section_blocks([
+        (novel_store.H_BODY, _body(), "code"), (novel_store.H_QUESTION, "기록을 남겨 본 적이 있나요?", "code"),
+        (novel_store.H_QUOTE, "판교의 밤", "code"), (novel_store.H_SUBTITLE, "합성 부제", "code"),
+        (novel_store.H_META, json.dumps({"summary": "요약", "quoted_journals": []}), "json"),
+    ]))
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == [] and live.fake.val(e1, S.N_STATE) == S.NS_HELD
+    assert "R04:place@card_quote" in live.fake.val(e1, S.N_RESULT)
+
+
+# ── 게시 선점 (치명-2, run_novel_publish 1.1.0) ─────────────────────────────
+def test_post_ok_but_record_failed_never_reposts(live, monkeypatch):
+    """게시 성공 → 게시완료 기록 실패 → 다음 실행은 다시 게시하지 않고 '확인필요'."""
+    from p76 import notion as notion_mod
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    real = novel_store.transition
+
+    def failing(page, new_state, extra=None):
+        if new_state == S.NS_PUBLISHED:
+            raise notion_mod.NotionError("합성 기록 실패")
+        return real(page, new_state, extra)
+    monkeypatch.setattr(novel_store, "transition", failing)
+    with pytest.raises(notion_mod.NotionError):
+        pub(kst(2026, 11, 29, 10, 21))
+    assert len(live.graph.writes()) == 1
+    assert run_novel_publish.POSTING in live.fake.val(e1, S.N_RESULT)
+    monkeypatch.setattr(novel_store, "transition", real)
+    log = pub(kst(2026, 11, 29, 11, 25))
+    assert len(live.graph.writes()) == 1  # 재게시 없음
+    assert live.fake.val(e1, S.N_STATE) == S.NS_CHECK
+    assert any(c.endswith("posting_unconfirmed") for c in log.codes)
+    assert any("결과가 기록되지 않았습니다" in t for t in live.tg.sent)
+    pub(kst(2026, 11, 29, 12, 34))
+    assert len(live.graph.writes()) == 1
+
+
+def test_unconfirmed_row_blocks_second_notice_same_day(live):
+    from p76 import notion
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))  # 예고(발행예고 + 발행 예정 시각)
+    novel_store.update(e1, {S.N_RESULT: notion.v_rich("notice:live|posting:123")})  # 직전 시도 흔적
+    e2 = add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29))
+    pub(kst(2026, 11, 29, 12, 34))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_CHECK
+    assert live.fake.val(e2, S.N_STATE) == S.NS_REVIEW  # 같은 날 다른 회차 예고 없음
+    assert live.graph.writes() == []
+
+
+def test_claim_written_before_post(live, monkeypatch):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    seen = []
+    real_post = run_novel_publish.graph.post_photo
+
+    def spy(image, caption):
+        seen.append(live.fake.val(e1, S.N_RESULT))
+        return real_post(image, caption)
+    monkeypatch.setattr(run_novel_publish.graph, "post_photo", spy)
+    pub(kst(2026, 11, 29, 10, 21))
+    assert seen and run_novel_publish.POSTING in seen[0] and seen[0].startswith("notice:live|")
+    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
+    assert live.fake.val(e1, S.N_RESULT) == "published"
+
+
+def test_claim_mismatch_does_not_post(live, monkeypatch):
+    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    real_refresh = novel_store.refresh
+    calls = {"n": 0}
+
+    def refresh(page):
+        calls["n"] += 1
+        fresh = real_refresh(page)
+        if calls["n"] == 2:  # 선점 직후 재조회: 다른 실행이 덮어쓴 상황
+            fresh = {**fresh, "properties": {**fresh["properties"],
+                                             S.N_RESULT: {"rich_text": [{"plain_text": "notice:live|posting:999"}]}}}
+        return fresh
+    monkeypatch.setattr(novel_store, "refresh", refresh)
+    log = pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == []
+    assert "novel_publish:claim_mismatch" in log.codes
+
+
+def test_failed_post_clears_claim_and_retries(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(400, {"error": {"code": 100, "message": "합성"}})
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)  # 미게시 확정 → 표시 해제
+    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(200, {"id": "p1", "post_id": "61_99"})
+    pub(kst(2026, 11, 29, 11, 25))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
+
+
+# ── G4 리뷰(R6-04) 반영: 같은 날 2건 · 미게시 확정 시 선점 해제 · 선점 후 재확인 ─────
+def test_manual_fb_id_after_unconfirmed_blocks_second_episode(live):
+    """확인필요 → 회장이 FB게시ID만 기록해도 같은 날 다른 회차는 예고·게시하지 않는다."""
+    from p76 import notion
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    novel_store.update(e1, {S.N_RESULT: notion.v_rich("notice:live|posting:123")})
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_CHECK
+    novel_store.update(e1, {S.N_FB_ID: notion.v_rich("61_77")})  # 회장 수기 기록
+    e2 = add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29))
+    pub(kst(2026, 11, 29, 11, 25))
+    pub(kst(2026, 11, 29, 14, 12))
+    assert live.fake.val(e2, S.N_STATE) == S.NS_REVIEW and live.graph.writes() == []
+
+
+def test_claim_stale_read_releases_marker(live, monkeypatch):
+    """선점 직후 조회가 옛 값을 돌려주면 게시하지 않고, 표시를 지워 다음 실행에서 재시도한다."""
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    real_refresh = novel_store.refresh
+    calls = {"n": 0}
+
+    def refresh(page):
+        calls["n"] += 1
+        fresh = real_refresh(page)
+        if calls["n"] == 2:
+            fresh = {**fresh, "properties": {**fresh["properties"],
+                                             S.N_RESULT: {"rich_text": [{"plain_text": "notice:live"}]}}}
+        return fresh
+    monkeypatch.setattr(novel_store, "refresh", refresh)
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == []
+    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)
+    monkeypatch.setattr(novel_store, "refresh", real_refresh)
+    pub(kst(2026, 11, 29, 11, 25))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED and len(live.graph.writes()) == 1
+
+
+@pytest.mark.parametrize("change", ["stop", "state"])
+def test_claim_rechecks_stop_and_state(live, monkeypatch, change):
+    """선점 뒤 다시 읽었을 때 중단 체크 또는 상태 변경이 보이면 게시하지 않는다."""
+    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    real_refresh = novel_store.refresh
+    calls = {"n": 0}
+
+    def refresh(page):
+        calls["n"] += 1
+        fresh = real_refresh(page)
+        if calls["n"] == 2:
+            props = dict(fresh["properties"])
+            if change == "stop":
+                props[S.N_STOP] = {**props[S.N_STOP], "checkbox": True}
+            else:
+                props[S.N_STATE] = {**props[S.N_STATE], "select": {"name": S.NS_HELD}}
+            fresh = {**fresh, "properties": props}
+        return fresh
+    monkeypatch.setattr(novel_store, "refresh", refresh)
+    log = pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == [] and "novel_publish:claim_mismatch" in log.codes
+
+
+def test_tripped_before_claim_does_not_mark(live):
+    from p76 import safety
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    safety.trip("합성:차단")
+    log = pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == [] and "novel_publish:graph_write_blocked" in log.codes
+    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)
+
+
+def test_tripped_inside_post_releases_marker(live, monkeypatch):
+    from p76 import safety
+
+    def raise_tripped(image, caption):
+        raise safety.Tripped("합성:차단")
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    pub(kst(2026, 11, 29, 8, 17))
+    monkeypatch.setattr(run_novel_publish.graph, "post_photo", raise_tripped)
+    with pytest.raises(safety.Tripped):
+        pub(kst(2026, 11, 29, 10, 21))
+    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+
+
+def test_publish_rechecks_edited_subtitle(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    live.fake.set_blocks(e1["id"], novel_store.section_blocks([
+        (novel_store.H_BODY, _body(), "code"), (novel_store.H_QUESTION, "기록을 남겨 본 적이 있나요?", "code"),
+        (novel_store.H_QUOTE, "", "code"), (novel_store.H_SUBTITLE, "여의도의 밤", "code"),
+        (novel_store.H_META, json.dumps({"summary": "요약", "quoted_journals": []}), "json"),
+    ]))
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.graph.writes() == [] and "R04:place@subtitle" in live.fake.val(e1, S.N_RESULT)
