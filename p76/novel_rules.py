@@ -18,7 +18,7 @@ from datetime import date
 
 from p76 import hiatus_guard, settings
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # 1.1.0: 공개 문구(표지 인용·부제·열린 질문) 검사 check_public_fields
 
 BODY_MIN, BODY_MAX = 3000, 4200
 PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
@@ -216,6 +216,30 @@ def footer(season: int, episode: int, question: str) -> str:
         "#사건파일76 #사건소설 #직장내괴롭힘",
     ]
     return "\n".join(lines)
+
+
+PUBLIC_FIELDS = ("card_quote", "subtitle", "question")  # 본문 밖에서 공개되는 문구(카드 이미지·캡션 꼬리말)
+
+
+def check_public_fields(fields: dict[str, str], episode: int, *, banned_terms: tuple[str, ...] = ()) -> list[str]:
+    """표지 인용·부제·열린 질문 검사 — 본문과 같은 공개 규칙(R02~R08)을 적용한다. 자리표시자는 본문에서만 허용(R11).
+
+    코드는 '<규칙>@<필드>' (예: R03:banned_term@card_quote) — 접두가 본문 코드와 같아 R03 보류 판정을 그대로 쓴다.
+    """
+    errors: list[str] = []
+    for name in PUBLIC_FIELDS:
+        text = fields.get(name) or ""
+        if not text.strip():
+            continue
+        found = common_checks(text, banned_terms)
+        if any(p.search(PLACEHOLDER.sub("", text)) for p in LEGAL_TEXT):
+            found.append("R05:legal_text")
+        if episode < settings.NOVEL_EPISODES and SUSPECT_CONVICTED in text:
+            found.append("R08:convicted_early")
+        if PLACEHOLDER.search(text):
+            found.append("R11:placeholder_in_public_field")
+        errors += [f"{code}@{name}" for code in found]
+    return sorted(set(errors))
 
 
 def question_ok(question: str) -> list[str]:

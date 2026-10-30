@@ -654,3 +654,63 @@ def test_season_dates():
     assert run_novel.season_start(1) == S.NOVEL_START
     assert run_novel.due_date(1, 7) == S.NOVEL_START + timedelta(weeks=6)
     assert run_novel.season_start(2) == S.NOVEL_START + timedelta(weeks=7)
+
+
+# ── 공개 문구 검사 (치명-1, novel_rules 1.1.0 · run_novel 1.2.0) ─────────────
+@pytest.mark.parametrize("field,text,code", [
+    ("card_quote", "2026-11-29 오후였다.", "R02:real_date@card_quote"),
+    ("card_quote", "비밀단어", "R03:banned_term@card_quote"),
+    ("subtitle", "캐피탈의 밤", "R04:industry@subtitle"),
+    ("subtitle", "서울의 사무실", "R04:place@subtitle"),
+    ("question", "과태료를 아시나요?", "R05:legal_text@question"),
+    ("question", "댓글로 남겨 주세요", "R06:pushy_phrase@question"),
+    ("card_quote", "사망 소식", "R07:harm_term@card_quote"),
+    ("subtitle", "가해자의 얼굴", "R08:convicted_early@subtitle"),
+    ("card_quote", "{{LAW_76_2}}", "R11:placeholder_in_public_field@card_quote"),
+])
+def test_public_fields_rules_catch(field, text, code):
+    fields = {"card_quote": "기록은 남는다.", "subtitle": "합성 부제", "question": "기록을 남겨 본 적이 있나요?"}
+    fields[field] = text
+    assert code in novel_rules.check_public_fields(fields, 2, banned_terms=("비밀단어",))
+
+
+def test_public_fields_clean_and_final_episode():
+    clean = {"card_quote": "기록은 남는다.", "subtitle": "합성 부제", "question": "기록을 남겨 본 적이 있나요?"}
+    assert novel_rules.check_public_fields(clean, 2) == []
+    assert novel_rules.check_public_fields({"subtitle": "가해자의 얼굴"}, S.NOVEL_EPISODES) == []  # 최종화는 허용
+    assert novel_rules.check_public_fields({}, 2) == []
+
+
+def _ep(**over):
+    return {**novel_fixtures.episode({"messages": [{"content": [{"text": "제1화"}]}]}), **over}
+
+
+def test_public_field_banned_term_holds_episode(novel, env):
+    env(PAGE76_BANNED_TERMS="비공개금칙어")
+    add_canon_bible(novel.fake)
+    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep(card_quote="비공개금칙어 한 줄")}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
+    assert novel.fake.val(e1, S.N_RESULT) == "rules:R03"
+    assert len(client.calls) == 1  # 재작성·검수 호출 없음
+
+
+def test_public_field_violation_retries_then_fails(novel):
+    add_canon_bible(novel.fake)
+    bad = _ep(subtitle="서울의 밤")
+    log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    assert "R04:place@subtitle" in novel.fake.val(e1, S.N_RESULT)
+    assert "R04:place@subtitle" in client.calls[1]["messages"][0]["content"][-1]["text"]
+
+
+def test_review_input_includes_public_fields(novel):
+    add_canon_bible(novel.fake)
+    ep = _ep(card_quote="합성 표지 인용 표식", subtitle="합성 부제 표식", question="합성 질문 표식?")
+    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": ep}]))
+    review_call = json.dumps(client.calls[1], ensure_ascii=False)
+    for text in ("합성 표지 인용 표식", "합성 부제 표식", "합성 질문 표식?"):
+        assert text in review_call
+    assert novel.fake.val(row(novel.fake, "N1-E01"), S.N_STATE) == S.NS_REVIEW
+
