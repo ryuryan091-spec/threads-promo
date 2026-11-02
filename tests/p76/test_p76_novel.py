@@ -1313,3 +1313,70 @@ def test_legacy_bible_codes_become_targeted_repair(novel):
     assert retry.calls[0]['output_config']['format']['schema']['required'] == ['risk_notes']
     saved = novel_store.json_section(row(novel.fake, 'N1-BIBLE'), novel_policy.H_DRAFT)
     assert saved['arc'] == bad['arc']
+
+
+@pytest.mark.parametrize('value', [
+    '사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다. 사망을 구체화한다.',
+    '사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다; 사망을 구체화한다.',
+    ['사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다\n자해 장면을 넣는다'],
+    ['사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다', {'detail': '사망'}],
+])
+def test_metadata_exception_cannot_hide_extra_harm(value):
+    b = novel_fixtures.bible()
+    b['risk_notes'] = value
+    assert 'R07:harm_term@risk_notes' in novel_rules.check_bible(b)
+
+
+def test_candidate_hash_tamper_requires_explicit_review(novel):
+    b = novel_fixtures.bible()
+    b['season_title'] = '은행'
+    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    page = row(novel.fake, 'N1-BIBLE')
+    good = novel_fixtures.bible()
+    novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
+    good['season_title'] = '출처 기록 이후 바뀐 제목'
+    novel_policy.save_candidate(page, good)
+    _, client = run(kst(2026, 11, 9, 12, 44))
+    assert len(client.calls) == 1
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_EXPLICIT
+
+
+def test_changed_prompt_does_not_reuse_saved_bible(novel):
+    b = novel_fixtures.bible()
+    b['season_title'] = '은행'
+    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    page = row(novel.fake, 'N1-BIBLE')
+    good = novel_fixtures.bible()
+    novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
+    _set(page, **{S.N_PROMPT_VER: 'different-version'})
+    _, client = run(kst(2026, 11, 9, 12, 44))
+    assert 'arc' in client.calls[0]['output_config']['format']['schema']['required']
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_ATTEMPTS) == 2
+
+
+def test_reused_draft_keeps_original_notes_for_ai_and_blocks_refusal(novel):
+    b = novel_fixtures.bible()
+    b['season_title'] = '은행'
+    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    page = row(novel.fake, 'N1-BIBLE')
+    good = novel_fixtures.bible()
+    good['risk_notes'] = ['사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다.']
+    novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
+    _, client = run(kst(2026, 11, 9, 12, 44), Scripted([{'stop': 'refusal', 'data': None}]))
+    assert len(client.calls) == 1
+    assert good['risk_notes'][0] in json.dumps(client.calls[0]['messages'], ensure_ascii=False)
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_HELD
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_ATTEMPTS) == 1
+
+
+def test_reuse_does_not_bypass_three_attempt_limit(novel):
+    b = novel_fixtures.bible()
+    b['season_title'] = '은행'
+    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    page = row(novel.fake, 'N1-BIBLE')
+    good = novel_fixtures.bible()
+    novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
+    _set(page, **{S.N_ATTEMPTS: 3})
+    _, client = run(kst(2026, 11, 9, 12, 44))
+    assert client.calls == []
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_CHECK_FAILED
