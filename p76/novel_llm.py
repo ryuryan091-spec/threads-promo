@@ -3,11 +3,11 @@ p76/novel_llm.py
 ================
 Claude API 호출 (공식 anthropic SDK, D-N6 · DSN-P76-NOVEL-002 §8).
 
-  - beta Messages + 서버측 fallback("default", D-N4) · adaptive thinking(기본) · effort · 구조화 출력
+  - beta Messages + Sonnet 전용(서버 fallback 없음) · adaptive thinking(기본) · effort · 구조화 출력
   - 시스템 프롬프트 끝(과 바이블 블록 끝)에 cache_control
   - stop_reason 을 먼저 본다: refusal → 거절(재시도 없음) / max_tokens → 실패(잘린 원고 사용 금지)
   - 응답 model 이 요청과 다르면 fallback 으로 보고 표시한다 → 호출자가 HUMAN_REQUIRED 로 올린다
-  - 원고·프롬프트는 로그에 남기지 않는다. 오류는 예외 클래스·HTTP 상태만.
+  - 원고·프롬프트는 로그에 남기지 않는다. 오류는 안전한 허용목록 진단만.
   - 비용: usage 로 계산(가격표 settings.MODEL_PRICES). 호출 전 추정치로 예산을 확인한다.
 
 dry_run 은 FixtureClient(합성 응답)를 쓴다 — API 키·비용 없음.
@@ -19,9 +19,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from p76 import settings
+from p76 import novel_diagnostics, settings
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = logging.getLogger(__name__)
 CHARS_PER_TOKEN = 1.5  # 한국어 혼합 대략치 (추정용)
@@ -64,7 +64,7 @@ def cost_of(model: str, usage: dict) -> float:
 def estimate(model: str, chars: int, max_tokens: int, expected_out: int) -> float:
     """호출 전 상한 추정 — 입력은 전량 미캐시, 출력은 기대치와 max_tokens 의 중간."""
     p_in, p_out, _ = price(model)
-    out_tokens = (expected_out + max_tokens) / 2
+    out_tokens = max_tokens  # reserve worst-case output, not an average
     return round((chars / CHARS_PER_TOKEN * p_in + out_tokens * p_out) / 1_000_000, 4)
 
 
@@ -77,13 +77,17 @@ def make_client() -> Any:
 
     for name in ("anthropic", "httpx", "httpx2", "httpcore", "httpcore2"):
         logging.getLogger(name).setLevel(logging.WARNING)
-    return anthropic.Anthropic(api_key=settings.CLAUDE_KEY, max_retries=2, timeout=900.0)
+    return anthropic.Anthropic(api_key=settings.CLAUDE_KEY, max_retries=0, timeout=900.0)
 
 
 def _usage(msg: Any) -> dict:
     u = getattr(msg, "usage", None)
     keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-    return {k: int(getattr(u, k, 0) or 0) for k in keys}
+    usage = {k: int(getattr(u, k, 0) or 0) for k in keys}
+    details = getattr(u, "output_tokens_details", None)
+    thinking = getattr(details, "thinking_tokens", None)
+    usage["thinking_tokens"] = int(thinking) if isinstance(thinking, int) else None
+    return usage
 
 
 def _text(msg: Any) -> str:
@@ -94,6 +98,8 @@ def _text(msg: Any) -> str:
 def call(client: Any, *, label: str, model: str, effort: str, system: str, user_blocks: list[dict],
          schema: dict, max_tokens: int, stream: bool) -> Result:
     """user_blocks: [{"text": str, "cache": bool}] — 앞쪽 고정 블록에 cache=True."""
+    if model != settings.MODEL_WRITER:
+        raise LLMError("model:not_allowed")
     content = []
     for block in user_blocks:
         item: dict = {"type": "text", "text": block["text"]}
@@ -107,8 +113,6 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
         "messages": [{"role": "user", "content": content}],
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-        "betas": [settings.FALLBACK_BETA],
-        "fallbacks": "default",
     }
     try:
         if stream:
@@ -117,7 +121,9 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
         else:
             msg = client.beta.messages.create(**params)
     except Exception as e:  # noqa: BLE001 — SDK 예외 계층 전체. 메시지에는 요청 본문이 섞일 수 있어 버린다
-        status = getattr(e, "status_code", "") or ""
+        diagnostic = novel_diagnostics.diagnose(e, params)
+        status = diagnostic["http_status"] or ""
+        logger.error("[NovelLLM] diagnostic=%s", json.dumps(diagnostic, sort_keys=True))
         logger.error(f"[NovelLLM] {label} 호출 실패 {type(e).__name__} {status}")
         raise LLMError(f"api:{type(e).__name__}{':' + str(status) if status else ''}") from None
     usage = _usage(msg)
@@ -127,7 +133,7 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
     fallback = used_model != model
     logger.info(f"[NovelLLM] {label} stop={stop} fallback={str(fallback).lower()} "
                 f"in={usage['input_tokens']} cache_r={usage['cache_read_input_tokens']} "
-                f"out={usage['output_tokens']} cost=${result_cost}")
+                f"out={usage['output_tokens']} thinking={usage['thinking_tokens']} cost=${result_cost}")
     if stop == "refusal":
         details = getattr(msg, "stop_details", None)
         category = str(getattr(details, "category", "") or "unknown")
@@ -193,3 +199,4 @@ class FixtureClient:
 
     def create(self, **params: Any) -> _Msg:
         return self._respond(params)
+

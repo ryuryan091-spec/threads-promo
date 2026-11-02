@@ -9,7 +9,7 @@ p76/run_novel.py
   2 묵시 등록  바이블 '묵시승인대기' + 등록예정시각 경과 + 중단 없음 → '정본' (D-N7, 바이블만 D-N10)
               직전 실행이 6시간보다 오래됐으면 2시간 연기
   3 생성      한 실행에 1건: 바이블 재시도 → 회차(정본 바이블, 게시일 D-14) → 다음 시즌 바이블(제1화 D-20)
-              작성 Opus 5.5 → 규칙 검사(재작성 1회) → 검수 Sonnet 5.5(6·7화·경계값은 Opus 재검수)
+              작성 Sonnet 5.5 → 규칙 검사 → 검수 Sonnet 5.5 (최초 포함 생성 총 3회)
   4 알림      묵시 승인 알림은 KST 09~18시에만, 보낸 시각 + 2시간이 등록예정시각
   6 전날 안내  20시대 실행에서 내일 게시 회차 — 자동 발행 예정 / 회장 '승인'이 있어야 발행되는 회차
 
@@ -36,6 +36,7 @@ from p76 import (
     cli,
     notion,
     novel_llm,
+    novel_policy,
     novel_prompts,
     novel_rules,
     novel_store,
@@ -56,7 +57,7 @@ from p76.novel_store import (
 )
 from p76.runlog import RunLog
 
-VERSION = "1.2.1"  # 1.2.1: 바이블 arc 객체 수용 · R05 바이블 경고화 · 재시도 피드백 이월 · 예정 시각 기준 판정
+VERSION = "1.3.0"  # 1.2.1: 바이블 arc 객체 수용 · R05 바이블 경고화 · 재시도 피드백 이월 · 예정 시각 기준 판정
 # 1.2.0: 표지 인용·부제·열린 질문도 규칙 검사·AI 검수 대상
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,10 @@ def _style(p: novel_prompts.Prompts) -> str:
 
 def _llm(ctx: Ctx, row: dict, *, label: str, model: str, effort: str, system: str, user_blocks: list[dict],
          schema: dict, max_tokens: int, expected_out: int, stream: bool) -> novel_llm.Result:
+    candidate = {}
+    repair_fields = set()
+    if label.endswith(":write"):
+        schema, user_blocks, candidate, repair_fields = novel_policy.repair_request(row, schema, user_blocks)
     chars = len(system) + sum(len(b["text"]) for b in user_blocks)
     est = novel_llm.estimate(model, chars, max_tokens, expected_out)
     if ctx.run_cost + est > S.NOVEL_RUN_CAP_USD:
@@ -240,8 +245,17 @@ def _llm(ctx: Ctx, row: dict, *, label: str, model: str, effort: str, system: st
     res = novel_llm.call(ctx.client, label=label, model=model, effort=effort, system=system,
                          user_blocks=user_blocks, schema=schema, max_tokens=max_tokens, stream=stream)
     ctx.run_cost += res.cost
+    logger.info("[NovelUsage] key=%s stage=%s attempt=%s input=%s output=%s thinking=%s cost=%s",
+                novel_store.key(row), label.rsplit(":", 1)[-1], notion.number(row, S.N_ATTEMPTS),
+                res.usage.get("input_tokens", 0), res.usage.get("output_tokens", 0),
+                res.usage.get("thinking_tokens"), res.cost)
     novel_store.add_month_spent(ctx.ctrl, ctx.now, res.cost)
     novel_store.add_cost(row, res.cost)
+    novel_policy.record_usage(row, label, res)
+    if res.ok and repair_fields:
+        if set(res.data) != repair_fields:
+            raise novel_llm.LLMError("repair:unexpected_fields")
+        res.data = {**candidate, **res.data}
     return res
 
 
@@ -269,7 +283,7 @@ def review_codes(r: dict) -> str:
 
 
 def review(ctx: Ctx, row: dict, target: str, text: str, escalate: bool) -> tuple[str, dict, bool]:
-    """(최종 판정, 검수 JSON, fallback 여부). escalate=True 면 처음부터 Opus 로도 한 번 더 본다."""
+    """Sonnet 검수 1회. 동일 모델 중복 검수 및 Opus 승격 없음."""
     p = _prompts(ctx)
     user = [{"text": f"검수 대상: {target}\n\n[원고]\n{text}"}]
     results: list[novel_llm.Result] = []
@@ -280,15 +294,6 @@ def review(ctx: Ctx, row: dict, target: str, text: str, escalate: bool) -> tuple
     verdict = "BLOCK"
     if res.ok:
         verdict = _worse(str(res.data.get("verdict", "BLOCK")), computed_verdict(res.data))
-    if res.ok and (escalate or verdict == "HUMAN_REQUIRED"):
-        res2 = _llm(ctx, row, label=f"{novel_store.key(row)}:review2", model=S.MODEL_WRITER, effort="medium",
-                    system=p.systems["nr"], user_blocks=user, schema=p.schemas["nr"], max_tokens=8000,
-                    expected_out=1500, stream=False)
-        results.append(res2)
-        v2 = _worse(str(res2.data.get("verdict", "BLOCK")), computed_verdict(res2.data)) if res2.ok else "BLOCK"
-        verdict = _worse(verdict, v2)
-        if res2.ok and SEVERITY[v2] >= SEVERITY.get(str(res.data.get("verdict")), 0):
-            res = res2
     fallback = any(r.fallback for r in results)
     if fallback:
         verdict = _worse(verdict, "HUMAN_REQUIRED")
@@ -302,7 +307,12 @@ def _fail_row(ctx: Ctx, row: dict, new_state: str, code: str, extra: dict | None
     novel_store.transition(row, new_state, {S.N_RESULT: notion.v_rich(code[:1900]), **(extra or {})})
     ctx.log.writes += 1
     ctx.log.degrade(f"{novel_store.key(row)}:{code}")
-    tail = f" · {note}" if note else ""
+    attempts = notion.number(row, S.N_ATTEMPTS) or 0
+    tail = f" · 생성 {attempts}/{S.NOVEL_MAX_ATTEMPTS}회"
+    if attempts >= S.NOVEL_MAX_ATTEMPTS:
+        tail += " · 자동 생성 종료, 미완성·안전 검수 실패 원고는 발행하지 않음"
+    if note:
+        tail += f" · {note}"
     novel_tg.send("T5", f"⚠️ {novel_store.key(row)} {new_state} — {code}{tail}", novel_tg.page_link(row["id"]))
 
 
@@ -333,13 +343,8 @@ def _rule_kinds(codes: list[str]) -> set[str]:
 
 
 def _fail_rules(ctx: Ctx, row: dict, errors: list[str], prev_codes: list[str]) -> None:
-    """규칙 검사 실패 기록. 직전 실행과 같은 규칙 집합이면 시도 수를 상한으로 올려 자동 재시도에서 뺀다(STD-COST-03)."""
+    """규칙 실패를 다음 실행의 부분 수정 입력으로 보존한다. 총 3회 상한은 next_job이 적용."""
     code = RULES_PREFIX + ",".join(errors)
-    if prev_codes and _rule_kinds(prev_codes) == _rule_kinds(errors):
-        _fail_row(ctx, row, S.NS_CHECK_FAILED, code, {S.N_ATTEMPTS: notion.v_number(S.NOVEL_MAX_ATTEMPTS)},
-                  note=REPEAT_NOTE)
-        logger.warning(f"[Novel] {novel_store.key(row)} 동일 규칙 반복 — 자동 재시도 중지")
-        return
     _fail_row(ctx, row, S.NS_CHECK_FAILED, code)
 
 
@@ -347,6 +352,8 @@ def _start_attempt(ctx: Ctx, row: dict, tag: str) -> None:
     if novel_store.state(row) == S.NS_CHECK_FAILED:
         novel_store.transition(row, S.NS_GENERATING)
     attempts = (notion.number(row, S.N_ATTEMPTS) or 0) + 1
+    if attempts > S.NOVEL_MAX_ATTEMPTS:
+        raise novel_llm.LLMError("attempts:exhausted")
     novel_store.update(row, {S.N_ATTEMPTS: notion.v_number(attempts), S.N_PROMPT_VER: notion.v_rich(tag)})
     ctx.log.writes += 1
 
@@ -404,27 +411,24 @@ def generate_bible(ctx: Ctx, n: int, row: dict | None) -> None:
     system = p.systems["nb"] + "\n\n[문체 견본]\n" + (_style(p) or "없음")
     user = _bible_user(ctx, n, journals)
     note = carry_note(prev_codes)
-    for attempt in range(2):
-        res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort="high",
-                   system=system, user_blocks=[{"text": user + note}], schema=p.schemas["nb"], max_tokens=32000,
-                   expected_out=12000, stream=True)
-        if res.refusal:
-            _fail_row(ctx, row, S.NS_REFUSED, f"refusal:{res.refusal}")
-            return
-        if not res.ok:
-            _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
-            return
-        bible = normalize_arc(res.data)
-        errors = novel_rules.check_bible(bible, banned_terms=S.BANNED_TERMS, journal_numbers=set(journals))
-        if any(e.startswith("R03") for e in errors):
-            _fail_row(ctx, row, S.NS_HELD, "rules:R03")
-            return
-        if not errors:
-            break
-        note = f"\n\n직전 바이블이 다음 규칙에 걸렸다: {', '.join(errors)}. 해당 부분을 고쳐 다시 만들어 주세요."
-        if attempt == 1:
-            _fail_rules(ctx, row, errors, prev_codes)
-            return
+    res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort=S.NOVEL_WRITE_EFFORT,
+               system=system, user_blocks=[{"text": user + note}], schema=p.schemas["nb"], max_tokens=S.NOVEL_WRITE_MAX_TOKENS,
+               expected_out=12000, stream=True)
+    if res.refusal:
+        _fail_row(ctx, row, S.NS_REFUSED, f"refusal:{res.refusal}")
+        return
+    if not res.ok:
+        _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
+        return
+    bible = normalize_arc(res.data)
+    novel_policy.save_candidate(row, bible)
+    errors = novel_rules.check_bible(bible, banned_terms=S.BANNED_TERMS, journal_numbers=set(journals))
+    if any(e.startswith("R03") for e in errors):
+        _fail_row(ctx, row, S.NS_HELD, "rules:R03")
+        return
+    if errors:
+        _fail_rules(ctx, row, errors, prev_codes)
+        return
     warnings = novel_rules.bible_warnings(bible)
     if warnings:  # 코드만 남긴다(본문·매칭 문자열 없음, SEC RR-06)
         logger.warning(f"[Novel] {novel_store.key(row)} 경고 {','.join(warnings)}")
@@ -513,31 +517,28 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
             + ("\n".join(f"#{k:03d}\n{v}" for k, v in journals.items()) if journals else "없음"))
     prev_d = (prev_meta.get("continuity") or {}).get("d_plus_end") if prevs else None
     note = carry_note(prev_codes)
-    for attempt in range(2):
-        res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort="medium",
-                   system=system, user_blocks=head + [{"text": rest + note}], schema=p.schemas["ne"],
-                   max_tokens=32000, expected_out=9000, stream=True)
-        if res.refusal:
-            _fail_row(ctx, row, S.NS_REFUSED, f"refusal:{res.refusal}")
-            return
-        if not res.ok:
-            _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
-            return
-        ep = res.data
-        errors = novel_rules.check_episode(
-            ep.get("body", ""), m, banned_terms=S.BANNED_TERMS, cliches=p.cliches, prev_bodies=prev_bodies,
-            journals=journals, d_plus_end=(ep.get("continuity") or {}).get("d_plus_end"), prev_d_plus_end=prev_d,
-        ) + novel_rules.question_ok(ep.get("question", "")) + novel_rules.check_public_fields(
-            public_fields(ep), m, banned_terms=S.BANNED_TERMS)
-        if any(e.startswith("R03") for e in errors):
-            _fail_row(ctx, row, S.NS_HELD, "rules:R03")
-            return
-        if not errors:
-            break
-        if attempt == 1:
-            _fail_rules(ctx, row, errors, prev_codes)
-            return
-        note = f"\n\n직전 원고가 다음 규칙에 걸렸다: {', '.join(errors)}. 해당 부분을 고쳐 다시 써 주세요."
+    res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort="medium",
+               system=system, user_blocks=head + [{"text": rest + note}], schema=p.schemas["ne"],
+               max_tokens=S.NOVEL_WRITE_MAX_TOKENS, expected_out=9000, stream=True)
+    if res.refusal:
+        _fail_row(ctx, row, S.NS_REFUSED, f"refusal:{res.refusal}")
+        return
+    if not res.ok:
+        _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
+        return
+    ep = res.data
+    novel_policy.save_candidate(row, ep)
+    errors = novel_rules.check_episode(
+        ep.get("body", ""), m, banned_terms=S.BANNED_TERMS, cliches=p.cliches, prev_bodies=prev_bodies,
+        journals=journals, d_plus_end=(ep.get("continuity") or {}).get("d_plus_end"), prev_d_plus_end=prev_d,
+    ) + novel_rules.question_ok(ep.get("question", "")) + novel_rules.check_public_fields(
+        public_fields(ep), m, banned_terms=S.BANNED_TERMS)
+    if any(e.startswith("R03") for e in errors):
+        _fail_row(ctx, row, S.NS_HELD, "rules:R03")
+        return
+    if errors and not novel_policy.allow_quality(row, errors, ep):
+        _fail_rules(ctx, row, errors, prev_codes)
+        return
     writer_fallback = res.fallback
     final = m >= S.NOVEL_EPISODES
     verdict, review_json, _ = review(ctx, row, f"제{m}화 (최종화 여부: {'예' if final else '아니오'})",
@@ -548,6 +549,9 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
     body = ep["body"]
     meta = {k: ep.get(k) for k in ("continuity", "summary", "quoted_journals", "placeholders_used", "self_check")}
     meta["review"] = review_json
+    if errors:
+        meta["quality_warnings"] = errors
+        meta["quality_hash"] = novel_policy.content_hash(ep)
     novel_store.append(row, novel_store.section_blocks([
         (H_BODY, body, "code"),
         (H_QUESTION, ep.get("question", ""), "code"),
@@ -569,6 +573,8 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
         return
     novel_store.transition(row, S.NS_REVIEW, {S.N_RESULT: notion.v_rich(f"review:{verdict}")})
     ctx.log.writes += 1
+    if errors and verdict == "PASS":
+        novel_policy.notify_quality(row, ctx.log)
     logger.info(f"[Novel] {novel_store.key(row)} 검토대기 ({verdict}, {novel_rules.body_chars(body)}자)")
     novel_tg.send("T2", f"📝 시즌 {n} 제{m}화 검토대기 — 게시 {due_date(n, m):%m-%d}(일) / "
                         f"{novel_rules.body_chars(body)}자 / 검수 {verdict}", novel_tg.page_link(row["id"]))
@@ -631,6 +637,7 @@ def generate(ctx: Ctx) -> None:
         target = row or novel_store.find(ctx.rows, label)
         if target is not None and novel_store.state(target) == S.NS_GENERATING:
             _fail_row(ctx, target, S.NS_CHECK_FAILED, str(e))
+            ctx.log.fail(str(e))
         else:
             ctx.log.fail(str(e))
 
@@ -648,7 +655,8 @@ def _budget_alert(ctx: Ctx, code: str) -> None:
 def auto_publishable(page: dict) -> bool:
     """회장 '승인' 없이 예고 후 자동 발행되는 회차 (DN2026_0072 Q1): 검토대기 + 검수 PASS + 요청 모델 그대로."""
     return (novel_store.state(page) == S.NS_REVIEW and notion.select(page, S.N_VERDICT) == "PASS"
-            and notion.plain(page, S.N_MODEL) == S.MODEL_WRITER)
+            and notion.plain(page, S.N_MODEL) == S.MODEL_WRITER
+            and novel_policy.release_ok(page))
 
 
 def remind(ctx: Ctx) -> None:
@@ -683,6 +691,9 @@ def body(log: RunLog, now: datetime | None = None, client: Any = None) -> None:
     logger.info(f"[Novel] 행 {len(rows)}건 · mode={S.MODE} · 이번 달 ${novel_store.month_spent(ctrl, now):.2f}")
     try:
         collect_stops(ctx)
+        for page in ctx.rows:
+            if novel_store.state(page) == S.NS_REVIEW and not novel_store.stopped(page):
+                novel_policy.notify_quality(page, ctx.log)
         register_implicit(ctx)
         generate(ctx)
         notify_pending(ctx)
@@ -705,3 +716,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -246,7 +246,9 @@ NOVEL_STYLE_SAMPLES = (5, 7, 21)  # A형 수사일지 번호 (문체 견본)
 NOVEL_JOURNAL_CANDIDATES = 6
 
 # Claude API (DSN-P76-NOVEL-002 §8). 가격: 1M 토큰당 USD (2026-10 기준, 바뀌면 이 표와 날짜를 함께 고친다)
-MODEL_WRITER, MODEL_REVIEWER = "claude-opus-5-5", "claude-sonnet-5-5"
+MODEL_WRITER = MODEL_REVIEWER = "claude-sonnet-5-5"
+NOVEL_WRITE_MAX_TOKENS = 16000
+NOVEL_WRITE_EFFORT = "medium"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 MODEL_PRICES = {  # (입력, 출력, 캐시 읽기)
     "claude-opus-5-5": (4.0, 20.0, 0.20),
@@ -256,3 +258,4 @@ MODEL_PRICE_UNKNOWN = (10.0, 50.0, 1.0)  # fallback 등 표에 없는 모델은 
 CACHE_WRITE_FACTOR = 1.25
 
 reload()
+

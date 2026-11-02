@@ -14,6 +14,7 @@ from p76_fake import DB05, DB12, FAKE_PAGE_ID, FakeResp, png_bytes
 from p76 import (
     novel_fixtures,
     novel_llm,
+    novel_policy,
     novel_prompts,
     novel_rules,
     novel_store,
@@ -251,7 +252,7 @@ def test_tn01_implicit_registration_after_2h(novel):
     assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
     assert any("묵시 승인 대기" in t and "12:44 이후" in t and "중단'을 체크" in t for t in novel.tg.sent)
     assert "표식-NB" in json.dumps(client.calls[0]["system"], ensure_ascii=False)
-    assert client.calls[0]["fallbacks"] == "default" and client.calls[0]["model"] == S.MODEL_WRITER
+    assert "fallbacks" not in client.calls[0] and client.calls[0]["model"] == "claude-sonnet-5-5"
     run(kst(2026, 11, 9, 12, 40))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT  # 2시간 전
     run(kst(2026, 11, 9, 12, 44))
@@ -350,7 +351,8 @@ def test_tn09_max_tokens_not_saved(novel):
     run(kst(2026, 11, 9, 10, 44), Scripted([{"data": None, "stop": "max_tokens"}]))
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_STATE) == S.NS_CHECK_FAILED
-    assert novel.fake.blocks.get(bible["id"]) is None
+    assert novel_store.H_BIBLE not in novel_store.sections(bible)
+    assert novel_policy.H_DRAFT not in novel_store.sections(bible)
 
 
 def test_review_block_holds_episode(novel):
@@ -382,7 +384,7 @@ def test_episode_rule_retry_then_fail(novel):
     log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
-    assert "직전 원고가 다음 규칙에 걸렸다" in client.calls[1]["messages"][0]["content"][-1]["text"]
+    assert len(client.calls) == 1  # one writer call per scheduled execution
     run(kst(2026, 11, 15, 12, 44))  # 다음 실행에서 재시도(시도 2/3)
     assert novel.fake.val(e1, S.N_STATE) == S.NS_REVIEW
     assert novel.fake.val(e1, S.N_ATTEMPTS) == 2
@@ -405,7 +407,7 @@ def test_tn12_month_budget_blocks_calls(novel):
 
 
 def test_tn12_run_cap(novel):
-    log, client = run(kst(2026, 11, 9, 10, 44), Scripted([{"data": novel_fixtures.bible(), "out": 160_000}]))
+    log, client = run(kst(2026, 11, 9, 10, 44), Scripted([{"data": novel_fixtures.bible(), "out": 320_000}]))
     assert "budget:run" in log.codes  # 첫 호출 $3.2 → 검수 호출 전 중단
 
 
@@ -702,7 +704,9 @@ def test_public_field_violation_retries_then_fails(novel):
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
     assert "R04:place@subtitle" in novel.fake.val(e1, S.N_RESULT)
-    assert "R04:place@subtitle" in client.calls[1]["messages"][0]["content"][-1]["text"]
+    assert len(client.calls) == 1
+    _, retry = run(kst(2026, 11, 15, 12, 44), Scripted([{"data": bad}]))
+    assert "R04:place@subtitle" in json.dumps(retry.calls[0], ensure_ascii=False)
 
 
 def test_review_input_includes_public_fields(novel):
@@ -995,19 +999,18 @@ def test_no_carry_note_for_non_rules_failure(novel):
     assert "직전 실행이" not in client.calls[0]["messages"][0]["content"][-1]["text"]
 
 
-def test_same_rules_repeat_stops_auto_retry(novel):
+def test_same_rules_retry_at_most_three_total(novel):
     add_canon_bible(novel.fake)
-    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
-    _set(e1, **{S.N_RESULT: "rules:R04:place@subtitle", S.N_ATTEMPTS: 1})
     bad = _ep(subtitle="서울의 밤")
-    log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    calls = []
+    for h in (10, 12, 14, 16):
+        _, client = run(kst(2026, 11, 15, h, 44), Scripted([{"data": bad}]))
+        calls.extend(client.calls)
+    e1 = row(novel.fake, "N1-E01")
+    assert len(calls) == 3
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 3
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
-    assert novel.fake.val(e1, S.N_ATTEMPTS) == S.NOVEL_MAX_ATTEMPTS
-    assert novel.fake.val(e1, S.N_RESULT) == "rules:R04:place@subtitle"
-    assert any(run_novel.REPEAT_NOTE in t for t in novel.tg.sent)
-    assert log.writes > 0
-    _, client2 = run(kst(2026, 11, 15, 12, 44))
-    assert client2.calls == []  # 재시도 대상에서 빠짐
+    assert not run_novel.auto_publishable(e1)
 
 
 def test_different_rules_keep_retrying(novel):
@@ -1085,8 +1088,11 @@ def test_same_rule_kind_with_different_numbers_stops(novel):
     short2 = _ep(body="D+1 길이가 다른 짧은 본문입니다")
     run(kst(2026, 11, 15, 12, 44), Scripted([{"data": short2}, {"data": short2}]))
     assert novel.fake.val(e1, S.N_RESULT) != first  # 글자 수는 다르지만
-    assert novel.fake.val(e1, S.N_ATTEMPTS) == S.NOVEL_MAX_ATTEMPTS  # 같은 결함 → 자동 재시도 중지
-    assert any(run_novel.REPEAT_NOTE in t for t in novel.tg.sent)
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 2
+    run(kst(2026, 11, 15, 14, 44), Scripted([{"data": short2}]))
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 3
+    _, stopped = run(kst(2026, 11, 15, 16, 44))
+    assert stopped.calls == []
 
 
 def test_notify_upper_bound_uses_actual_time(novel, monkeypatch):
@@ -1095,3 +1101,114 @@ def test_notify_upper_bound_uses_actual_time(novel, monkeypatch):
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
     assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None and novel.tg.sent == []
+
+
+
+def test_third_quality_warning_notified_then_published(live):
+    bad = _ep(question="기" * 121)
+    clients = []
+    for h in (10, 12, 14):
+        _, c = run(kst(2026, 11, 15, h, 44), Scripted([{"data": bad}]))
+        clients.append(c)
+    e1 = row(live.fake, "N1-E01")
+    assert [len(c.calls) for c in clients] == [1, 1, 2]  # third includes one safety review
+    assert live.fake.val(e1, S.N_ATTEMPTS) == 3
+    assert run_novel.auto_publishable(e1)
+    assert any("생성 3/3회 종료" in t and "Q:too_long" in t for t in live.tg.sent)
+    pub(kst(2026, 11, 29, 8, 17))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
+    assert len(live.graph.writes()) == 1
+
+
+def test_quality_notice_failure_retry_without_regenerating(live, monkeypatch):
+    bad = _ep(question="기" * 121)
+    for h in (10, 12):
+        run(kst(2026, 11, 15, h, 44), Scripted([{"data": bad}]))
+    real_send = novel_tg.send
+    monkeypatch.setattr(novel_tg, "send", lambda kind, *a, **k: False if kind == "T7" else real_send(kind, *a, **k))
+    run(kst(2026, 11, 15, 14, 44), Scripted([{"data": bad}]))
+    e1 = row(live.fake, "N1-E01")
+    assert not run_novel.auto_publishable(e1)
+    pub(kst(2026, 11, 29, 8, 17))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_REVIEW
+    assert live.graph.writes() == []
+    monkeypatch.setattr(novel_tg, "send", real_send)
+    pub(kst(2026, 11, 29, 8, 20))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    assert live.fake.val(e1, S.N_ATTEMPTS) == 3
+
+
+def test_quality_receipt_invalidated_by_edit(live):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_REVIEW, question="기" * 121)
+    _set(e1, **{S.N_ATTEMPTS: 3})
+    draft = novel_policy.public_draft(e1)
+    novel_policy.save_json(e1, novel_store.H_META, {"quality_warnings": ["Q:too_long"],
+                                                   "quality_hash": novel_policy.content_hash(draft)})
+    pub(kst(2026, 11, 29, 8, 17))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    novel_store.append(e1, novel_store.section_blocks([(novel_store.H_QUESTION, "바뀐 질문", "code")]))
+    pub(kst(2026, 11, 29, 10, 21))
+    assert live.fake.val(e1, S.N_STATE) == S.NS_HELD
+    assert live.graph.writes() == []
+
+
+@pytest.mark.parametrize("verdict", ["BLOCK", "HUMAN_REQUIRED"])
+def test_third_quality_warning_never_overrides_ai_review(novel, verdict):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_ATTEMPTS: 2})
+    bad = _ep(question="기" * 121)
+    review = {**novel_fixtures.review(), "verdict": verdict}
+    run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": review}]))
+    assert not run_novel.auto_publishable(e1)
+    assert not any("생성 3/3회 종료" in t for t in novel.tg.sent)
+
+
+def test_partial_repair_preserves_unaffected_fields(novel):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_ATTEMPTS: 1, S.N_RESULT: "rules:Q:too_long"})
+    draft = _ep(question="기" * 121)
+    novel_policy.save_candidate(e1, draft)
+    schema = {"type": "object", "properties": {"body": {"type": "string"}, "question": {"type": "string"}},
+              "required": ["body", "question"], "additionalProperties": False}
+    client = Scripted([{"data": {"question": "기록은?"}}])
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 15, 10), [], {}, {}, client=client)
+    result = run_novel._llm(ctx, e1, label="N1-E01:write", model=S.MODEL_WRITER, effort="medium",
+                            system="repair", user_blocks=[{"text": "repair"}], schema=schema,
+                            max_tokens=1000, expected_out=100, stream=True)
+    assert result.data["body"] == draft["body"] and result.data["question"] == "기록은?"
+    assert client.calls[0]["output_config"]["format"]["schema"]["required"] == ["question"]
+    usage = novel_store.json_section(e1, novel_policy.H_USAGE)
+    assert usage["calls"] == 1 and usage["thinking_unknown_calls"] == 1
+
+
+def test_opus_never_requested(novel):
+    client = Scripted()
+    with pytest.raises(novel_llm.LLMError, match="model:not_allowed"):
+        novel_llm.call(client, label="test", model="claude-opus-5-5", effort="medium", system="x",
+                       user_blocks=[{"text": "x"}], schema={}, max_tokens=10, stream=False)
+    assert client.calls == []
+    _, client = run(kst(2026, 11, 9, 10, 44))
+    assert all(c["model"] == "claude-sonnet-5-5" and "fallbacks" not in c for c in client.calls)
+    assert client.calls[0]["max_tokens"] == 16000
+
+
+def test_api_failure_three_total_and_failure_status(novel):
+    class Failing(Scripted):
+        def stream(self, **params):
+            self.calls.append(params)
+            error = RuntimeError("private")
+            error.status_code = 400
+            raise error
+    calls = 0
+    for h in (10, 12, 14, 16):
+        log, client = run(kst(2026, 11, 9, h, 44), Failing())
+        calls += len(client.calls)
+        if h != 16:
+            assert log.status == "failed"
+    assert calls == 3
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_ATTEMPTS) == 3
+    assert novel_store.H_BIBLE not in novel_store.sections(bible)

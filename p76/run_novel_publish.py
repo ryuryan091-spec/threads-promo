@@ -42,6 +42,7 @@ from p76 import (
     cli,
     graph,
     notion,
+    novel_policy,
     novel_prompts,
     novel_rules,
     novel_store,
@@ -97,6 +98,8 @@ def notice(ctx: Ctx) -> None:
     if ctx.kst.hour < S.NOVEL_PUBLISH_NOTICE_HOUR or _published_today(ctx):
         return
     episodes = _today_episodes(ctx)
+    for page in episodes:
+        novel_policy.notify_quality(page, ctx.log)
     if any(novel_store.state(p) in (S.NS_SCHEDULED, S.NS_CHECK) for p in episodes):
         return  # 이미 예고함, 또는 오늘 게시 여부 미확정 회차가 있음 — 하루 1건
     row = next((p for p in episodes if novel_store.state(p) == S.NS_APPROVED or auto_publishable(p)), None)
@@ -119,6 +122,10 @@ def _notice_mark() -> str:
 def _send_notice(ctx: Ctx, row: dict) -> dict | None:
     """텔레그램 예고 → 보냈으면 기록할 속성(예고 시각·발행 예정 시각·모드), 못 보냈으면 None."""
     label, n, m = novel_store.key(row), novel_store.season(row), novel_store.episode(row)
+    novel_policy.notify_quality(row, ctx.log)
+    if not novel_policy.release_ok(row):
+        ctx.log.degrade("quality:notice_pending")
+        return None
     at = publish_at(ctx)
     shadow = " (shadow — 실제 게시 없음)" if settings.MODE != "live" else ""
     text = (f"📢 사건 소설 시즌 {n} 제{m}화 — {_hm(at)} 이후 발행됩니다{shadow}.\n"
@@ -223,6 +230,12 @@ def publish(ctx: Ctx) -> None:
         m, banned_terms=S.BANNED_TERMS)
     filled, law_errors = novel_rules.fill_laws(body, p.laws, ctx.today)
     errors += law_errors
+    meta = novel_store.json_section(row, H_META)
+    if meta.get("quality_warnings"):
+        if not novel_policy.release_ok(row):
+            _hold(ctx, row, "quality:receipt_mismatch")
+            return
+        errors = [e for e in errors if e not in novel_policy.QUALITY]
     if errors:
         _hold(ctx, row, "publish_check:" + ",".join(errors))
         return
@@ -310,3 +323,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
