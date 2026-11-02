@@ -1260,3 +1260,56 @@ def test_evidence_write_failure_keeps_hold(novel, monkeypatch):
     bible = row(novel.fake, "N1-BIBLE")
     assert not run_novel._retryable(bible)
     assert len(client.calls) == 1
+
+
+def test_bible_disclaimers_are_scoped_and_other_content_still_blocked():
+    b = novel_fixtures.bible()
+    b['risk_notes'] = ['금융 업종과 구체 업종·지역은 배경으로 쓰지 않는다.',
+                       '사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다.']
+    assert novel_rules.check_bible(b) == []
+    assert 'R03:banned_term@risk_notes' in novel_rules.check_bible(b, banned_terms=('금융',))
+    b['risk_notes'][0] += ' 실제 배경은 은행이다.'
+    assert 'R04:industry@risk_notes' in novel_rules.check_bible(b)
+    b['risk_notes'][1] += ' 사망 장면을 넣는다.'
+    assert 'R07:harm_term@risk_notes' in novel_rules.check_bible(b)
+    b['season_title'] = '금융 업종과 구체 업종·지역은 배경으로 쓰지 않는다.'
+    assert 'R04:industry@season_title' in novel_rules.check_bible(b)
+
+
+@pytest.mark.parametrize('trusted', [True, False])
+def test_revalidated_bible_skips_writer_and_preserves_provenance(novel, trusted):
+    bad = novel_fixtures.bible()
+    bad['season_title'] = '은행'
+    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': bad}]))
+    bible = row(novel.fake, 'N1-BIBLE')
+    good = novel_fixtures.bible()
+    result = novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0, fallback=False) if trusted else None
+    novel_policy.save_candidate(bible, good, result)
+    _set(bible, **{S.N_RESULT: 'rules:R04:industry,R07:harm_term'})
+    _, client = run(kst(2026, 11, 9, 12, 44))
+    assert len(client.calls) == 1
+    assert 'verdict' in client.calls[0]['output_config']['format']['schema']['required']
+    fresh = row(novel.fake, 'N1-BIBLE')
+    assert novel.fake.val(fresh, S.N_ATTEMPTS) == 1
+    assert novel.fake.val(fresh, S.N_STATE) == (S.NS_IMPLICIT if trusted else S.NS_EXPLICIT)
+
+
+def test_legacy_bible_codes_become_targeted_repair(novel):
+    bad = novel_fixtures.bible()
+    bad['risk_notes'] = ['은행이 실제 배경이다.']
+    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': bad}]))
+    bible = row(novel.fake, 'N1-BIBLE')
+    _set(bible, **{S.N_RESULT: 'rules:R04:industry'})
+    retry = Scripted([{'data': {'risk_notes': ['일반 사무실 배경.']}}, None])
+    # Supply real field definitions; the normal fixture schema is intentionally minimal.
+    original = run_novel._prompts
+    from unittest.mock import patch
+    def prompts(ctx):
+        p = original(ctx)
+        p.schemas['nb']['properties'] = {'risk_notes': {'type': 'array', 'items': {'type': 'string'}}}
+        return p
+    with patch.object(run_novel, '_prompts', prompts):
+        run(kst(2026, 11, 9, 12, 44), retry)
+    assert retry.calls[0]['output_config']['format']['schema']['required'] == ['risk_notes']
+    saved = novel_store.json_section(row(novel.fake, 'N1-BIBLE'), novel_policy.H_DRAFT)
+    assert saved['arc'] == bad['arc']
