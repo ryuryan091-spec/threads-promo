@@ -92,3 +92,42 @@ def test_field_hints_case_insensitive():
     error.body = {"message": "JSON_SCHEMA ADDITIONALPROPERTIES"}
     assert novel_diagnostics.diagnose(error, {})["field_hints"] == [
         "json_schema", "additionalProperties"]
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("You have reached your specified API usage limits", "organization_spend_limit"),
+    ("You have reached your specified workspace API usage limits", "workspace_spend_limit"),
+])
+def test_spend_limit_messages(message, reason):
+    error = RuntimeError()
+    error.status_code = 400
+    error.body = {"error": {"type": "invalid_request_error", "message": message}}
+    result = novel_diagnostics.diagnose(error, {})
+    assert result["reason_hint"] == reason
+    assert result["message_present"] is True
+    assert result["message_length"] == len(message)
+
+
+def test_tier_spend_limit_does_not_retry_429():
+    error = RuntimeError()
+    error.status_code = 429
+    error.body = {"error": {"type": "rate_limit_error", "details": {
+        "error_code": "enforced_spend_limit_reached"}}}
+    result = novel_diagnostics.diagnose(error, {})
+    assert result["retryable"] is False
+    assert result["detail_code"] == "enforced_spend_limit_reached"
+    assert result["message_present"] is False
+    error.body["error"]["details"]["error_code"] = "SECRET-UNKNOWN"
+    result = novel_diagnostics.diagnose(error, {})
+    assert result["retryable"] is True
+    assert "SECRET" not in json.dumps(result)
+
+
+def test_private_message_masks_before_truncation():
+    error = RuntimeError("NEVER-STRINGIFY")
+    error.body = {"message": "x" * 1195 + " sk-ant-" + "PRIVATE" * 50}
+    result = novel_diagnostics.private_message(error, {})
+    assert len(result) <= 1200
+    assert "PRIVATE" not in result
+    error.body = {"message": None}
+    assert novel_diagnostics.private_message(error, {}) == ""

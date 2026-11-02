@@ -30,6 +30,11 @@ CHARS_PER_TOKEN = 1.5  # 한국어 혼합 대략치 (추정용)
 class LLMError(RuntimeError):
     """API 호출 실패 (메시지는 코드만)."""
 
+    def __init__(self, code: str, *, diagnostic: dict | None = None, private_detail: str = ""):
+        super().__init__(code)
+        self.diagnostic = diagnostic or {}
+        self.private_detail = private_detail
+
 
 @dataclass
 class Result:
@@ -125,7 +130,11 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
         status = diagnostic["http_status"] or ""
         logger.error("[NovelLLM] diagnostic=%s", json.dumps(diagnostic, sort_keys=True))
         logger.error(f"[NovelLLM] {label} 호출 실패 {type(e).__name__} {status}")
-        raise LLMError(f"api:{type(e).__name__}{':' + str(status) if status else ''}") from None
+        code = f"api:{type(e).__name__}{':' + str(status) if status else ''}"
+        if not diagnostic["retryable"]:
+            code += ":hold"
+        raise LLMError(code, diagnostic=diagnostic,
+                       private_detail=novel_diagnostics.private_message(e, params)) from None
     usage = _usage(msg)
     used_model = str(getattr(msg, "model", "") or model)
     result_cost = cost_of(used_model, usage)

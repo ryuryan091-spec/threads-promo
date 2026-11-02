@@ -1200,7 +1200,7 @@ def test_api_failure_three_total_and_failure_status(novel):
         def stream(self, **params):
             self.calls.append(params)
             error = RuntimeError("private")
-            error.status_code = 400
+            error.status_code = 500
             raise error
     calls = 0
     for h in (10, 12, 14, 16):
@@ -1212,3 +1212,51 @@ def test_api_failure_three_total_and_failure_status(novel):
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_ATTEMPTS) == 3
     assert novel_store.H_BIBLE not in novel_store.sections(bible)
+
+
+def test_permanent_api_failure_holds_and_saves_private_evidence(novel, caplog):
+    class Failing(Scripted):
+        def stream(self, **params):
+            self.calls.append(params)
+            error = RuntimeError("DO-NOT-LOG")
+            error.status_code = 400
+            error.request_id = "req_1234567890"
+            error.body = {"error": {"type": "invalid_request_error", "message":
+                "You have reached your specified workspace API usage limits. PRIVATE-DETAIL "
+                + FAKE_CLAUDE_KEY + ' "quoted input" ' + params["system"][0]["text"]}}
+            raise error
+    client = Failing()
+    for h in (10, 12, 14, 16):
+        log, _ = run(kst(2026, 11, 9, h, 44), client)
+        assert log.status == "failed"
+    assert len(client.calls) == 1
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_ATTEMPTS) == 1
+    assert novel.fake.val(bible, S.N_RESULT).endswith(":hold")
+    evidence = novel_store.json_section(bible, "API 오류 진단 (JSON)")
+    assert evidence["reason_hint"] == "workspace_spend_limit"
+    assert "PRIVATE-DETAIL" in evidence["message_redacted"]
+    assert FAKE_CLAUDE_KEY not in evidence["message_redacted"]
+    assert "quoted input" not in evidence["message_redacted"]
+    assert "표식-NB" not in evidence["message_redacted"]
+    assert "PRIVATE-DETAIL" not in caplog.text
+    assert all("PRIVATE-DETAIL" not in msg for msg in novel.tg.sent)
+    assert any("자동 재시도 보류" in msg for msg in novel.tg.sent)
+    assert novel_store.H_BIBLE not in novel_store.sections(bible)
+
+
+def test_evidence_write_failure_keeps_hold(novel, monkeypatch):
+    class Failing(Scripted):
+        def stream(self, **params):
+            self.calls.append(params)
+            error = RuntimeError()
+            error.status_code = 400
+            raise error
+    def fail_append(*args, **kwargs):
+        raise RuntimeError("PRIVATE-PERSIST-ERROR")
+    monkeypatch.setattr(novel_store, "append", fail_append)
+    log, client = run(kst(2026, 11, 9, 10, 44), Failing())
+    assert log.status == "failed"
+    bible = row(novel.fake, "N1-BIBLE")
+    assert not run_novel._retryable(bible)
+    assert len(client.calls) == 1

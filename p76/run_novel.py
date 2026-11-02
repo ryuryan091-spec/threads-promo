@@ -35,6 +35,7 @@ from typing import Any
 from p76 import (
     cli,
     notion,
+    novel_diagnostics,
     novel_llm,
     novel_policy,
     novel_prompts,
@@ -582,6 +583,9 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
 
 # ── 3 생성: 다음 작업 고르기 ──────────────────────────────
 def _retryable(page: dict) -> bool:
+    result = notion.plain(page, S.N_RESULT)
+    if result.startswith("api:") and result.endswith(":hold"):
+        return False
     return (novel_store.state(page) in (S.NS_GENERATING, S.NS_CHECK_FAILED)
             and (notion.number(page, S.N_ATTEMPTS) or 0) < S.NOVEL_MAX_ATTEMPTS
             and not notion.checkbox(page, S.N_STOP))
@@ -618,6 +622,10 @@ def next_job(ctx: Ctx) -> tuple[str, int, int, dict | None] | None:
 def generate(ctx: Ctx) -> None:
     job = next_job(ctx)
     if job is None:
+        if any(notion.plain(p, S.N_RESULT).startswith("api:")
+               and notion.plain(p, S.N_RESULT).endswith(":hold")
+               and novel_store.state(p) == S.NS_CHECK_FAILED for p in ctx.rows):
+            ctx.log.fail("api:held_for_diagnosis")
         logger.info("[Novel] 생성할 원고 없음")
         return
     what, n, m, row = job
@@ -636,8 +644,22 @@ def generate(ctx: Ctx) -> None:
     except novel_llm.LLMError as e:
         target = row or novel_store.find(ctx.rows, label)
         if target is not None and novel_store.state(target) == S.NS_GENERATING:
-            _fail_row(ctx, target, S.NS_CHECK_FAILED, str(e))
+            note = ""
+            if e.diagnostic:
+                note = (f"원인={e.diagnostic['reason_hint']} · 요청={e.diagnostic['request_id']}"
+                        + (" · 자동 재시도 보류, 진단 확인 필요" if str(e).endswith(":hold") else ""))
+            _fail_row(ctx, target, S.NS_CHECK_FAILED, str(e), note=note)
             ctx.log.fail(str(e))
+            if e.diagnostic:
+                evidence = {**e.diagnostic, "message_redacted": e.private_detail,
+                            "recorded_at": ctx.now.isoformat(), "stage": label,
+                            "attempt": notion.number(target, S.N_ATTEMPTS)}
+                try:
+                    novel_store.append(target, novel_store.section_blocks([
+                        (novel_diagnostics.H_API_ERROR, json.dumps(evidence, ensure_ascii=False), "json")]))
+                except Exception:  # noqa: BLE001 — evidence failure must not undo the hold or leak content
+                    logger.error("[Novel] private API diagnostic persistence failed")
+                    ctx.log.fail("diagnostic:persist_failed")
         else:
             ctx.log.fail(str(e))
 
