@@ -131,3 +131,13 @@ def test_private_message_masks_before_truncation():
     assert "PRIVATE" not in result
     error.body = {"message": None}
     assert novel_diagnostics.private_message(error, {}) == ""
+
+
+def test_observed_grammar_size_error():
+    error = RuntimeError()
+    error.status_code = 400
+    error.body = {"error": {"type": "invalid_request_error", "message":
+        "The compiled grammar is too large, which would cause performance issues."}}
+    result = novel_diagnostics.diagnose(error, {})
+    assert result["reason_hint"] == "schema_compiled_grammar_size"
+    assert result["retryable"] is False
