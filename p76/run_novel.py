@@ -257,6 +257,9 @@ def _llm(ctx: Ctx, row: dict, *, label: str, model: str, effort: str, system: st
         if set(res.data) != repair_fields:
             raise novel_llm.LLMError("repair:unexpected_fields")
         res.data = {**candidate, **res.data}
+        if repair_fields != set(candidate):
+            _, origin_unverified = novel_policy.candidate_origin(row, candidate)
+            res.fallback = res.fallback or origin_unverified
     return res
 
 
@@ -407,22 +410,39 @@ def generate_bible(ctx: Ctx, n: int, row: dict | None) -> None:
         row = novel_store.create(ctx.rows, novel_store.bible_key(n), S.NK_BIBLE, n=n)
         ctx.log.writes += 1
     prev_codes = prev_rule_codes(row)
-    _start_attempt(ctx, row, p.tag("nb"))
     journals = novel_prompts.published_journals()
-    system = p.systems["nb"] + "\n\n[문체 견본]\n" + (_style(p) or "없음")
-    user = _bible_user(ctx, n, journals)
-    note = carry_note(prev_codes)
-    res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort=S.NOVEL_WRITE_EFFORT,
-               system=system, user_blocks=[{"text": user + note}], schema=p.schemas["nb"], max_tokens=S.NOVEL_WRITE_MAX_TOKENS,
-               expected_out=12000, stream=True)
-    if res.refusal:
-        _fail_row(ctx, row, S.NS_REFUSED, f"refusal:{res.refusal}")
-        return
-    if not res.ok:
-        _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
-        return
-    bible = normalize_arc(res.data)
-    novel_policy.save_candidate(row, bible)
+    candidate = novel_store.json_section(row, novel_policy.H_DRAFT) if prev_codes else {}
+    candidate_errors = (novel_rules.check_bible(candidate, banned_terms=S.BANNED_TERMS,
+                        journal_numbers=set(journals)) if candidate else [])
+    # Reuse only a complete draft from this prompt version after fresh checks.
+    reuse = bool(candidate and not candidate_errors
+                 and notion.plain(row, S.N_PROMPT_VER) == p.tag("nb"))
+    if reuse:
+        model, fallback = novel_policy.candidate_origin(row, candidate)
+        res = novel_llm.Result(candidate, "end_turn", model, 0.0, fallback=fallback)
+        novel_store.transition(row, S.NS_GENERATING)
+        bible = candidate
+        logger.info("[Novel] saved bible revalidated; writer skipped")
+    else:
+        if candidate_errors:
+            # Upgrade legacy location-less codes before selecting repair fields.
+            novel_store.update(row, {S.N_RESULT: notion.v_rich(RULES_PREFIX + ",".join(candidate_errors))})
+            prev_codes = candidate_errors
+        _start_attempt(ctx, row, p.tag("nb"))
+        system = p.systems["nb"] + "\n\n[문체 견본]\n" + (_style(p) or "없음")
+        user = _bible_user(ctx, n, journals)
+        note = carry_note(prev_codes)
+        res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort=S.NOVEL_WRITE_EFFORT,
+                   system=system, user_blocks=[{"text": user + note}], schema=p.schemas["nb"], max_tokens=S.NOVEL_WRITE_MAX_TOKENS,
+                   expected_out=12000, stream=True)
+        if res.refusal:
+            _fail_row(ctx, row, S.NS_REFUSED, f"refusal:{res.refusal}")
+            return
+        if not res.ok:
+            _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
+            return
+        bible = normalize_arc(res.data)
+        novel_policy.save_candidate(row, bible, res)
     errors = novel_rules.check_bible(bible, banned_terms=S.BANNED_TERMS, journal_numbers=set(journals))
     if any(e.startswith("R03") for e in errors):
         _fail_row(ctx, row, S.NS_HELD, "rules:R03")
@@ -528,7 +548,7 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
         _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
         return
     ep = res.data
-    novel_policy.save_candidate(row, ep)
+    novel_policy.save_candidate(row, ep, res)
     errors = novel_rules.check_episode(
         ep.get("body", ""), m, banned_terms=S.BANNED_TERMS, cliches=p.cliches, prev_bodies=prev_bodies,
         journals=journals, d_plus_end=(ep.get("continuity") or {}).get("d_plus_end"), prev_d_plus_end=prev_d,

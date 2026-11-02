@@ -9,6 +9,7 @@ from p76 import novel_store as store
 from p76 import settings as S
 
 H_DRAFT = "수정용 초안 (JSON)"
+H_DRAFT_META = "수정용 초안 출처 (JSON)"
 H_USAGE = "사용량 (JSON)"
 H_RELEASE = "품질 경고 알림 (JSON)"
 QUALITY = {"R09:cliche", "R09:repeated_sentences", "Q:too_long"}
@@ -40,8 +41,19 @@ def save_json(row: dict, heading: str, data: dict) -> None:
     store.append(row, store.section_blocks([(heading, json.dumps(data, ensure_ascii=False), "json")]))
 
 
-def save_candidate(row: dict, data: dict) -> None:
+def save_candidate(row: dict, data: dict, result=None) -> None:
     save_json(row, H_DRAFT, data)
+    if result is not None:
+        save_json(row, H_DRAFT_META, {"model": result.model, "fallback": result.fallback,
+                  "hash": hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()})
+
+
+def candidate_origin(row: dict, data: dict) -> tuple[str, bool]:
+    meta = store.json_section(row, H_DRAFT_META)
+    digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    trusted = (meta.get("hash") == digest and meta.get("model") == S.MODEL_WRITER
+               and meta.get("fallback") is False)
+    return (S.MODEL_WRITER if trusted else "unverified"), not trusted
 
 
 def release_ok(row: dict) -> bool:
