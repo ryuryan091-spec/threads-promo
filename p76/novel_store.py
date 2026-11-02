@@ -185,8 +185,9 @@ def sections(page: dict) -> dict[str, str]:
         if btype == "heading_2":
             current = notion.block_text(block).strip()
             continue
-        if current and current not in out and btype in ("code", "paragraph"):
+        if current and btype in ("code", "paragraph"):
             out[current] = notion.block_text(block)
+            current = ""
     return out
 
 
@@ -224,3 +225,4 @@ def add_month_spent(data: dict, now: datetime, usd: float) -> None:
     month = now.astimezone(notion.KST).strftime("%Y-%m")
     data["spent"] = round(month_spent(data, now) + usd, 4)
     data["month"] = month
+
