@@ -344,12 +344,29 @@ def test_insights_earliest_post_regardless_of_type(insights_env):
 
 
 def test_insights_read_permission_does_not_trip(insights_env):
-    """2026-10-28 실측: 반응 조회에 pages_read_user_content 필요(code 10). 빈칸 + 코드로 저장하고 계속한다."""
+    """2026-10-28 실측: 반응 조회에 pages_read_user_content 필요(code 10). 빈칸 + 코드로 저장하고 계속한다.
+    알려진 권한 한계라 실행은 degraded 로 보지 않는다(DN2026_0091)."""
     fake, g = insights_env
     g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = err(10)
     log = run_insights_body()
     row = fake.rows(DB08)[0]
-    assert log.status == "degraded"
+    assert log.status == "ok" and not any(c.endswith(":partial") for c in log.codes)
     assert fake.val(row, settings.M_REACTIONS) is None and fake.val(row, settings.M_FOLLOWERS) == 321
     assert "permission_error" in fake.val(row, settings.M_RESULT)
     assert not any("comments.summary" in c[2].get("fields", "") for c in g.calls)
+
+
+def test_insights_permission_200_range_not_degraded(insights_env):
+    fake, g = insights_env
+    g.handlers[("GET", "61_35?comments.summary(total_count).limit(0)")] = err(200)
+    log = run_insights_body()
+    row = fake.rows(DB08)[0]
+    assert "comments:http_400:permission_error" in fake.val(row, settings.M_RESULT)
+    assert log.status == "ok"
+
+
+def test_insights_token_invalid_still_degrades_or_trips(insights_env):
+    fake, g = insights_env
+    g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = err(190)
+    log = run_insights_body()
+    assert log.status in ("degraded", "tripped")  # 토큰 무효는 경고로 낮추지 않는다

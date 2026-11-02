@@ -30,9 +30,17 @@ from p76 import calendar_plan, cli, graph, ledger, notion, safety, settings
 from p76.notify import send
 from p76.runlog import RunLog
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 logger = logging.getLogger(__name__)
+
+# 수집결과(DB-08)에는 남기되 실행을 degraded 로 보지 않는 코드.
+# 반응·댓글 조회의 권한 부족(code 10·200대)은 현재 페이지 토큰의 알려진 한계 — 토큰 재발급 안 함, DN2026_0069 유지
+# (2026-11-02 회장 결정, DN2026_0091). 토큰 무효(190·401)·형식 오류·호출 실패 등 다른 코드는 그대로 degraded.
+NON_DEGRADING = (
+    "insights:skipped", "reel:", "multi_post",
+    "reactions:http_400:permission_error", "comments:http_400:permission_error", "comments:skipped_same_permission",
+)
 
 
 @dataclass(frozen=True)
@@ -196,7 +204,7 @@ def body(log: RunLog, today: date | None = None) -> None:
         values, codes = collect(t, followers if isinstance(followers, int) else None)
         if safety.tripped():
             break
-        if any(not c.startswith(("insights:skipped", "reel:", "multi_post")) for c in codes):
+        if any(not c.startswith(NON_DEGRADING) for c in codes):
             log.degrade(f"{t.key}:partial")
         logger.info(f"[Insights] {t.key} 수집 ({len([v for v in values.values() if v is not None])}개 값)")
         if not safety.notion_write_allowed():
