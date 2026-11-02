@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from p76 import settings
+from p76 import novel_diagnostics, settings
 
 VERSION = "1.0.0"
 
@@ -117,7 +117,9 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
         else:
             msg = client.beta.messages.create(**params)
     except Exception as e:  # noqa: BLE001 — SDK 예외 계층 전체. 메시지에는 요청 본문이 섞일 수 있어 버린다
-        status = getattr(e, "status_code", "") or ""
+        diagnostic = novel_diagnostics.diagnose(e, params)
+        status = diagnostic["http_status"] or ""
+        logger.error("[NovelLLM] diagnostic=%s", json.dumps(diagnostic, sort_keys=True))
         logger.error(f"[NovelLLM] {label} 호출 실패 {type(e).__name__} {status}")
         raise LLMError(f"api:{type(e).__name__}{':' + str(status) if status else ''}") from None
     usage = _usage(msg)
@@ -193,3 +195,4 @@ class FixtureClient:
 
     def create(self, **params: Any) -> _Msg:
         return self._respond(params)
+
