@@ -14,9 +14,9 @@ from p76_fake import DB05, DB12, FAKE_PAGE_ID, FakeResp, png_bytes
 from p76 import (
     novel_fixtures,
     novel_llm,
+    novel_policy,
     novel_prompts,
     novel_rules,
-    novel_policy,
     novel_store,
     novel_tg,
     run_novel,
