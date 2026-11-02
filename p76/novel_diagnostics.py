@@ -21,6 +21,7 @@ def _reason_hint(message: str, status: int | None, error_type: str) -> str:
     if status == 400 and error_type == "invalid_request_error":
         normalized = " ".join(message.casefold().split())
         patterns = (
+            ("schema_compiled_grammar_size", r"\bcompiled grammar is too large\b"),
             ("workspace_spend_limit", r"you have reached your specified workspace api usage limits"),
             ("organization_spend_limit", r"you have reached your specified api usage limits"),
             ("schema_compilation_complexity", r"\bschema is too complex for compilation\b"),
