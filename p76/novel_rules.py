@@ -163,8 +163,21 @@ def check_episode(body: str, episode: int, *, banned_terms: tuple[str, ...] = ()
 
 def check_bible(bible: dict, *, banned_terms: tuple[str, ...] = (), journal_numbers: set[int] | None = None) -> list[str]:
     errors: list[str] = []
-    text = json.dumps(bible, ensure_ascii=False)
-    errors += common_checks(text, banned_terms)
+    # Only these standalone compliance clauses in risk_notes are exempt from
+    # lexical R04/R07 checks. Other rules and the AI review still see originals.
+    disclaimers = {
+        "금융 업종과 구체 업종·지역은 배경으로 쓰지 않는다",
+        "사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다",
+    }
+    for name, value in bible.items():
+        text = json.dumps(value, ensure_ascii=False)
+        found = common_checks(text, banned_terms)
+        if name == "risk_notes" and isinstance(value, list) and all(isinstance(v, str) for v in value):
+            remaining = " ".join(s for note in value for s in re.split(r"[.\n]", note)
+                                 if s.strip() not in disclaimers)
+            filtered = common_checks(remaining, banned_terms)
+            found = [c for c in found if c not in ("R04:industry", "R07:harm_term") or c in filtered]
+        errors += [f"{code}@{name}" for code in found]
     episodes = sorted(int(a.get("episode", 0)) for a in bible.get("arc") or [])
     if episodes != list(range(1, settings.NOVEL_EPISODES + 1)):
         errors.append("B01:arc_incomplete")
@@ -256,3 +269,4 @@ def question_ok(question: str) -> list[str]:
     if len(q) > 120:
         errors.append("Q:too_long")
     return errors
+
