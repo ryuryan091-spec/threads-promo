@@ -50,7 +50,7 @@ def test_call_logs_diagnostics_without_error_body(stream, caplog):
         raise error
     client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=fail, stream=fail)))
     with pytest.raises(novel_llm.LLMError, match="api:RuntimeError:400"):
-        novel_llm.call(client, label="N1-BIBLE:write", model="test", effort="high",
+        novel_llm.call(client, label="N1-BIBLE:write", model=novel_llm.settings.MODEL_WRITER, effort="high",
                        system="SECRET-PROMPT", user_blocks=[{"text": "SECRET-PROMPT"}],
                        schema={"type": "object"}, max_tokens=32, stream=stream)
     assert "diagnostic=" in caplog.text and "max_tokens" in caplog.text
