@@ -55,3 +55,40 @@ def test_call_logs_diagnostics_without_error_body(stream, caplog):
                        schema={"type": "object"}, max_tokens=32, stream=stream)
     assert "diagnostic=" in caplog.text and "max_tokens" in caplog.text
     assert "SECRET-PROMPT" not in caplog.text
+
+
+@pytest.mark.parametrize("message,hint", [
+    ("Schema is too complex for compilation.", "schema_compilation_complexity"),
+    ("SCHEMA IS TOO COMPLEX\nFOR COMPILATION.", "schema_compilation_complexity"),
+    ("Schema compilation timed out.", "schema_compilation_timeout"),
+    ("Your credit balance is too low to access the Anthropic API.", "credit_balance"),
+    ("Insufficient credits", "credit_balance"),
+    ("Schema is too complex for compilation. Insufficient credits", "ambiguous"),
+    ("unrecognized rejection", "unknown"),
+    ("", "unknown"),
+])
+def test_provider_reason_hints_do_not_expose_message(message, hint):
+    error = RuntimeError()
+    error.status_code = 400
+    error.body = {"error": {"type": "invalid_request_error",
+                            "message": message + " SECRET-PROMPT sk-ant-private"}}
+    result = novel_diagnostics.diagnose(error, {})
+    assert result["reason_hint"] == hint
+    assert result["retryable"] is False
+    assert "SECRET" not in json.dumps(result) and "sk-ant" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("status,error_type", [(500, "api_error"), (400, "unknown"),
+                                              (None, "invalid_request_error")])
+def test_reason_requires_matching_provider_error(status, error_type):
+    error = RuntimeError()
+    error.status_code = status
+    error.body = {"type": error_type, "message": "Insufficient credits"}
+    assert novel_diagnostics.diagnose(error, {})["reason_hint"] == "unknown"
+
+
+def test_field_hints_case_insensitive():
+    error = RuntimeError()
+    error.body = {"message": "JSON_SCHEMA ADDITIONALPROPERTIES"}
+    assert novel_diagnostics.diagnose(error, {})["field_hints"] == [
+        "json_schema", "additionalProperties"]
