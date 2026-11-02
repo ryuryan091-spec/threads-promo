@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from p76 import novel_diagnostics, settings
+from p76 import novel_diagnostics, novel_schema, settings
 
 VERSION = "1.1.0"
 
@@ -105,6 +105,9 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
     """user_blocks: [{"text": str, "cache": bool}] — 앞쪽 고정 블록에 cache=True."""
     if model != settings.MODEL_WRITER:
         raise LLMError("model:not_allowed")
+    schema, compacted = novel_schema.compact_arc(schema)
+    if compacted:
+        system += "\n\n" + novel_schema.ARC_INSTRUCTION
     content = []
     for block in user_blocks:
         item: dict = {"type": "text", "text": block["text"]}
@@ -155,6 +158,8 @@ def call(client: Any, *, label: str, model: str, effort: str, system: str, user_
         return Result(None, "invalid_json", used_model, result_cost, fallback=fallback, usage=usage)
     if not isinstance(data, dict):
         return Result(None, "invalid_json", used_model, result_cost, fallback=fallback, usage=usage)
+    if compacted and not novel_schema.valid_arc_shape(data):
+        return Result(None, "invalid_arc_shape", used_model, result_cost, fallback=fallback, usage=usage)
     return Result(data, stop, used_model, result_cost, fallback=fallback, usage=usage)
 
 
