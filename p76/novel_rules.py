@@ -4,7 +4,8 @@ p76/novel_rules.py
 사건 소설 원고의 결정론 검사·조립 (DSN-P76-NOVEL-002 §6). AI 검수·회장 검수의 보조이며 대체가 아니다.
 
   check_episode()  R01~R12 위반 코드 목록 (빈 리스트 = 통과)
-  check_bible()    바이블 JSON 검사
+  check_bible()    바이블 JSON 검사 (오류 — 재작성·검사실패)
+  bible_warnings() 바이블 경고 W05 (차단하지 않음 — 회차 R05 가 게시 전에 막는다)
   fill_laws()      {{LAW_*}} 자리표시자 → 정본 법률 블록 (확인일 90일 이내만)
   footer()         고정 꼬리말 (픽션 고지·AI 표시·해시태그 — AI 는 쓰지 않는다)
 
@@ -18,7 +19,8 @@ from datetime import date
 
 from p76 import hiatus_guard, settings
 
-VERSION = "1.1.0"  # 1.1.0: 공개 문구(표지 인용·부제·열린 질문) 검사 check_public_fields
+VERSION = "1.1.1"  # 1.1.1: 바이블 R05 → 경고 W05(bible_warnings), 회차 R05 차단 유지
+# 1.1.0: 공개 문구(표지 인용·부제·열린 질문) 검사 check_public_fields
 
 BODY_MIN, BODY_MAX = 3000, 4200
 PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
@@ -163,8 +165,6 @@ def check_bible(bible: dict, *, banned_terms: tuple[str, ...] = (), journal_numb
     errors: list[str] = []
     text = json.dumps(bible, ensure_ascii=False)
     errors += common_checks(text, banned_terms)
-    if any(p.search(text) for p in LEGAL_TEXT):
-        errors.append("R05:legal_text")
     episodes = sorted(int(a.get("episode", 0)) for a in bible.get("arc") or [])
     if episodes != list(range(1, settings.NOVEL_EPISODES + 1)):
         errors.append("B01:arc_incomplete")
@@ -179,6 +179,12 @@ def check_bible(bible: dict, *, banned_terms: tuple[str, ...] = (), journal_numb
     if journal_numbers is not None and not promoted <= journal_numbers:
         errors.append("B03:unknown_journal")
     return sorted(set(errors))
+
+
+def bible_warnings(bible: dict) -> list[str]:
+    """바이블 경고 코드 — 법률 문구(조문·과태료·금액 등)는 설계 메모로 허용하되 경고만 남긴다(W05)."""
+    text = json.dumps(bible, ensure_ascii=False)
+    return ["W05:legal_text"] if any(p.search(text) for p in LEGAL_TEXT) else []
 
 
 def law_block_ok(confirmed: date | None, today: date) -> bool:

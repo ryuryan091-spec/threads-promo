@@ -2,6 +2,7 @@
 #  사건파일76 휴재 콘텐츠 게시 (DB-09 승인 건 → 페이지 사진 게시)
 #
 #  ⚠️ cron 은 UTC. "5 11 * * *" = KST 매일 20:05 (+ 랜덤 0~40분)  (STD-SCHED-01 — 시각을 바꾸면 이 주석도 함께 수정)
+#  예정 시각 = github.event.schedule 기준(p76/sched.py, STD-SCHED-03)
 #  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
 #  threads-promo 통합 운영(DN2026_0069, 공개 레포 위험 수용) — p76/ 패키지만 실행, src/ 와 설정 공유 없음
 #  Secret: 노션·텔레그램은 threads-promo 기존 NOTION_TOKEN · TELEGRAM_BOT_TOKEN · TELEGRAM_ALERT_CHAT_ID 재사용(DN2026_0070)
@@ -61,4 +62,6 @@ jobs:
           PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
           PAGE76_HIATUS_PUBLISH_ENABLED: ${{ vars.PAGE76_HIATUS_PUBLISH_ENABLED }}
+          PAGE76_SCHEDULE_CRON: ${{ github.event.schedule }}
+          PAGE76_MAX_LAG_MIN: ${{ vars.PAGE76_MAX_LAG_MIN }}
         run: python -m p76.run_hiatus_publish

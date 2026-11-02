@@ -1,12 +1,13 @@
 """T1-12 모드 파서 · T1-13 health · T1-14 실행 기록 · T1-15 insights."""
 from __future__ import annotations
 
-from datetime import date
+import logging
+from datetime import UTC, date, datetime
 
 import pytest
 from p76_fake import DB08, DB09, DB11, FAKE_PAGE_ID, FakeResp, add_episode, err
 
-from p76 import cli, run_health, run_insights, safety, settings
+from p76 import cli, run_health, run_insights, runlog, safety, settings
 from p76.runlog import RunLog
 
 TODAY = date(2026, 11, 12)
@@ -135,6 +136,34 @@ def test_runlog_skipped_in_dry_run(fake_notion, env):
     env(PAGE76_MODE="dry_run")
     cli.execute("calendar", "9.9", lambda log: None)
     assert fake_notion.rows(DB11) == []
+
+
+def _runlog_post(fake) -> dict:
+    posts = [c for c in fake.calls if c[0] == "POST" and c[1] == "/pages" and c[2]["parent"]["database_id"] == DB11]
+    assert len(posts) == 1
+    return posts[0][2]["properties"]
+
+
+def test_runlog_records_schedule_and_lag(fake_notion, env, monkeypatch, caplog):
+    """STD-SCHED-03 · STD-OBS-05: 예약 실행은 예정 시각·지연(초)을 실행 시작 시각 기준으로 남긴다."""
+    caplog.set_level(logging.INFO)
+    env(PAGE76_MODE="shadow", PAGE76_SCHEDULE_CRON="28 12 * * *")
+    started = datetime(2026, 11, 10, 15, 30, tzinfo=UTC)
+    monkeypatch.setattr(runlog, "datetime", type("FixedDT", (datetime,), {"now": classmethod(lambda cls, tz=None: started)}))
+    assert cli.execute("calendar", "9.9", lambda log: None) == 0
+    props = _runlog_post(fake_notion)
+    assert props[settings.R_SCHEDULED]["date"]["start"] == "2026-11-10T21:28:00+09:00"
+    assert props[settings.R_LAG] == {"number": 182 * 60}
+    assert "sched_lag=10920s" in caplog.text
+
+
+def test_runlog_manual_run_omits_schedule(fake_notion, env, caplog):
+    caplog.set_level(logging.INFO)
+    env(PAGE76_MODE="shadow", PAGE76_SCHEDULE_CRON="")
+    cli.execute("calendar", "9.9", lambda log: None)
+    props = _runlog_post(fake_notion)
+    assert settings.R_SCHEDULED not in props and settings.R_LAG not in props
+    assert "sched_lag=-" in caplog.text
 
 
 def test_disabled_pipeline_exits_without_work(fake_notion, env):

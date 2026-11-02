@@ -1,7 +1,7 @@
 """T1-01~05 시즌·캘린더 계산, FR-01~03."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from p76_fake import DB09, add_episode
@@ -205,3 +205,27 @@ def test_invalid_anchor_falls_back(fake_notion, env):
 def test_no_anchor_at_all(fake_notion, env):
     env(PAGE76_SCHEDULE_ANCHOR="")
     assert _run(date(2026, 11, 9)).codes == ["db05_no_published"]
+
+
+# ── STD-SCHED-03 예약 실행의 '오늘' = 예정 시각의 KST 날짜 ──────
+def test_today_kst_uses_scheduled_date(env):
+    env(PAGE76_SCHEDULE_CRON="28 12 * * *")  # KST 21:28
+    late_start = datetime(2026, 11, 10, 15, 30, tzinfo=UTC)  # KST 11-11 00:30 (3시간 지연)
+    assert run_calendar.today_kst(late_start) == date(2026, 11, 10)
+
+
+def test_today_kst_manual_run_uses_now(env):
+    env(PAGE76_SCHEDULE_CRON="")
+    assert run_calendar.today_kst(datetime(2026, 11, 10, 15, 30, tzinfo=UTC)) == date(2026, 11, 11)
+
+
+def test_calendar_body_uses_scheduled_date(fake_notion, env, monkeypatch):
+    env(PAGE76_SCHEDULE_CRON="28 12 * * *")
+    late_start = datetime(2026, 11, 10, 15, 30, tzinfo=UTC)
+    monkeypatch.setattr(run_calendar.sched, "datetime", type("FixedDT", (datetime,), {
+        "now": classmethod(lambda cls, tz=None: late_start)}))
+    add_episode(fake_notion, 35, date(2026, 11, 9))
+    log = RunLog("calendar", "t")
+    run_calendar.body(log)
+    keys = sorted(fake_notion.val(p, settings.C_KEY) for p in fake_notion.rows(DB09))
+    assert keys[0] == "2026-11-10" and len(keys) == 21

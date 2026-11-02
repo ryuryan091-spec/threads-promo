@@ -265,6 +265,9 @@ BASE_ENV = {
     "PAGE76_TELEGRAM_BOT_TOKEN": "",
     "PAGE76_TELEGRAM_CHAT_ID": "",
     "GITHUB_RUN_ID": "4242",
+    # 기본은 수동 실행(예약 cron 없음). 예약 실행 테스트는 env(PAGE76_SCHEDULE_CRON=...) 로 덮어쓴다
+    "PAGE76_SCHEDULE_CRON": "",
+    "PAGE76_MAX_LAG_MIN": "",
 }
 
 

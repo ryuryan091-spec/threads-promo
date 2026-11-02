@@ -7,6 +7,7 @@ DB-09 운영 캘린더 갱신 (매일 21:28 KST, 21:45 예약 작업 전). FR-01
      회차가 더 앞선 쪽. DB-05 기준이면 지연을 반영하고, 계획 기준이면 계획대로 매일 발행된다고 본다.
      (DB-05 조회 실패 → 갱신 생략 + 알림, 기존 행 유지)
   2. 오늘부터 21일치를 계산해 캘린더키(날짜)로 upsert
+     ('오늘' = 예약 실행이면 예정 시각의 KST 날짜 — 지연 시작이 자정을 넘겨도 하루가 밀리지 않게, STD-SCHED-03)
   3. 회장이 손댄 행(게시상태가 초안이 아님 · 본문 있음 · 검수완료)은 덮어쓰지 않는다
   4. 지난 날 행은 조회 대상에서 빼므로 수정하지 않는다
   5. 계산 결과와 같은 행은 쓰지 않는다 → 두 번 실행해도 쓰기 0 (멱등)
@@ -19,18 +20,19 @@ import logging
 import sys
 from datetime import date, datetime
 
-from p76 import calendar_plan, cli, ledger, notion, safety, settings
+from p76 import calendar_plan, cli, ledger, notion, safety, sched, settings
 from p76.calendar_plan import Entry
 from p76.notify import send
 from p76.runlog import RunLog
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 logger = logging.getLogger(__name__)
 
 
-def today_kst() -> date:
-    return datetime.now(notion.KST).date()
+def today_kst(now: datetime | None = None) -> date:
+    """예약 실행 = 예정 시각(sched.effective_now)의 KST 날짜 · 수동 실행 = 실행 시각의 KST 날짜."""
+    return sched.effective_now(now).astimezone(notion.KST).date()
 
 
 def desired_props(entry: Entry) -> dict:
