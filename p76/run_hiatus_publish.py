@@ -6,6 +6,8 @@ fb-page-publisher run_publish 의 상태 전이·결과 계약을 따른다.
 
   1. 스위치: PAGE76_ENABLED · PAGE76_HIATUS_PUBLISH_ENABLED (모드는 아래 표)
   2. DB-09: 구분=휴재콘텐츠 AND 게시상태=승인 AND 검수완료 AND 날짜 ≤ 오늘 → 가장 이른 1건
+     ('오늘' = 예약 실행이면 예정 시각의 KST 날짜. 예정 시각보다 PAGE76_MAX_LAG_MIN(기본 90분, 랜덤 대기
+      최대 40분 포함) 넘게 늦으면 게시 보류 + 알림 — STD-SCHED-03, p76/sched.py)
      오늘 이미 발행완료 행이 있으면 게시하지 않음 (하루 1건, SEC C-22) · 발행중 잔류 행은 알림
   3. 승인 → 발행중 선점 후 재조회 확인 (다른 실행이 먼저 바꿨으면 중단)
   4. 본문 hiatus_guard → 이미지(첨부 다운로드 또는 카드 렌더, 4:5 · 10MB)
@@ -30,12 +32,12 @@ from pathlib import Path
 
 import requests
 
-from p76 import card_render, cli, graph, hiatus_guard, notion, safety, settings
+from p76 import card_render, cli, graph, hiatus_guard, notion, safety, sched, settings
 from p76.notify import send
 from p76.redact import redact
 from p76.runlog import RunLog
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 logger = logging.getLogger(__name__)
 DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
@@ -129,13 +131,21 @@ def body(log: RunLog, now: datetime | None = None, banned_terms: tuple[str, ...]
         logger.info("[Hiatus] PAGE76_HIATUS_PUBLISH_ENABLED=false — 종료")
         return
     now = now or datetime.now(UTC)
-    day0 = now.astimezone(notion.KST).date()
+    if sched.cron_invalid():
+        log.degrade("sched:cron_invalid")  # 해석 실패 → 실행 시각 기준(기존 동작), 지연 가드 없음
+    day0 = sched.effective_now(now).astimezone(notion.KST).date()
     live = settings.MODE == "live"
 
     stuck = _rows(settings.S_RUNNING)
     if stuck:
         log.degrade("stuck_rows")
         send(f"휴재 게시 발행중 잔류 {len(stuck)}건 ({', '.join(label_of(p) for p in stuck)}) — 페이지 확인 후 상태 정리")
+    if sched.too_late(now):
+        late_min = (sched.lag_seconds(now) or 0) // 60
+        log.degrade(f"late:{late_min}m")
+        send(f"휴재 게시 예약 지연 {late_min}분 — 오늘 게시 보류. 보류 건은 다음 실행에서 하루 늦게 게시됩니다(카드 일차 표기 확인)")
+        logger.warning(f"[Hiatus] 예정 시각보다 {late_min}분 지연(상한 {settings.MAX_LAG_MIN}분) — 게시 보류")
+        return
     if published_today(day0) >= settings.HIATUS_DAILY_CAP:
         logger.info("[Hiatus] 오늘 이미 휴재 콘텐츠 발행 — 종료(하루 1건)")
         return

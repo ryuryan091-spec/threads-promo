@@ -2,6 +2,7 @@
 #  사건파일76 성과 수집 (DB-08, 발행 후 D1·D3·D7)
 #
 #  ⚠️ cron 은 UTC. "20 21 * * *" = KST 매일 06:20  (STD-SCHED-01 — 시각을 바꾸면 이 주석도 함께 수정)
+#  예정 시각(github.event.schedule)은 실행 기록의 예약시각·지연초에만 쓴다(p76/sched.py · runlog)
 #  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
 #  threads-promo 통합 운영(DN2026_0069, 공개 레포 위험 수용) — p76/ 패키지만 실행, src/ 와 설정 공유 없음
 #  Secret: 노션·텔레그램은 threads-promo 기존 NOTION_TOKEN · TELEGRAM_BOT_TOKEN · TELEGRAM_ALERT_CHAT_ID 재사용(DN2026_0070)
@@ -56,4 +57,6 @@ jobs:
           PAGE76_INSIGHTS_METRICS: ${{ vars.PAGE76_INSIGHTS_METRICS }}
           PAGE76_SCHEDULE_ANCHOR: ${{ vars.PAGE76_SCHEDULE_ANCHOR }}
           PAGE76_HIATUS_DAYS: ${{ vars.PAGE76_HIATUS_DAYS }}
+          PAGE76_SCHEDULE_CRON: ${{ github.event.schedule }}
+          PAGE76_MAX_LAG_MIN: ${{ vars.PAGE76_MAX_LAG_MIN }}
         run: python -m p76.run_insights

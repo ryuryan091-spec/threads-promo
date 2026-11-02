@@ -47,13 +47,15 @@ from p76 import (
     novel_store,
     novel_tg,
     safety,
+    sched,
     settings,
 )
 from p76.novel_store import H_BODY, H_META, H_QUESTION, H_QUOTE, H_SUBTITLE
 from p76.run_novel import Ctx, _prompts, auto_publishable, collect_stops
 from p76.runlog import RunLog
 
-VERSION = "1.1.0"  # 1.1.0: 게시 직전 선점(posting:) · 미확정 재게시 차단 · 공개 문구 재검사
+VERSION = "1.1.1"  # 1.1.1: 예약 지연 가드(MAX_LAG_MIN) · 오늘 = 예정 시각 KST 날짜 (STD-SCHED-03)
+# 1.1.0: 게시 직전 선점(posting:) · 미확정 재게시 차단 · 공개 문구 재검사
 
 logger = logging.getLogger(__name__)
 S = settings
@@ -277,8 +279,18 @@ def body(log: RunLog, now: datetime | None = None) -> None:
         log.fail("novel:not_configured")
         return
     now = now or datetime.now(UTC)
+    if sched.cron_invalid():
+        log.degrade("sched:cron_invalid")  # 해석 실패 — 지연 가드 없이 기존 동작(실행 시각 기준)
+    elif sched.too_late(now):
+        lag_min = (sched.lag_seconds(now) or 0) // 60
+        log.degrade(f"late:{lag_min}m")
+        novel_tg.send("T5", f"⚠️ 예약 지연 {lag_min}분 — 이번 실행 게시 보류. 남은 재시도 cron에서 처리되며, "
+                                  f"그날 마지막 실행(14:12)이면 수동 처리가 필요합니다")
+        logger.warning(f"[NovelPub] 예약 지연 {lag_min}분 — 예고·게시 보류")
+        return
     rows = [p for p in novel_store.all_rows() if novel_store.kind(p) in (S.NK_BIBLE, S.NK_EPISODE)]
-    ctx = Ctx(log=log, now=now, rows=rows, ctrl_page={}, ctrl={})
+    # '오늘'(게시 대상 회차)·08시 판정은 예정 시각, 발행 예정 시각 경과(due > now)는 실제 now
+    ctx = Ctx(log=log, now=now, rows=rows, ctrl_page={}, ctrl={}, sched_now=sched.effective_now(now))
     logger.info(f"[NovelPub] 행 {len(rows)}건 · mode={S.MODE}")
     try:
         collect_stops(ctx)

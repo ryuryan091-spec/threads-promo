@@ -276,3 +276,70 @@ def test_attachment_preferred(publish_env, monkeypatch, tmp_path):
     monkeypatch.setattr(run_hiatus_publish, "download", download)
     run()
     assert downloaded and fake.val(row, settings.C_STATE) == settings.S_DONE
+
+
+# ── STD-SCHED-03 예정 시각 기준 '오늘'·지연 보류 ─────────────
+@pytest.fixture
+def sent(monkeypatch):
+    out: list[str] = []
+    monkeypatch.setattr(run_hiatus_publish, "send", lambda msg, urgent=False: out.append(msg) or True)
+    return out
+
+
+def test_sched_too_late_holds_publish(publish_env, env, sent):
+    fake, g = publish_env
+    env(PAGE76_SCHEDULE_CRON="5 11 * * *")  # KST 20:05
+    row = add_row(fake, TODAY)
+    log = run_at(TODAY, 22, 0)  # 115분 지연
+    assert g.writes() == [] and fake.writes() == []
+    assert fake.val(row, settings.C_STATE) == settings.S_APPROVED
+    assert "late:115m" in log.codes and log.status == "degraded"
+    assert sent == ["휴재 게시 예약 지연 115분 — 오늘 게시 보류. 보류 건은 다음 실행에서 하루 늦게 게시됩니다(카드 일차 표기 확인)"]
+
+
+def test_sched_too_late_still_checks_stuck_rows(publish_env, env, sent):
+    fake, g = publish_env
+    env(PAGE76_SCHEDULE_CRON="5 11 * * *")
+    add_row(fake, date(2026, 11, 9), state=settings.S_RUNNING)
+    log = run_at(TODAY, 22, 0)
+    assert log.codes == ["stuck_rows", "late:115m"]
+    assert len(sent) == 2 and "발행중 잔류 1건" in sent[0]
+
+
+def test_sched_within_limit_publishes(publish_env, env, sent):
+    fake, g = publish_env
+    env(PAGE76_SCHEDULE_CRON="5 11 * * *")
+    row = add_row(fake, TODAY)
+    log = run_at(TODAY, 21, 35)  # 정확히 90분 — 보류 아님
+    assert fake.val(row, settings.C_STATE) == settings.S_DONE and len(g.writes()) == 1
+    assert log.status == "ok"
+
+
+def test_sched_day0_is_scheduled_date(publish_env, env, sent):
+    """KST 23:50 예정 → 00:20 시작: '오늘'은 예정일(전날). 다음 날 행은 아직 대상이 아니다."""
+    fake, g = publish_env
+    env(PAGE76_SCHEDULE_CRON="50 14 * * *")
+    tomorrow = date(2026, 11, 11)
+    row = add_row(fake, tomorrow)
+    log = run_at(tomorrow, 0, 20)
+    assert g.writes() == [] and fake.val(row, settings.C_STATE) == settings.S_APPROVED
+    assert log.status == "ok"
+    # 수동 실행이면 실행 시각 기준(11-11) → 게시
+    env(PAGE76_SCHEDULE_CRON="")
+    run_at(tomorrow, 0, 20)
+    assert fake.val(row, settings.C_STATE) == settings.S_DONE
+
+
+def test_sched_cron_invalid_degrades_but_publishes(publish_env, env, sent):
+    fake, g = publish_env
+    env(PAGE76_SCHEDULE_CRON="not a cron")
+    row = add_row(fake, TODAY)
+    log = run_at(TODAY, 23, 50)
+    assert "sched:cron_invalid" in log.codes
+    assert fake.val(row, settings.C_STATE) == settings.S_DONE and len(g.writes()) == 1
+
+
+def run_at(day, hh, mm):
+    log = RunLog("hiatus_publish", "t")
+    run_hiatus_publish.body(log, now=datetime.fromisoformat(kst(day, hh, mm)))
+    return log

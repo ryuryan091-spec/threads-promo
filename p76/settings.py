@@ -141,6 +141,10 @@ def _load() -> dict:
         "BANNED_TERMS": _env_list("PAGE76_BANNED_TERMS"),
         # ── 실행 정보 ────────────────────────────────────────
         "RUN_ID": _env("GITHUB_RUN_ID", "local"),
+        # 예약 실행의 발화 cron(github.event.schedule). 수동 실행은 빈 값 (p76/sched.py, STD-SCHED-03)
+        "SCHEDULE_CRON": _env("PAGE76_SCHEDULE_CRON"),
+        # 게시 계열 지연 상한(분). 예정 시각보다 이만큼 넘게 늦으면 게시 보류 (2026-11-02 회장 결정 90분)
+        "MAX_LAG_MIN": _env_int("PAGE76_MAX_LAG_MIN", 90, 10, 720),
         "CHROME_BIN": _env("PAGE76_CHROME_BIN"),
         "LOG_LEVEL": _env("LOG_LEVEL", "INFO"),
     }
@@ -198,9 +202,11 @@ INSIGHT_METRIC_PROPS = {
 # DB-11 실행 기록 (STD-OBS-05)
 R_RUN_ID, R_PIPELINE, R_VERSION, R_MODE, R_STATUS = "run_id", "파이프라인", "버전", "모드", "상태"
 R_ERROR, R_WRITES, R_START, R_END = "error_code", "쓰기건수", "시작", "종료"
+R_SCHEDULED, R_LAG = "예약시각", "지연초"  # 예약 실행만 채움(수동 실행은 빈 값)
 DB11_REQUIRED = {
     R_RUN_ID: "title", R_PIPELINE: "select", R_VERSION: "rich_text", R_MODE: "select", R_STATUS: "select",
     R_ERROR: "rich_text", R_WRITES: "number", R_START: "date", R_END: "date",
+    R_SCHEDULED: "date", R_LAG: "number",
 }
 
 # DB-12 소설 원고 (DSN-P76-NOVEL-002 §3)

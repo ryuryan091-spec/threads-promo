@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -40,6 +41,7 @@ from p76 import (
     novel_store,
     novel_tg,
     safety,
+    sched,
     settings,
 )
 from p76.novel_store import (
@@ -54,7 +56,8 @@ from p76.novel_store import (
 )
 from p76.runlog import RunLog
 
-VERSION = "1.2.0"  # 1.2.0: 표지 인용·부제·열린 질문도 규칙 검사·AI 검수 대상
+VERSION = "1.2.1"  # 1.2.1: 바이블 arc 객체 수용 · R05 바이블 경고화 · 재시도 피드백 이월 · 예정 시각 기준 판정
+# 1.2.0: 표지 인용·부제·열린 질문도 규칙 검사·AI 검수 대상
 
 logger = logging.getLogger(__name__)
 S = settings
@@ -79,10 +82,12 @@ class Ctx:
     prompts: novel_prompts.Prompts | None = None
     run_cost: float = 0.0
     sent: list[str] = field(default_factory=list)
+    sched_now: datetime | None = None  # 예약 실행의 예정 시각(STD-SCHED-03). None 이면 now
 
     @property
     def kst(self) -> datetime:
-        return self.now.astimezone(notion.KST)
+        """'오늘'·시간대 판정용 KST 시각 — 예정 시각 기준. 기록·비용 월·due 비교는 now(실제)를 쓴다."""
+        return (self.sched_now or self.now).astimezone(notion.KST)
 
     @property
     def today(self) -> date:
@@ -188,7 +193,8 @@ def _bible_summary(page: dict) -> str:
 
 def notify_pending(ctx: Ctx) -> None:
     lo, hi = S.NOVEL_NOTIFY_HOURS
-    if not lo <= ctx.kst.hour < hi:
+    # 하한은 예정 시각, 상한은 실제 시각 — 늦게 시작한 실행이 상한 밖에서 알리지 않게(R6 W4)
+    if not (lo <= ctx.kst.hour and ctx.now.astimezone(notion.KST).hour < hi):
         return
     for page in ctx.rows:
         if novel_store.kind(page) != S.NK_BIBLE or novel_store.state(page) != S.NS_IMPLICIT:
@@ -292,11 +298,49 @@ def review(ctx: Ctx, row: dict, target: str, text: str, escalate: bool) -> tuple
     return verdict, data, fallback
 
 
-def _fail_row(ctx: Ctx, row: dict, new_state: str, code: str) -> None:
-    novel_store.transition(row, new_state, {S.N_RESULT: notion.v_rich(code[:1900])})
+def _fail_row(ctx: Ctx, row: dict, new_state: str, code: str, extra: dict | None = None, note: str = "") -> None:
+    novel_store.transition(row, new_state, {S.N_RESULT: notion.v_rich(code[:1900]), **(extra or {})})
     ctx.log.writes += 1
     ctx.log.degrade(f"{novel_store.key(row)}:{code}")
-    novel_tg.send("T5", f"⚠️ {novel_store.key(row)} {new_state} — {code}", novel_tg.page_link(row["id"]))
+    tail = f" · {note}" if note else ""
+    novel_tg.send("T5", f"⚠️ {novel_store.key(row)} {new_state} — {code}{tail}", novel_tg.page_link(row["id"]))
+
+
+RULES_PREFIX = "rules:"
+REPEAT_NOTE = "동일 규칙 반복 — 자동 재시도 중지, 확인 필요"
+
+
+def prev_rule_codes(row: dict) -> list[str]:
+    """직전 실행이 규칙 검사로 실패한 행이면 그 규칙 코드 목록(결과코드 'rules:<코드,…>'), 아니면 []."""
+    if novel_store.state(row) != S.NS_CHECK_FAILED:
+        return []
+    result = notion.plain(row, S.N_RESULT)
+    if not result.startswith(RULES_PREFIX):
+        return []
+    return [c for c in result[len(RULES_PREFIX):].split(",") if c]
+
+
+def carry_note(codes: list[str]) -> str:
+    """첫 시도에 붙이는 직전 실행 피드백 — 코드 문자열만(원고 없음, STD-LLM-11)."""
+    if not codes:
+        return ""
+    return f"\n\n직전 실행이 다음 규칙에 걸렸다: {', '.join(codes)}. 해당 부분을 고쳐 다시 만들어 주세요."
+
+
+def _rule_kinds(codes: list[str]) -> set[str]:
+    """'R01:length:3012' → 'R01:length'. 값(글자 수 등)이 바뀌어도 같은 결함으로 본다(R6 W5)."""
+    return {":".join(c.split(":")[:2]) for c in codes}
+
+
+def _fail_rules(ctx: Ctx, row: dict, errors: list[str], prev_codes: list[str]) -> None:
+    """규칙 검사 실패 기록. 직전 실행과 같은 규칙 집합이면 시도 수를 상한으로 올려 자동 재시도에서 뺀다(STD-COST-03)."""
+    code = RULES_PREFIX + ",".join(errors)
+    if prev_codes and _rule_kinds(prev_codes) == _rule_kinds(errors):
+        _fail_row(ctx, row, S.NS_CHECK_FAILED, code, {S.N_ATTEMPTS: notion.v_number(S.NOVEL_MAX_ATTEMPTS)},
+                  note=REPEAT_NOTE)
+        logger.warning(f"[Novel] {novel_store.key(row)} 동일 규칙 반복 — 자동 재시도 중지")
+        return
+    _fail_row(ctx, row, S.NS_CHECK_FAILED, code)
 
 
 def _start_attempt(ctx: Ctx, row: dict, tag: str) -> None:
@@ -324,16 +368,42 @@ def _bible_user(ctx: Ctx, n: int, journals: dict[int, str]) -> str:
             f"위 재료로 시즌 {n} 바이블을 만들어 주세요.")
 
 
+ARC_KEY = re.compile(r"^e(\d+)$")
+
+
+def normalize_arc(bible: dict) -> dict:
+    """arc 가 객체({'e1': {...}, …})면 키 정수 순 목록으로 바꾸고 episode 를 키의 정수로 덮어쓴다.
+
+    키 형식이 틀린 항목은 버리지 않고 episode=0 으로 넣어 B01(arc_incomplete)이 잡히게 한다. 목록이면 그대로.
+    """
+    arc = bible.get("arc") if isinstance(bible, dict) else None
+    if not isinstance(arc, dict):
+        return bible
+    good: list[tuple[int, dict]] = []
+    bad: list[dict] = []
+    for k, v in arc.items():
+        m = ARC_KEY.match(str(k))
+        item = dict(v) if isinstance(v, dict) else {"value": v}
+        if m and isinstance(v, dict):
+            item["episode"] = int(m.group(1))
+            good.append((int(m.group(1)), item))
+        else:
+            item["episode"] = 0
+            bad.append(item)
+    return {**bible, "arc": [it for _, it in sorted(good, key=lambda x: x[0])] + bad}
+
+
 def generate_bible(ctx: Ctx, n: int, row: dict | None) -> None:
     p = _prompts(ctx)
     if row is None:
         row = novel_store.create(ctx.rows, novel_store.bible_key(n), S.NK_BIBLE, n=n)
         ctx.log.writes += 1
+    prev_codes = prev_rule_codes(row)
     _start_attempt(ctx, row, p.tag("nb"))
     journals = novel_prompts.published_journals()
     system = p.systems["nb"] + "\n\n[문체 견본]\n" + (_style(p) or "없음")
     user = _bible_user(ctx, n, journals)
-    note = ""
+    note = carry_note(prev_codes)
     for attempt in range(2):
         res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort="high",
                    system=system, user_blocks=[{"text": user + note}], schema=p.schemas["nb"], max_tokens=32000,
@@ -344,7 +414,7 @@ def generate_bible(ctx: Ctx, n: int, row: dict | None) -> None:
         if not res.ok:
             _fail_row(ctx, row, S.NS_CHECK_FAILED, f"llm:{res.stop_reason}")
             return
-        bible = res.data
+        bible = normalize_arc(res.data)
         errors = novel_rules.check_bible(bible, banned_terms=S.BANNED_TERMS, journal_numbers=set(journals))
         if any(e.startswith("R03") for e in errors):
             _fail_row(ctx, row, S.NS_HELD, "rules:R03")
@@ -353,8 +423,11 @@ def generate_bible(ctx: Ctx, n: int, row: dict | None) -> None:
             break
         note = f"\n\n직전 바이블이 다음 규칙에 걸렸다: {', '.join(errors)}. 해당 부분을 고쳐 다시 만들어 주세요."
         if attempt == 1:
-            _fail_row(ctx, row, S.NS_CHECK_FAILED, "rules:" + ",".join(errors))
+            _fail_rules(ctx, row, errors, prev_codes)
             return
+    warnings = novel_rules.bible_warnings(bible)
+    if warnings:  # 코드만 남긴다(본문·매칭 문자열 없음, SEC RR-06)
+        logger.warning(f"[Novel] {novel_store.key(row)} 경고 {','.join(warnings)}")
     writer_fallback = res.fallback
     verdict, review_json, review_fallback = review(ctx, row, "바이블", json.dumps(bible, ensure_ascii=False),
                                                    escalate=False)
@@ -422,6 +495,7 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
         row = novel_store.create(ctx.rows, novel_store.episode_key(n, m), S.NK_EPISODE, n=n, m=m,
                                  due=due_date(n, m))
         ctx.log.writes += 1
+    prev_codes = prev_rule_codes(row)
     _start_attempt(ctx, row, p.tag("ne"))
     prev_meta = novel_store.json_section(prevs[0], H_META) if prevs else {}
     prev_bodies = tuple(novel_store.sections(pg).get(H_BODY, "") for pg in prevs)
@@ -438,7 +512,7 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
             f"인용할 수사일지 원문: "
             + ("\n".join(f"#{k:03d}\n{v}" for k, v in journals.items()) if journals else "없음"))
     prev_d = (prev_meta.get("continuity") or {}).get("d_plus_end") if prevs else None
-    note = ""
+    note = carry_note(prev_codes)
     for attempt in range(2):
         res = _llm(ctx, row, label=f"{novel_store.key(row)}:write", model=S.MODEL_WRITER, effort="medium",
                    system=system, user_blocks=head + [{"text": rest + note}], schema=p.schemas["ne"],
@@ -461,7 +535,7 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
         if not errors:
             break
         if attempt == 1:
-            _fail_row(ctx, row, S.NS_CHECK_FAILED, "rules:" + ",".join(errors))
+            _fail_rules(ctx, row, errors, prev_codes)
             return
         note = f"\n\n직전 원고가 다음 규칙에 걸렸다: {', '.join(errors)}. 해당 부분을 고쳐 다시 써 주세요."
     writer_fallback = res.fallback
@@ -604,7 +678,8 @@ def body(log: RunLog, now: datetime | None = None, client: Any = None) -> None:
     now = now or datetime.now(UTC)
     rows = [p for p in novel_store.all_rows() if novel_store.kind(p) in (S.NK_BIBLE, S.NK_EPISODE, S.NK_CONTROL)]
     ctrl_page, ctrl = novel_store.control(rows)
-    ctx = Ctx(log=log, now=now, rows=rows, ctrl_page=ctrl_page, ctrl=ctrl, client=client)
+    ctx = Ctx(log=log, now=now, rows=rows, ctrl_page=ctrl_page, ctrl=ctrl, client=client,
+              sched_now=sched.effective_now(now))
     logger.info(f"[Novel] 행 {len(rows)}건 · mode={S.MODE} · 이번 달 ${novel_store.month_spent(ctrl, now):.2f}")
     try:
         collect_stops(ctx)

@@ -910,3 +910,188 @@ def test_publish_rechecks_edited_subtitle(live):
     pub(kst(2026, 11, 29, 8, 17))
     pub(kst(2026, 11, 29, 10, 21))
     assert live.graph.writes() == [] and "R04:place@subtitle" in live.fake.val(e1, S.N_RESULT)
+
+
+# ── 1.2.1 / 1.1.1: arc 객체 수용 · R05 바이블 경고 · 재시도 피드백 이월 · 예정 시각 기준 ─────
+def _dict_arc_bible(extra_arc=None):
+    b = novel_fixtures.bible()
+    arc = {f"e{a['episode']}": {k: v for k, v in a.items() if k != "episode"} for a in reversed(b["arc"])}
+    arc.update(extra_arc or {})
+    return {**b, "arc": arc}
+
+
+def test_normalize_arc_dict_to_list(env):
+    out = run_novel.normalize_arc(_dict_arc_bible())
+    assert isinstance(out["arc"], list)
+    assert [a["episode"] for a in out["arc"]] == list(range(1, S.NOVEL_EPISODES + 1))
+    assert out["arc"][0]["stage"] == "의뢰"
+    assert novel_rules.check_bible(out) == []
+
+
+def test_normalize_arc_bad_key_is_episode_zero(env):
+    out = run_novel.normalize_arc(_dict_arc_bible({"ep8": {"stage": "덤"}, "e9x": {"stage": "덤2"}}))
+    assert [a["episode"] for a in out["arc"]].count(0) == 2  # 버리지 않는다
+    assert "B01:arc_incomplete" in novel_rules.check_bible(out)
+    wrong_number = run_novel.normalize_arc({**novel_fixtures.bible(), "arc": {"e1": {}, "e3": {}}})
+    assert "B01:arc_incomplete" in novel_rules.check_bible(wrong_number)
+
+
+def test_normalize_arc_list_unchanged(env):
+    b = novel_fixtures.bible()
+    assert run_novel.normalize_arc(b) == b
+    assert run_novel.normalize_arc({"cast": []}) == {"cast": []}
+
+
+def test_bible_r05_is_warning_episode_r05_still_error(env):
+    b = {**novel_fixtures.bible(), "risk_notes": ["과태료 언급 주의"]}
+    assert not any(e.startswith("R05") for e in novel_rules.check_bible(b))
+    assert novel_rules.bible_warnings(b) == ["W05:legal_text"]
+    assert novel_rules.bible_warnings(novel_fixtures.bible()) == []
+    assert "R05:legal_text" in novel_rules.check_episode(_body("\n과태료가 나온다고 했다."), 2)
+
+
+def test_bible_dict_arc_and_w05_accepted(novel, caplog):
+    caplog.set_level(logging.WARNING)
+    b = {**_dict_arc_bible(), "risk_notes": ["합성 과태료 메모 표식"]}
+    run(kst(2026, 11, 9, 10, 44), Scripted([{"data": b}]))
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
+    assert "W05:legal_text" in caplog.text and "합성 과태료 메모 표식" not in caplog.text
+    stored = novel_store.json_section(bible, novel_store.H_BIBLE)
+    assert [a["episode"] for a in stored["arc"]] == list(range(1, S.NOVEL_EPISODES + 1))
+
+
+def _set(page, **props):
+    from p76 import notion
+    novel_store.update(page, {k: (notion.v_number(v) if isinstance(v, int) else notion.v_rich(v))
+                              for k, v in props.items()})
+
+
+def test_prev_rule_codes_carried_to_first_note_episode(novel):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_RESULT: "rules:R04:place@subtitle,R09:cliche", S.N_ATTEMPTS: 1})
+    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep()}]))
+    first = client.calls[0]["messages"][0]["content"][-1]["text"]
+    assert "직전 실행이 다음 규칙에 걸렸다: R04:place@subtitle, R09:cliche." in first
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_REVIEW and novel.fake.val(e1, S.N_ATTEMPTS) == 2
+
+
+def test_prev_rule_codes_carried_to_first_note_bible(novel):
+    page = novel.fake.add(DB12, **{S.N_KEY: "N1-BIBLE", S.N_KIND: S.NK_BIBLE, S.N_SEASON: 1,
+                                   S.N_STATE: S.NS_CHECK_FAILED, S.N_RESULT: "rules:B02:cast_incomplete",
+                                   S.N_ATTEMPTS: 1})
+    _, client = run(kst(2026, 11, 9, 10, 44))
+    assert "직전 실행이 다음 규칙에 걸렸다: B02:cast_incomplete." in \
+        client.calls[0]["messages"][0]["content"][-1]["text"]
+    assert novel.fake.val(page, S.N_STATE) == S.NS_IMPLICIT
+
+
+def test_no_carry_note_for_non_rules_failure(novel):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_RESULT: "llm:max_tokens", S.N_ATTEMPTS: 1})
+    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep()}]))
+    assert "직전 실행이" not in client.calls[0]["messages"][0]["content"][-1]["text"]
+
+
+def test_same_rules_repeat_stops_auto_retry(novel):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_RESULT: "rules:R04:place@subtitle", S.N_ATTEMPTS: 1})
+    bad = _ep(subtitle="서울의 밤")
+    log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == S.NOVEL_MAX_ATTEMPTS
+    assert novel.fake.val(e1, S.N_RESULT) == "rules:R04:place@subtitle"
+    assert any(run_novel.REPEAT_NOTE in t for t in novel.tg.sent)
+    assert log.writes > 0
+    _, client2 = run(kst(2026, 11, 15, 12, 44))
+    assert client2.calls == []  # 재시도 대상에서 빠짐
+
+
+def test_different_rules_keep_retrying(novel):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_RESULT: "rules:R09:cliche", S.N_ATTEMPTS: 1})
+    bad = _ep(subtitle="서울의 밤")
+    run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 2
+    assert not any(run_novel.REPEAT_NOTE in t for t in novel.tg.sent)
+
+
+# ── 예정 시각 기준 판정 (STD-SCHED-03) ───────────────────
+def test_today_follows_scheduled_time(env, monkeypatch):
+    from p76 import sched
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "44 14 * * *")  # KST 23:44
+    now = kst(2026, 11, 16, 1, 30)  # 실제 실행은 다음 날 01:30
+    ctx = run_novel.Ctx(log=RunLog("novel", "t"), now=now, rows=[], ctrl_page={}, ctrl={},
+                        sched_now=sched.effective_now(now))
+    assert ctx.today == date(2026, 11, 15) and ctx.kst.hour == 23
+    assert ctx.now == now  # 기록용 now 는 실제 시각
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "")
+    ctx2 = run_novel.Ctx(log=RunLog("novel", "t"), now=now, rows=[], ctrl_page={}, ctrl={},
+                         sched_now=sched.effective_now(now))
+    assert ctx2.today == date(2026, 11, 16)
+
+
+def test_remind_uses_scheduled_hour_and_day(live, monkeypatch):
+    add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "25 11 * * *")  # KST 20:25 예정
+    run(kst(2026, 11, 29, 0, 40))  # 4시간 넘게 늦게 시작 — 예정 시각(11-28 20시대) 기준
+    assert any("자동 발행됩니다" in t and "N1-E01" in t for t in live.tg.sent)
+
+
+def test_novel_publish_too_late_holds(live, monkeypatch):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "17 23 * * 6")  # 토 23:17 UTC = 일 08:17 KST
+    log = pub(kst(2026, 11, 29, 10, 0))  # 103분 지연
+    assert "late:103m" in log.codes
+    assert live.fake.val(e1, S.N_STATE) == S.NS_APPROVED and live.graph.writes() == []
+    assert not any("발행됩니다" in t for t in live.tg.sent)
+    assert any("예약 지연 103분" in t and "게시 보류" in t for t in live.tg.sent)
+
+
+def test_novel_publish_lag_within_limit_proceeds(live, monkeypatch):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "17 23 * * 6")
+    log = pub(kst(2026, 11, 29, 9, 30))  # 73분 지연
+    assert not any(c.startswith("late:") for c in log.codes)
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+
+
+def test_novel_publish_cron_invalid_degrades_only(live, monkeypatch):
+    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "not a cron")
+    log = pub(kst(2026, 11, 29, 8, 17))
+    assert "sched:cron_invalid" in log.codes
+    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+
+
+# ── R6 리뷰 반영 (W4·W5) ────────────────────────────────
+def test_rule_kinds_ignore_values():
+    assert run_novel._rule_kinds(["R01:length:3012", "R04:place@subtitle"]) == {"R01:length", "R04:place@subtitle"}
+    assert run_novel._rule_kinds(["R01:length:2999"]) == run_novel._rule_kinds(["R01:length:4100"])
+
+
+def test_same_rule_kind_with_different_numbers_stops(novel):
+    add_canon_bible(novel.fake)
+    short1 = _ep(body="D+1 짧은 본문")
+    run(kst(2026, 11, 15, 10, 44), Scripted([{"data": short1}, {"data": short1}]))
+    e1 = row(novel.fake, "N1-E01")
+    first = novel.fake.val(e1, S.N_RESULT)
+    assert first.startswith("rules:") and "R01:length:" in first
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 1
+    short2 = _ep(body="D+1 길이가 다른 짧은 본문입니다")
+    run(kst(2026, 11, 15, 12, 44), Scripted([{"data": short2}, {"data": short2}]))
+    assert novel.fake.val(e1, S.N_RESULT) != first  # 글자 수는 다르지만
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == S.NOVEL_MAX_ATTEMPTS  # 같은 결함 → 자동 재시도 중지
+    assert any(run_novel.REPEAT_NOTE in t for t in novel.tg.sent)
+
+
+def test_notify_upper_bound_uses_actual_time(novel, monkeypatch):
+    monkeypatch.setattr(S, "SCHEDULE_CRON", "44 7 * * *")  # 예정 KST 16:44
+    run(kst(2026, 11, 9, 18, 30))  # 실제 18:30 시작 — 상한(18시) 밖이므로 알림 없음
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
+    assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None and novel.tg.sent == []

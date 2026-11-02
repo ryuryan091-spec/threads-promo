@@ -7,6 +7,7 @@
 #    "17 23 * * 6" = KST 일 08:17 (발행 예고)
 #    "21 1 * * 0"  = KST 일 10:21   "25 2 * * 0" = KST 일 11:25   "34 3 * * 0" = KST 일 12:34   "12 5 * * 0" = KST 일 14:12
 #    (게시 · 예고가 늦게 나간 날의 재예고 · 실패 재시도)
+#  예정 시각 = github.event.schedule 기준(p76/sched.py, STD-SCHED-03)
 #  모드(STD-MODE-02): 수동 실행 = inputs.mode / 스케줄 = vars.PAGE76_MODE → 미설정 시 dry_run
 #  스위치: PAGE76_ENABLED + PAGE76_NOVEL_ENABLED + PAGE76_NOVEL_PUBLISH_ENABLED (이 워크플로만 멈추려면 마지막 것을 false)
 #  중단: DB-12 행 중단 체크(게시 직전에 다시 읽음) · 위 Variable · Actions 에서 이 워크플로 비활성화
@@ -70,4 +71,6 @@ jobs:
           PAGE76_DB12_ID: ${{ secrets.PAGE76_DB12_ID }}
           PAGE76_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PAGE76_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+          PAGE76_SCHEDULE_CRON: ${{ github.event.schedule }}
+          PAGE76_MAX_LAG_MIN: ${{ vars.PAGE76_MAX_LAG_MIN }}
         run: python -m p76.run_novel_publish

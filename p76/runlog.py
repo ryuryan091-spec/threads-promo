@@ -3,6 +3,7 @@ p76/runlog.py
 =============
 실행 기록 — 한 실행 = DB-11 1행 (STD-OBS-05, SEC C-17).
 dry_run 은 노션에 쓰지 않으므로 기록하지 않는다(로그만). 기록 실패는 실행 결과를 바꾸지 않는다.
+예약 실행이면 예정 시각·지연(초)을 함께 남긴다(STD-SCHED-03, p76/sched.py). 수동 실행은 두 속성을 넣지 않는다.
 
     run = RunLog("calendar", VERSION)
     ... run.writes += 1 ... run.degrade("code")
@@ -13,10 +14,10 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from p76 import notion, safety, settings
+from p76 import notion, safety, sched, settings
 from p76.redact import redact
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ class RunLog:
         self.pipeline = pipeline
         self.version = version
         self.started = datetime.now(UTC)
+        # 예정 시각·지연은 실행 시작 시각 기준으로 한 번만 계산한다 (수동 실행이면 None)
+        self.scheduled = sched.scheduled_at(self.started)
+        self.lag = sched.lag_seconds(self.started)
         self.writes = 0
         self.codes: list[str] = []
         self.failed = False
@@ -58,7 +62,9 @@ class RunLog:
         if safety.tripped() and safety.tripped() not in codes:
             codes.insert(0, safety.tripped())
         error_code = redact(";".join(codes))[:500]
-        logger.info(f"[Run] pipeline={self.pipeline} status={status} writes={self.writes} codes={error_code or '-'}")
+        lag = "-" if self.lag is None else f"{self.lag}s"
+        logger.info(f"[Run] pipeline={self.pipeline} status={status} writes={self.writes} codes={error_code or '-'} "
+                    f"sched_lag={lag}")
         self._record(status, error_code)
         return self.exit_code()
 
@@ -79,6 +85,9 @@ class RunLog:
             settings.R_START: notion.v_date(self.started),
             settings.R_END: notion.v_date(datetime.now(UTC)),
         }
+        if self.scheduled is not None:  # 예약 실행만 — 수동 실행은 속성 자체를 넣지 않는다
+            props[settings.R_SCHEDULED] = notion.v_date(self.scheduled)
+            props[settings.R_LAG] = notion.v_number(self.lag)
         try:
             notion.create_page(settings.DB11_ID, props)
         except notion.NotionError as e:
