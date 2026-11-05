@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import shutil
 import subprocess
@@ -21,7 +22,7 @@ from pathlib import Path
 from .. import config
 from . import assets
 
-VERSION = "1.2.0"   # v1.8.4: 훅 낭독 가속 · v1.8.3: 빠른 훅·움직임 다양화 · v1.8.0 베타 수정
+VERSION = "1.2.1"   # DN2026_0097: 비트 길이 프레임 정렬 · v1.8.4: 훅 낭독 가속 · v1.8.3: 빠른 훅·움직임 다양화 · v1.8.0 베타 수정
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +187,41 @@ def plan_timing(narration_sec: list[float], hook_index: int = 0) -> Timing:
         for i in room:
             durations[i] += add
         total = sum(durations) + OUTRO_DURATION_SEC
+    # DN2026_0097 : 비트 길이를 프레임 경계(1/FPS)에 맞춘다. 경계와 어긋난 조각을 concat -c copy 로 이으면
+    #   타임스탬프 간격이 고르지 않아 ffprobe r_frame_rate 가 30/1 이 아니게 나와 규격 검사에서 탈락했다
+    #   (11-03 run #38 ubuntu-24.04 '29.83', 11-05 run #40 '29.92' — 운영 비트 길이 로컬 재현 일치).
+    #   상하한(HOOK_MIN/MAX·SEG_MAX)은 모두 프레임 배수라 반올림 뒤에도 유지된다.
+    #   반올림 때문에 총 길이가 목표 범위(TARGET_MIN~MAX)를 벗어나면 훅 외 비트를 1프레임씩 되돌린다
+    #   (늘릴 때 SEG_MAX 이하, 줄일 때 낭독 길이 + 여백 절반 이상 — 낭독을 자르지 않는다).
+    #   조정 범위는 '목표 범위 ∪ 반올림 전 총 길이'로 제한한다 — 반올림 전에 이미 범위 밖이던 결과
+    #   (예: 60초 초과 → RenderLengthError 로 대본 재생성)는 바꾸지 않는다(R6-08 경고 반영).
+    pre_total = sum(durations) + OUTRO_DURATION_SEC
+    if pre_total > config.VIDEO_MAX_SEC:   # 수정 전과 같은 판정(대본 재생성 경로 유지)
+        raise RenderLengthError(f"총 길이 {pre_total:.1f}초 > {config.VIDEO_MAX_SEC}초")
+    frames = [round(d * FPS) for d in durations]
+    spoken = [s / tempo for s in narration_sec]
+    spoken[hook_index] = hook_spoken / hook_tempo
+    outro_frames = round(OUTRO_DURATION_SEC * FPS)
+    min_frames = math.ceil(min(TARGET_MIN_SEC, pre_total) * FPS - 1e-6)
+    max_frames = math.floor(max(TARGET_MAX_SEC, pre_total) * FPS + 1e-6)
+    seg_max_frames = math.floor(SEG_MAX_SEC * FPS)
+    floor_frames = [math.ceil((s + SEG_PAD_SEC / 2) * FPS) for s in spoken]
+    for _ in range(len(frames) * 2):
+        total_frames = sum(frames) + outro_frames
+        if total_frames < min_frames:
+            room = [i for i in stretchable if frames[i] < seg_max_frames]
+            if not room:
+                break
+            frames[min(room, key=lambda i: frames[i])] += 1
+        elif total_frames > max_frames:
+            room = [i for i in stretchable if frames[i] > floor_frames[i]]
+            if not room:
+                break
+            frames[max(room, key=lambda i: frames[i])] -= 1
+        else:
+            break
+    durations = [f / FPS for f in frames]
+    total = sum(durations) + OUTRO_DURATION_SEC
     if total > config.VIDEO_MAX_SEC:
         raise RenderLengthError(f"총 길이 {total:.1f}초 > {config.VIDEO_MAX_SEC}초")
     return Timing(tuple(round(d, 3) for d in durations), round(tempo, 4), round(total, 3),
@@ -348,8 +384,8 @@ def render(scenes: list[SceneInput], villain: str, out_path: Path, *,
 
     hook_index = next((i for i, s in enumerate(scenes) if s.is_hook), 0)
     timing = plan_timing([probe_duration(s.audio) for s in scenes], hook_index)
-    log.info("타이밍 총 %.2f초 · 낭독 %.3f배 · 훅 추가 %.3f배 · 비트 %s", timing.total, timing.tempo,
-             timing.hook_tempo, list(timing.durations))
+    log.info("[Renderer] v%s 타이밍 총 %.2f초 · 낭독 %.3f배 · 훅 추가 %.3f배 · 비트 %s", VERSION, timing.total,
+             timing.tempo, timing.hook_tempo, list(timing.durations))
 
     segments: list[Path] = []
     body_no = 0
