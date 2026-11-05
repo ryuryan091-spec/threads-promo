@@ -39,7 +39,11 @@ permissions:
 #   publish 는 cancel-in-progress: true — 새 실행이 오면 지난 날 승인 대기분은 취소된다(지난 영상은 어차피 게시 안 함).
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # DN2026_0096 (2026-11-05) : ubuntu-latest → ubuntu-24.04 고정.
+    #   ubuntu-latest 가 Ubuntu 26.04(apt ffmpeg 8.0.1)로 이전되면서 렌더 결과가 규격 검사에서 탈락
+    #   (11-05 run #40: '프레임레이트 29.92 ≠ 30', '픽셀 형식 yuvj420p ≠ yuv420p'). 24.04 는 ffmpeg 6.1.1.
+    #   ffmpeg 8 대응(색 범위·프레임레이트 고정)은 별도 DN 으로 수정·검증한 뒤 이 고정을 해제한다.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     concurrency:
       group: threads-shorts-build
@@ -59,6 +63,9 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+          # DN2026_0096 : 렌더 환경 확인용(러너 이미지·ffmpeg 버전)
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          ffmpeg -version | head -1
 
       - run: pip install -r requirements.txt
 
