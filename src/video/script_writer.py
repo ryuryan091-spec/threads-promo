@@ -18,7 +18,7 @@ import requests
 from .. import ai_writer, config, content, face_story, mood_source
 from . import hooks
 
-VERSION = "1.4.0"   # v1.8.5: 1인칭·전언형 오탐 축소·마지막 시도 문체 경고 통과·호출 사용량 로그 · v1.8.4: 이미지 7장·교차 배치·3인칭·전언형 금지 · v1.8.3: 결과 단정 금지·요일 맥락·주말 표현 검사·장면 다양화 · v1.8.2: max_tokens · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
+VERSION = "1.4.1"   # v1.4.1: DN2026_0111 재시도 프롬프트에 앞 시도 위반 누적 · v1.8.5: 1인칭·전언형 오탐 축소·마지막 시도 문체 경고 통과·호출 사용량 로그 · v1.8.4: 이미지 7장·교차 배치·3인칭·전언형 금지 · v1.8.3: 결과 단정 금지·요일 맥락·주말 표현 검사·장면 다양화 · v1.8.2: max_tokens · v1.8.0: Facebook 연속성 계약(continuity) — 요청이 없으면 v1.0.0 과 같은 계약
 
 log = logging.getLogger(__name__)
 
@@ -418,6 +418,7 @@ def write_script(
         base_prompt += f"\n\n# 추가 지시(앞 시도 실패)\n{extra_instruction}"
     prompt = base_prompt
     last: list[str] = []
+    seen: list[str] = []   # v1.4.1: 앞 시도들의 위반 누적 — 고친 위반이 다음 시도에 되살아나지 않게 한다
     fallback: tuple[dict, list[str], int] | None = None   # v1.8.5: 하드 위반 없이 문체 위반만 있던 첫 시도
 
     def _accept(raw: dict, attempt: int, warnings: tuple[str, ...] = ()) -> Script:
@@ -458,7 +459,8 @@ def write_script(
             fallback = (raw, soft, attempt)
         log.warning("대본 검증 실패 (%d/%d): %s", attempt, config.SHORTS_SCRIPT_ATTEMPTS,
                     json.dumps(last, ensure_ascii=False))
-        prompt = base_prompt + "\n\n# 직전 출력의 위반 사항(모두 고칠 것)\n- " + "\n- ".join(last)
+        seen.extend(i for i in last if i not in seen)
+        prompt = base_prompt + "\n\n# 앞 시도들의 위반 사항(모두 고칠 것 · 이미 고친 항목도 다시 어기지 말 것)\n- " + "\n- ".join(seen)
     if fallback is not None:
         # v1.8.5: 문체(1인칭·전언형) 위반만 있던 시도가 있으면 편을 버리지 않고 경고와 함께 넘긴다(미리보기에서 사람이 확인).
         raw, soft, attempt = fallback

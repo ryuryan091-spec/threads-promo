@@ -900,7 +900,8 @@ class TestInspectionFixes:
 
         monkeypatch.setattr(rb.script_writer, "write_script", fake_write)
         monkeypatch.setattr(rb.image_gen, "generate_scenes", lambda *a, **k: [tmp_path / "i.png"] * 5)
-        monkeypatch.setattr(rb, "_voice_and_render", fake_voice)
+        monkeypatch.setattr(rb, "_voice", lambda *a, **k: [])
+        monkeypatch.setattr(rb, "_render", fake_voice)
         monkeypatch.setattr(rb.validator, "check", lambda p: [])
         entry = rb.build_one(item, mood_source.Mood("none"), claude_key="k", gemini_key="g",
                              used_types=set(), used_hooks=[], base=tmp_path, used_captions=set())
@@ -1046,7 +1047,8 @@ class TestGocOnlyOnFacebook:
 
         monkeypatch.setattr(rb.script_writer, "write_script", fake_write)
         monkeypatch.setattr(rb.image_gen, "generate_scenes", fake_images)
-        monkeypatch.setattr(rb, "_voice_and_render", lambda *a, **k: renderer.Timing((3.0,), 1.0, 57.0))
+        monkeypatch.setattr(rb, "_voice", lambda *a, **k: [])
+        monkeypatch.setattr(rb, "_render", lambda *a, **k: renderer.Timing((3.0,), 1.0, 57.0))
         monkeypatch.setattr(rb.validator, "check", lambda p: [])
         entry = rb.build_one(item, mood_source.Mood("none"), claude_key="k", gemini_key="g",
                              used_types=set(), used_hooks=[], base=tmp_path, used_captions=set())
