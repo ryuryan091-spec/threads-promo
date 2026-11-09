@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .. import config
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"   # v1.1.0: DN2026_0111 API 버전 v1beta 고정(SDK 3.x 기본 v1 은 speech_config 거부) · 영구 4xx 즉시 중단
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,10 @@ PCM_SAMPLE_RATE = 24_000
 PCM_CHANNELS = 1
 PCM_SAMPLE_WIDTH = 2
 DEFAULT_TONE = "차분하지만 힘 있는 톤으로 또박또박"
+# speech_config 는 v1beta 에만 있다. SDK 기본값(3.0.0 부터 v1)에 맡기지 않는다.
+TTS_API_VERSION = "v1beta"
+# 다시 보내도 같은 결과인 4xx. 408(시간 초과)·429(한도)는 재시도한다.
+_RETRYABLE_4XX = frozenset({408, 429})
 
 
 class TtsError(RuntimeError):
@@ -47,6 +51,12 @@ def _extract_pcm(response) -> bytes | None:
     return None
 
 
+def _is_permanent(exc: Exception) -> bool:
+    """요청 자체가 잘못된 4xx(INVALID_ARGUMENT 등)인가."""
+    code = getattr(exc, "code", None)
+    return isinstance(code, int) and 400 <= code < 500 and code not in _RETRYABLE_4XX
+
+
 def synthesize(
     api_key: str, lines: list[str], tones: list[str], out_dir: Path, *, client=None
 ) -> list[Path]:
@@ -54,7 +64,9 @@ def synthesize(
     from google import genai
     from google.genai import types
 
-    client = client or genai.Client(api_key=api_key)
+    client = client or genai.Client(
+        api_key=api_key, http_options=types.HttpOptions(api_version=TTS_API_VERSION)
+    )
     cfg = types.GenerateContentConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
@@ -79,6 +91,8 @@ def synthesize(
             except Exception as exc:  # noqa: BLE001
                 last = f"{type(exc).__name__}: {exc}"
                 log.warning("TTS 실패 beat=%d attempt=%d: %s", idx, attempt, last)
+                if _is_permanent(exc):
+                    break   # 재시도해도 같은 4xx — 호출을 아낀다
                 continue
             if pcm:
                 break

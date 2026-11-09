@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 from . import chat_plan, config, face_story, mood_source, notifier, shorts_plan
 from .video import image_gen, renderer, script_writer, tts, validator
 
-VERSION = "1.2.0"   # v1.8.5: 미리보기에 대본 문체 경고 표시 · v1.8.0: Facebook 회차 원장 읽기 · 연속성 계약
+VERSION = "1.3.0"   # v1.3.0: DN2026_0111 TTS 를 이미지 생성 앞으로(TTS 실패 시 유료 이미지 미생성) · v1.8.5: 미리보기에 대본 문체 경고 표시 · v1.8.0: Facebook 회차 원장 읽기 · 연속성 계약
 
 KST = ZoneInfo("Asia/Seoul")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -63,12 +63,14 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
     )
     (work / "script.json").write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2),
                                       encoding="utf-8")
+    # v1.3.0: 낭독을 이미지보다 먼저 만든다 — TTS 가 실패하면 유료 이미지 7장을 만들지 않고 끝낸다.
+    audios = _voice(script, gemini_key, work)
     images = image_gen.generate_scenes(gemini_key, list(script.image_prompts), script.villain,
                                        work / "images", character=item.character)
     usable = [p for p in images if p]
     video = work / "video.mp4"
     try:
-        timing = _voice_and_render(script, images, usable, gemini_key, work, video)
+        timing = _render(script, images, usable, audios, video)
     except renderer.RenderLengthError as exc:
         # 점검 2026-10-04: 낭독이 길어 60초에 못 넣으면 대본만 1회 다시 만든다(이미지는 재사용 — 비용 절감).
         log.warning("길이 초과 — 대본을 짧게 1회 재생성합니다: %s", exc)
@@ -81,7 +83,8 @@ def build_one(item: shorts_plan.PlannedVideo, mood: mood_source.Mood, *, claude_
         )
         (work / "script.json").write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2),
                                           encoding="utf-8")
-        timing = _voice_and_render(script, images, usable, gemini_key, work, video)
+        audios = _voice(script, gemini_key, work)
+        timing = _render(script, images, usable, audios, video)
     issues = validator.check(video)
     if issues:
         raise renderer.RenderError(f"규격 검사 실패: {issues}")
@@ -124,10 +127,14 @@ def preview_caption(entry: dict) -> str:
                 + "\n- ".join(shown) + more + "\n\n")
     return f"{head}{warn}{entry['caption']}\n\n승인: Actions › 📘🧵 Meta Shorts › Review deployments"
 
-def _voice_and_render(script, images, usable, gemini_key: str, work: Path, video: Path):
-    """TTS → 장면 조립 → 렌더. 길이 초과면 RenderLengthError 를 그대로 올린다."""
+def _voice(script, gemini_key: str, work: Path) -> list[Path]:
+    """비트별 낭독 WAV. 하나라도 실패하면 tts.TtsError 를 그대로 올린다."""
     lines = [b.narration for b in script.beats]
-    audios = tts.synthesize(gemini_key, lines, [b.tone for b in script.beats], work / "audio")
+    return tts.synthesize(gemini_key, lines, [b.tone for b in script.beats], work / "audio")
+
+
+def _render(script, images, usable, audios, video: Path):
+    """장면 조립 → 렌더. 길이 초과면 RenderLengthError 를 그대로 올린다."""
     scenes = []
     for idx, beat in enumerate(script.beats):
         slot = script_writer.BEAT_IMAGE_SLOT[idx]

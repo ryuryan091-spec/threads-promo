@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import ai_writer, config, style
 
-VERSION = "1.3.0"   # v1.3.0: 문체 축, 마무리 4종, 반복·AI티 린트, 링크 리플 배치 5종, 폴백 정리
+VERSION = "1.3.1"   # v1.3.1: DN2026_0111 허용 테마어(안전자산)의 REG-04 접미 오탐 차단 · v1.3.0: 문체 축, 마무리 4종, 반복·AI티 린트, 링크 리플 배치 5종, 폴백 정리
 
 _log = logging.getLogger(__name__)
 
@@ -284,11 +284,33 @@ def check_forecast_entity(text: str, *, label: str) -> None:
     if hit_forecast:
         raise ContentPolicyError(f"{label}: 시장 전망성 표현 검출: {hit_forecast}")
 
-    hit_entity = [t for t in config.CHAT_ENTITY_TERMS if t in folded]
-    hit_entity += [m.group(0) for m in _entity_suffix_re().finditer(folded)]
-    hit_entity += [m.group(0) for m in _entity_word_re().finditer(folded)]
+    hit_entity = _entity_hits(folded)
     if hit_entity:
         raise ContentPolicyError(f"{label}: 기업·인물명 검출 (REG-04): {hit_entity}")
+
+
+def _entity_hits(text: str) -> list[str]:
+    """REG-04 기업·인물명 후보. 허용 테마어 중 검사에 스스로 걸리는 단어는 가리고 본다.
+
+    v1.3.1: '안전자산'(허용목록)이 접미 '전자' 패턴에 '안전자'로 잡혀 숏폼 대본이 3회 모두 탈락했다
+    (2026-11-09 sv-20261109-1). 충돌하는 허용어만 가리므로 다른 기업명 탐지는 그대로다.
+    """
+    for term in _allowlist_collisions():
+        text = text.replace(term, " ")
+    hits = [t for t in config.CHAT_ENTITY_TERMS if t in text]
+    hits += [m.group(0) for m in _entity_suffix_re().finditer(text)]
+    hits += [m.group(0) for m in _entity_word_re().finditer(text)]
+    return hits
+
+
+def _allowlist_collisions() -> tuple[str, ...]:
+    """허용 테마어 가운데 단독으로도 기업·인물명 검사에 걸리는 것(현재: 안전자산)."""
+    out = []
+    for term in config.CHAT_THEME_ALLOWLIST:
+        if (any(t in term for t in config.CHAT_ENTITY_TERMS)
+                or _entity_suffix_re().search(term) or _entity_word_re().search(term)):
+            out.append(term)
+    return tuple(sorted(out, key=len, reverse=True))
 
 
 def _entity_suffix_re() -> re.Pattern[str]:
@@ -341,9 +363,7 @@ def _lint_market_text(
     if hit_forecast:
         raise ContentPolicyError(f"시장 전망성 표현 검출: {hit_forecast}")
 
-    hit_entity = [t for t in config.CHAT_ENTITY_TERMS if t in text]
-    hit_entity += [m.group(0) for m in _entity_suffix_re().finditer(text)]
-    hit_entity += [m.group(0) for m in _entity_word_re().finditer(text)]
+    hit_entity = _entity_hits(text)
     if hit_entity:
         raise ContentPolicyError(f"기업·인물명 검출 (REG-04): {hit_entity}")
 
