@@ -5,8 +5,10 @@ DB-12 소설 원고 읽기·쓰기 (DSN-P76-NOVEL-002 §3).
 
   - 본문·바이블 JSON·메타는 속성이 아니라 행 페이지의 블록(제목 + 코드 블록)에 둔다.
   - dry_run 은 노션에 쓰지 않는다. 대신 메모리 안의 행을 고쳐 같은 실행의 다음 단계가 이어지게 한다.
-  - 코드가 쓰는 상태 전이는 ALLOWED 목록만 허용한다. '승인' 으로의 전이는 코드에 없다(사람만).
-  - 게시는 반드시 '발행예고'를 거친다(DN2026_0072): 검토대기(PASS)·승인 → 발행예고 → 게시완료.
+  - 코드가 쓰는 상태 전이는 ALLOWED 목록만 허용한다.
+  - DN2026_0119(Zero-Touch): 자동 검수 게이트 통과 = '승인'(코드가 전이). 바이블은 게이트 통과 시 '정본'.
+  - 게시는 반드시 '발행예고'(= FB 예약 등록됨)를 거친다: 승인 → 발행예고 → 게시완료.
+    예약 취소(중단·재등록)는 발행예고 → 승인/중단, 확인필요는 자동 대조로 게시완료/승인.
   - CONTROL 행: 결과코드 칸에 JSON {month, spent, last_run, budget_alert_day}.
 """
 from __future__ import annotations
@@ -17,7 +19,7 @@ from datetime import date, datetime
 
 from p76 import notion, safety, settings
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # 1.1.0: DN2026_0119 자동 승인·예약 게시 전이
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +29,19 @@ CONTROL_KEY = "CONTROL"
 
 S = settings
 ALLOWED: dict[str, set[str]] = {
-    "": {S.NS_GENERATING},
+    "": {S.NS_GENERATING, S.NS_APPROVED},  # '' → 승인: 순연 슬롯 휴재 안내 카드(부록) 행 생성 (DN2026_0119 A2)
     S.NS_GENERATING: {S.NS_CHECK_FAILED, S.NS_HELD, S.NS_REFUSED, S.NS_IMPLICIT, S.NS_EXPLICIT, S.NS_REVIEW,
-                      S.NS_STOPPED},
-    S.NS_CHECK_FAILED: {S.NS_GENERATING, S.NS_STOPPED},
-    S.NS_IMPLICIT: {S.NS_CANON, S.NS_STOPPED},
-    S.NS_EXPLICIT: {S.NS_STOPPED},
+                      S.NS_APPROVED, S.NS_CANON, S.NS_STOPPED},
+    S.NS_CHECK_FAILED: {S.NS_GENERATING, S.NS_HELD, S.NS_STOPPED},
+    # v1 잔존 상태 → v2 이관(2차 검수로 재평가): 정본·보류·재생성
+    S.NS_IMPLICIT: {S.NS_CANON, S.NS_HELD, S.NS_GENERATING, S.NS_STOPPED},
+    S.NS_EXPLICIT: {S.NS_CANON, S.NS_HELD, S.NS_GENERATING, S.NS_STOPPED},
     S.NS_CANON: {S.NS_STOPPED},
-    S.NS_REVIEW: {S.NS_SCHEDULED, S.NS_STOPPED},
-    S.NS_APPROVED: {S.NS_SCHEDULED, S.NS_STOPPED},
-    S.NS_SCHEDULED: {S.NS_PUBLISHED, S.NS_CHECK, S.NS_HELD, S.NS_STOPPED},
+    S.NS_REVIEW: {S.NS_APPROVED, S.NS_GENERATING, S.NS_HELD, S.NS_SCHEDULED, S.NS_STOPPED},
+    # 승인: 회차 → 예약 등록 / 바이블(v1 회장 수동 '승인' 잔존, RC-1) → 2차 검수 후 정본·보류·재생성
+    S.NS_APPROVED: {S.NS_SCHEDULED, S.NS_CANON, S.NS_HELD, S.NS_GENERATING, S.NS_STOPPED},
+    S.NS_SCHEDULED: {S.NS_PUBLISHED, S.NS_CHECK, S.NS_HELD, S.NS_APPROVED, S.NS_STOPPED},
+    S.NS_CHECK: {S.NS_PUBLISHED, S.NS_APPROVED, S.NS_STOPPED},
     S.NS_HELD: {S.NS_STOPPED},
     S.NS_REFUSED: {S.NS_STOPPED},
 }

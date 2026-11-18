@@ -21,7 +21,7 @@ from typing import Any
 
 from p76 import novel_diagnostics, novel_schema, settings
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"  # 1.2.0: DN2026_0119 독립 2차 검수 모델(MODEL_REVIEWER_2) 허용
 
 logger = logging.getLogger(__name__)
 CHARS_PER_TOKEN = 1.5  # 한국어 혼합 대략치 (추정용)
@@ -103,7 +103,8 @@ def _text(msg: Any) -> str:
 def call(client: Any, *, label: str, model: str, effort: str, system: str, user_blocks: list[dict],
          schema: dict, max_tokens: int, stream: bool) -> Result:
     """user_blocks: [{"text": str, "cache": bool}] — 앞쪽 고정 블록에 cache=True."""
-    if model != settings.MODEL_WRITER:
+    # 허용 모델: 작성·1차 검수(MODEL_WRITER=MODEL_REVIEWER) + 독립 2차 검수(MODEL_REVIEWER_2, DN2026_0119)
+    if model not in (settings.MODEL_WRITER, settings.MODEL_REVIEWER, settings.MODEL_REVIEWER_2):
         raise LLMError("model:not_allowed")
     schema, compacted = novel_schema.compact_arc(schema)
     if compacted:

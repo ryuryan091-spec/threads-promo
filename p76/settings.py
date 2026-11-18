@@ -13,7 +13,7 @@ import os
 import sys
 from datetime import date
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"  # 1.1.0: DN2026_0119 Zero-Touch 매일 발행(금 휴재) 상수·Variable
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,17 @@ def parse_mode(raw: str | None) -> tuple[str, bool]:
     return "dry_run", True
 
 
+def parse_hhmm(raw: str | None, default: tuple[int, int]) -> tuple[int, int]:
+    """'12:00' → (12, 0). 형식이 틀리거나 범위 밖이면 default."""
+    try:
+        hh, mm = (int(x) for x in (raw or "").strip().split(":"))
+    except ValueError:
+        return default
+    if 0 <= hh <= 23 and 0 <= mm <= 59:
+        return hh, mm
+    return default
+
+
 def reload() -> None:
     mod = sys.modules[__name__]
     for name, value in _load().items():
@@ -130,7 +141,14 @@ def _load() -> dict:
         "NOVEL_ENABLED": _env_bool("PAGE76_NOVEL_ENABLED"),
         "NOVEL_PUBLISH_ENABLED": _env_bool("PAGE76_NOVEL_PUBLISH_ENABLED"),
         "NOVEL_START": parse_date(_env("PAGE76_NOVEL_START", "2026-11-29")),
-        "NOVEL_BUDGET_USD": _env_float("PAGE76_NOVEL_BUDGET_USD", 20.0, 1.0, 30.0),
+        # DN2026_0119 A6: 기본 60, 상한 100 (주 6회 발행 · 2차 검수 포함, OPEX 등록 STD-COST-04)
+        "NOVEL_BUDGET_USD": _env_float("PAGE76_NOVEL_BUDGET_USD", 60.0, 1.0, 100.0),
+        # DN2026_0119 A5: 회차 게시 시각(KST, FB 예약 게시 시각). 형식 HH:MM
+        "NOVEL_PUBLISH_TIME": parse_hhmm(_env("PAGE76_NOVEL_PUBLISH_HHMM"), (12, 0)),
+        "NOVEL_PUBLISH_TIME_INVALID": bool(_env("PAGE76_NOVEL_PUBLISH_HHMM"))
+        and parse_hhmm(_env("PAGE76_NOVEL_PUBLISH_HHMM"), (-1, -1)) == (-1, -1),
+        # DN2026_0119 A3: 댓글 자동 숨김 스위치(토큰 권한 확인 전까지 false)
+        "MODERATE_ENABLED": _env_bool("PAGE76_MODERATE_ENABLED"),
         "CLAUDE_KEY": _env("PAGE76_CLAUDE_KEY"),
         "NOVEL_TG_BOT_TOKEN": _env("PAGE76_NOVEL_TG_BOT_TOKEN"),
         "NOVEL_TG_CHAT_ID": _env("PAGE76_NOVEL_TG_CHAT_ID"),
@@ -229,9 +247,9 @@ NS_SCHEDULED = "발행예고"          # DN2026_0072 — 텔레그램 예고를 
 NS_STOPPED, NS_DISCARDED = "중단", "폐기"
 
 NOVEL_EPISODES = 7
-NOVEL_BIBLE_LEAD_DAYS = 20       # 시즌 제1화 게시일 20일 전부터 바이블 생성
-NOVEL_EPISODE_LEAD_DAYS = 14     # 회차 게시일 D-14 부터 원고 생성
-NOVEL_BUFFER_EPISODES = 3        # 시즌 개시 전 1~3화는 제1화 D-14 부터 연속 생성
+NOVEL_BIBLE_LEAD_DAYS = 7        # 시즌 제1화 게시일 7일 전부터 바이블 생성 (DN2026_0119: 20 → 7)
+NOVEL_EPISODE_LEAD_DAYS = 3      # 회차 게시일 D-3 부터 원고 생성 (DN2026_0119: 14 → 3)
+NOVEL_BUFFER_EPISODES = 3        # 시즌 개시 전 1~3화는 제1화 D-3 부터 연속 생성
 NOVEL_IMPLICIT_HOURS = 2         # D-N7 묵시 승인 대기 (DN2026_0072: 4 → 2시간)
 NOVEL_NOTIFY_HOURS = (9, 18)     # 묵시 승인 알림은 KST 09:00~17:59 에만
 NOVEL_STALE_HOURS = 6            # 직전 실행이 이보다 오래면 묵시 등록 연기
@@ -240,6 +258,21 @@ NOVEL_PUBLISH_NOTICE_HOUR = 8    # 게시일 KST 08시 이후 첫 실행에서 �
 NOVEL_PUBLISH_DELAY_HOURS = 2    # 예고 후 이 시간이 지나야 게시
 NOVEL_REMIND_HOUR = 20           # 전날 안내(자동 발행 예정·승인 필요)는 20시대 실행에서
 NOVEL_MAX_ATTEMPTS = 3
+
+# ── DN2026_0119 Zero-Touch (DSN-P76-NOVEL-003) ─────────────
+NOVEL_REST_WEEKDAY = 4            # 금요일 휴재 (date.weekday(): 월=0 … 금=4)
+NOVEL_REPAIR_MAX = 2              # 검수 플래그·BLOCK 자동 수정 최대 횟수(회차·바이블 각각)
+MODEL_REVIEWER_2 = "claude-opus-5-5"  # 독립 2차 검수 — 작성·1차 검수와 다른 모델
+NOVEL_REGISTER_AHEAD_HOURS = 36   # 게시 시각 T 까지 이 시간 이내면 FB 예약 등록 대상 (D-1 등록)
+NOVEL_SCHEDULE_MIN_LEAD_MIN = 15  # FB 예약 하한 10분 + 여유. T-now 가 이보다 짧으면 등록하지 않는다
+NOVEL_BUDGET_SAVE_RATIO = 0.8     # 월 예산 80% 도달 시 작성 effort 를 낮춘다
+NOVEL_WRITE_EFFORT_SAVE = "low"
+NOVEL_SHIFT_MAX = 2               # 같은 회차 순연이 이 횟수를 넘으면 보류 + T5 (DN2026_0119 A2, 유일한 사람 확인 예외)
+NOVEL_PREEMPT_TIME = (22, 0)      # '승인' 전 회차는 게시일 D-1 KST 이 시각 이후 선제 순연 (리뷰 W3)
+NK_NOTICE = "부록"                # 순연 슬롯 휴재 안내 카드 행(DB-12 구분 '부록', 상태 '승인'으로 생성)
+HIATUS_PUBLISH_TIME = (20, 5)     # 휴재 콘텐츠 게시 시각 KST(DN2026_0069) + 무작위 0~40분
+HIATUS_JITTER_MAX_MIN = 40
+MODERATE_LOOKBACK_HOURS = 72      # 댓글 숨김 대상: 게시 후 72시간 이내 p76 게시물
 NOVEL_RUN_CAP_USD = 3.0
 NOVEL_LAW_MAX_AGE_DAYS = 90
 NOVEL_STYLE_SAMPLES = (5, 7, 21)  # A형 수사일지 번호 (문체 견본)

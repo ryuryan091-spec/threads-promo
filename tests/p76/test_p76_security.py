@@ -171,8 +171,8 @@ def test_t_sec_08_workflow_rules(path):
 
 def test_p76_workflow_set():
     assert [p.name for p in WORKFLOWS] == [
-        "p76_calendar.yml", "p76_health.yml", "p76_hiatus_publish.yml", "p76_insights.yml", "p76_novel.yml",
-        "p76_novel_publish.yml"]
+        "p76_calendar.yml", "p76_health.yml", "p76_hiatus_publish.yml", "p76_insights.yml", "p76_moderate.yml",
+        "p76_novel.yml", "p76_novel_publish.yml"]
 
 
 def test_reused_secrets_not_duplicated():
@@ -189,7 +189,19 @@ def test_reused_secrets_not_duplicated():
 
 
 def test_no_reply_or_dm_endpoints():
-    """답글·DM 엔드포인트는 코드에 두지 않는다 (DSN §9)."""
-    source = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "p76").glob("*.py"))
-    for forbidden in ("/comments\"", "/messages", "private_replies", "is_hidden"):
+    """답글·DM 엔드포인트는 코드에 두지 않는다 (DSN §9, DN2026_0068).
+    DN2026_0119 A3: 댓글 쓰기는 숨김(is_hidden)만 허용 — graph.py 의 hide_comment 한 곳에서만, 댓글 목록은 GET 만."""
+    files = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "p76").glob("*.py")}
+    source = "\n".join(files.values())
+    for forbidden in ("/messages", "private_replies", "/private_replies", "message_tags"):
         assert forbidden not in source
+    for name, text in files.items():
+        if name != "graph.py":
+            assert '"is_hidden": "true"' not in text, name
+        if "requests.post" in text:
+            assert name in ("graph.py", "notify.py", "novel_tg.py"), name
+    graph_src = files["graph.py"]
+    assert graph_src.count('"is_hidden": "true"') == 1  # hide_comment 한 곳
+    # 댓글 엣지(/comments)는 GET 으로만 쓴다: requests.post(...comments...) 형태가 없어야 한다
+    import re
+    assert not re.search(r"requests\.post\([^)]*comments", graph_src)

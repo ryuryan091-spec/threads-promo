@@ -9,9 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+import yaml
 from p76_fake import DB05, DB12, FAKE_PAGE_ID, FakeResp, png_bytes
 
 from p76 import (
+    notion,
     novel_fixtures,
     novel_llm,
     novel_policy,
@@ -27,6 +29,7 @@ from p76.notion import KST
 from p76.runlog import RunLog
 
 S = settings
+ROOT = Path(__file__).resolve().parents[2]
 CHAT = "-100555000111"
 FAKE_NOVEL_BOT = "7000000001:" + "Nv" * 18  # FAKE
 FAKE_CLAUDE_KEY = "sk-ant-" + "FAKE" * 8  # FAKE
@@ -217,13 +220,31 @@ def test_tn11_laws_and_footer():
     laws = {"LAW_76_2": ("법문", date(2026, 11, 1)), "LAW_1350": ("상담", None), "LAW_DISCLAIMER": ("면책", None)}
     text, errors = novel_rules.fill_laws("a\n{{LAW_76_2}}\n{{LAW_DISCLAIMER}}", laws, date(2026, 11, 29))
     assert text == "a\n법문\n면책" and errors == []
-    _, errors = novel_rules.fill_laws("{{LAW_1350}}", laws, date(2026, 11, 29))
-    assert errors == ["LAW:unconfirmed:LAW_1350"]
-    _, errors = novel_rules.fill_laws("{{LAW_76_2}}", laws, date(2027, 3, 1))  # 90일 초과
-    assert errors == ["LAW:unconfirmed:LAW_76_2"]
+    # DN2026_0119 R10: 확인일 없음·90일 초과 → 오류 없이 그 줄 제거(앞뒤 빈 줄 정리), 문안 없음 → 차단
+    text, errors = novel_rules.fill_laws("a\n\n{{LAW_1350}}\n\nb", laws, date(2026, 11, 29))
+    assert errors == [] and text == "a\n\nb"
+    text, errors = novel_rules.fill_laws("a\n{{LAW_76_2}}", laws, date(2027, 3, 1))  # 90일 초과
+    assert errors == [] and text == "a"
+    text, errors = novel_rules.fill_laws("{{LAW_DISCLAIMER}}", laws, date(2027, 3, 1))  # 면책은 확인일 무관
+    assert errors == [] and text == "면책"
+    _, errors = novel_rules.fill_laws("a\n{{LAW_116}}", laws, date(2026, 11, 29))
+    assert errors == ["LAW:missing:LAW_116"]
     foot = novel_rules.footer(1, 2, "질문?")
-    for must in ("※ 여러 사례를 재구성한 픽션입니다.", "법률 자문이 아닙니다.", "AI의 도움", "#사건파일76", "💬 질문?"):
+    for must in ("※ 여러 사례를 재구성한 픽션입니다.", "법률 자문이 아닙니다.", "AI의 도움", "#사건파일76", "💬 질문?",
+                 "매일 연재(금요일 휴재)"):
         assert must in foot
+    assert "매주 일요일" not in foot
+    # 리뷰 W7: 자동 숨김은 금칙어 기준 — '확인 시' 약속을 하지 않는다
+    assert "(실명·회사명은 적지 말아 주세요. 해당 댓글은 숨김 처리될 수 있습니다.)" in foot
+    assert "확인 시" not in foot
+
+
+def test_r10_dropped_law_logged_as_code_only(caplog):
+    caplog.set_level(logging.WARNING)
+    laws = {"LAW_116": ("비공개 합성 법문 표식", None)}
+    text, errors = novel_rules.fill_laws("앞\n{{LAW_116}}\n뒤", laws, date(2026, 11, 29))
+    assert text == "앞\n뒤" and errors == []
+    assert "LAW:dropped:LAW_116" in caplog.text and "비공개 합성 법문 표식" not in caplog.text
 
 
 def test_verdict_recomputed():
@@ -245,68 +266,48 @@ def test_prompt_page_parse_and_draft_refused(novel, env):
         novel_prompts.load()
 
 
-# ── TN-01·04 묵시 승인 ───────────────────────────────────
-def test_tn01_implicit_registration_after_2h(novel):
-    log, client = run(kst(2026, 11, 9, 10, 44))
+# ── TN-01 바이블 자동 정본 (DN2026_0119: 묵시 2시간 대기 삭제) ─────────────
+def test_tn01_bible_pass_becomes_canon_immediately(novel):
+    log, client = run(kst(2026, 11, 22, 22, 15))  # 야간 실행도 대기 없음
     bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    assert any("묵시 승인 대기" in t and "12:44 이후" in t and "중단'을 체크" in t for t in novel.tg.sent)
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
+    assert novel.fake.val(bible, S.N_RESULT) == "auto:gate1"
     assert "표식-NB" in json.dumps(client.calls[0]["system"], ensure_ascii=False)
     assert "fallbacks" not in client.calls[0] and client.calls[0]["model"] == "claude-sonnet-5-5"
-    run(kst(2026, 11, 9, 12, 40))
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT  # 2시간 전
-    run(kst(2026, 11, 9, 12, 44))
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
-    assert any("정본 등록" in t for t in novel.tg.sent)
+    assert [c["model"] for c in client.calls] == [S.MODEL_WRITER, S.MODEL_REVIEWER]  # PASS → 2차 검수 없음
+    assert any("정본 자동 등록" in t and "조치 불필요" in t and "11-29(일)" in t for t in novel.tg.sent)
+    assert not any("묵시" in t or "체크해 주세요" in t or "바꿔야" in t for t in novel.tg.sent)  # AC1
     assert all(t.startswith("[사건파일76·소설] ") for t in novel.tg.sent)
 
 
-def test_tn04_night_bible_waits_for_daytime_notice(novel):
-    run(kst(2026, 11, 9, 22, 15))
-    bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None and novel.tg.sent == []
-    run(kst(2026, 11, 10, 8, 50))
-    assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None
-    run(kst(2026, 11, 10, 10, 44))
-    assert novel.fake.val(bible, S.N_NOTIFIED_AT) is not None
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    run(kst(2026, 11, 10, 12, 44))
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
+def test_tn01_bible_not_before_lead_days(novel):
+    _, client = run(kst(2026, 11, 21, 10, 44))  # 제1화(11-29) D-7 = 11-22 전
+    assert client.calls == [] and rows(novel.fake, S.NK_BIBLE) == []
 
 
-def test_tn05_stale_run_defers(novel):
-    run(kst(2026, 11, 9, 10, 44))
-    run(kst(2026, 11, 9, 17, 0))  # 직전 실행 6시간 16분 전
-    bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    assert any("연기" in t for t in novel.tg.sent)
+def test_tn01_canon_without_telegram(novel, env):
+    env(PAGE76_NOVEL_TG_BOT_TOKEN="")
+    run(kst(2026, 11, 22, 10, 44))
+    assert novel.fake.val(row(novel.fake, "N1-BIBLE"), S.N_STATE) == S.NS_CANON
 
 
 def test_tn03_telegram_is_send_only(novel):
     """같은 봇을 쓰는 다른 파이프라인의 update 를 건드리지 않는다 — getUpdates·웹훅 호출 없음."""
-    run(kst(2026, 11, 9, 10, 44))
-    run(kst(2026, 11, 9, 12, 44))
+    run(kst(2026, 11, 22, 10, 44))
+    run(kst(2026, 11, 22, 12, 44))
     assert novel.tg.urls and all(u.endswith("/sendMessage") for u in novel.tg.urls)
     source = "\n".join(p.read_text(encoding="utf-8") for p in (Path(run_novel.__file__).parent).glob("*.py"))
     for method in ("getUpdates", "setWebhook", "deleteWebhook"):
         assert f'"{method}"' not in source and f"'{method}'" not in source  # 호출 인자로 쓰이지 않음
 
 
-def test_tn01_notice_not_sent_means_no_timer(novel, env):
-    env(PAGE76_NOVEL_TG_BOT_TOKEN="")
-    run(kst(2026, 11, 9, 10, 44))
-    run(kst(2026, 11, 9, 16, 44))
-    bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-
-
 # ── TN-02 중단 (노션 체크·스위치) ───────────────────────
 def test_tn02_notion_checkbox_stop(novel):
-    run(kst(2026, 11, 9, 10, 44))
+    flagged = {**novel_fixtures.review(), "identifiability": 1, "verdict": "PASS"}
+    run(kst(2026, 11, 22, 10, 44), Scripted([None, {"data": flagged}]))  # 자동 수정 대기(검사실패)
     bible = row(novel.fake, "N1-BIBLE")
     bible["properties"][S.N_STOP]["checkbox"] = True
-    run(kst(2026, 11, 9, 12, 44))
+    run(kst(2026, 11, 22, 12, 44))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_STOPPED
     assert any("중단 접수" in t for t in novel.tg.sent)
 
@@ -314,100 +315,110 @@ def test_tn02_notion_checkbox_stop(novel):
 def test_tn02_stop_after_canon_halts_episodes(novel):
     bible = add_canon_bible(novel.fake)
     bible["properties"][S.N_STOP]["checkbox"] = True
-    log, client = run(kst(2026, 11, 15, 10, 44))
+    log, client = run(kst(2026, 11, 26, 10, 44))
     assert novel.fake.val(bible, S.N_STATE) == S.NS_STOPPED
     assert rows(novel.fake, S.NK_EPISODE) == [] and client.calls == []
 
 
 def test_tn02_global_switch(novel, env):
     env(PAGE76_NOVEL_ENABLED="false")
-    run(kst(2026, 11, 9, 10, 44))
+    run(kst(2026, 11, 22, 10, 44))
     assert not any(DB12 in c[1] for c in novel.fake.calls)
 
 
 # ── TN-06·08·09 판정·거절 ────────────────────────────────
-def test_tn06_human_required_bible_needs_explicit(novel):
+def test_tn06_human_required_bible_goes_to_auto_repair(novel):
     flagged = {**novel_fixtures.review(), "identifiability": 1, "verdict": "PASS"}
-    run(kst(2026, 11, 9, 10, 44), Scripted([None, {"data": flagged}, {"data": flagged}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([None, {"data": flagged}]))
     bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_EXPLICIT
-    run(kst(2026, 11, 9, 16, 44))
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_EXPLICIT
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(bible, S.N_RESULT).startswith("review:HUMAN_REQUIRED|identifiability:1")
+    assert novel_store.json_section(bible, novel_policy.H_GATE) == {"repairs": 1}
+    assert novel.tg.sent == []  # 자동 수정은 알림 없음(AC1)
+    _, client = run(kst(2026, 11, 22, 12, 44))  # 다음 실행: 검수 코드를 수정 지시로 넣어 재작성 → PASS → 정본
+    assert "identifiability:1" in client.calls[0]["messages"][0]["content"][-1]["text"]
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
 
 
-def test_tn06_fallback_model_forces_human(novel):
-    run(kst(2026, 11, 9, 10, 44), Scripted([{"data": novel_fixtures.bible(), "model": "claude-opus-4-8"}]))
-    assert novel.fake.val(row(novel.fake, "N1-BIBLE"), S.N_STATE) == S.NS_EXPLICIT
+def test_tn06_fallback_model_forces_repair(novel):
+    run(kst(2026, 11, 22, 10, 44), Scripted([{"data": novel_fixtures.bible(), "model": "claude-opus-4-8"}]))
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(bible, S.N_RESULT).startswith("review:HUMAN_REQUIRED|")
 
 
 def test_tn08_refusal_no_retry(novel):
-    log, client = run(kst(2026, 11, 9, 10, 44), Scripted([{"data": None, "stop": "refusal", "category": "cyber"}]))
+    log, client = run(kst(2026, 11, 22, 10, 44), Scripted([{"data": None, "stop": "refusal", "category": "cyber"}]))
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_STATE) == S.NS_REFUSED
     assert len(client.calls) == 1
 
 
 def test_tn09_max_tokens_not_saved(novel):
-    run(kst(2026, 11, 9, 10, 44), Scripted([{"data": None, "stop": "max_tokens"}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{"data": None, "stop": "max_tokens"}]))
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_STATE) == S.NS_CHECK_FAILED
     assert novel_store.H_BIBLE not in novel_store.sections(bible)
     assert novel_policy.H_DRAFT not in novel_store.sections(bible)
 
 
-def test_review_block_holds_episode(novel):
+def test_review_block_goes_to_auto_repair(novel):
     add_canon_bible(novel.fake)
     blocked = {**novel_fixtures.review(), "method_detail": 3, "verdict": "BLOCK"}
-    run(kst(2026, 11, 15, 10, 44), Scripted([None, {"data": blocked}]))
-    assert novel.fake.val(row(novel.fake, "N1-E01"), S.N_STATE) == S.NS_HELD
+    run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": blocked}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED  # DN2026_0119: BLOCK → 자동 수정
+    assert novel.fake.val(e1, S.N_RESULT).startswith("review:BLOCK|")
 
 
 # ── 회차 생성 ────────────────────────────────────────────
 def test_episode_generation_buffer(novel):
     add_canon_bible(novel.fake)
-    run(kst(2026, 11, 14, 10, 44))
-    assert rows(novel.fake, S.NK_EPISODE) == []  # 제1화 D-14(11-15) 전
+    run(kst(2026, 11, 25, 10, 44))
+    assert rows(novel.fake, S.NK_EPISODE) == []  # 제1화 D-3(11-26) 전
     for hour in (10, 12, 14, 16):
-        run(kst(2026, 11, 15, hour, 44))
+        run(kst(2026, 11, 26, hour, 44))
     keys = sorted(novel.fake.val(r, S.N_KEY) for r in rows(novel.fake, S.NK_EPISODE))
-    assert keys == ["N1-E01", "N1-E02", "N1-E03"]  # 버퍼 3화, 4화는 D-14 전
+    assert keys == ["N1-E01", "N1-E02", "N1-E03"]  # 버퍼 3화, 4화(12-02)는 D-3 전
     e1 = row(novel.fake, "N1-E01")
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_REVIEW
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED and novel.fake.val(e1, S.N_RESULT) == "auto:gate1"
     assert novel.fake.val(e1, S.N_DUE) == "2026-11-29"
+    assert novel.fake.val(row(novel.fake, "N1-E03"), S.N_DUE) == "2026-12-01"  # 매일 연재
     assert "제1화 합성 문장" in novel.fake.page_text(e1["id"])
-    assert any("검토대기" in t for t in novel.tg.sent)
+    assert any("자동 승인" in t and "11-29(일)" in t and "조치 불필요" in t for t in novel.tg.sent)
+    assert not any("(일) /" in t and "12-01" in t for t in novel.tg.sent)  # T2 요일은 실제 요일
 
 
 def test_episode_rule_retry_then_fail(novel):
     add_canon_bible(novel.fake)
     bad = {**novel_fixtures.episode({"messages": [{"content": [{"text": "제1화"}]}]}), "body": "D+1 짧은 원고"}
-    log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    log, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
     assert len(client.calls) == 1  # one writer call per scheduled execution
-    run(kst(2026, 11, 15, 12, 44))  # 다음 실행에서 재시도(시도 2/3)
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_REVIEW
+    run(kst(2026, 11, 26, 12, 44))  # 다음 실행에서 재시도(시도 2/3)
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED
     assert novel.fake.val(e1, S.N_ATTEMPTS) == 2
 
 
 def test_tn14_banned_terms_never_sent(novel, env):
     env(PAGE76_BANNED_TERMS="비공개금칙어")
     add_canon_bible(novel.fake)
-    _, client = run(kst(2026, 11, 15, 10, 44))
+    _, client = run(kst(2026, 11, 26, 10, 44))
     assert client.calls and "비공개금칙어" not in json.dumps(client.calls, ensure_ascii=False)
 
 
 # ── TN-12 예산 ───────────────────────────────────────────
 def test_tn12_month_budget_blocks_calls(novel):
     novel.fake.add(DB12, **{S.N_KEY: "CONTROL", S.N_KIND: S.NK_CONTROL,
-                            S.N_RESULT: json.dumps({"month": "2026-11", "spent": 19.5})})
-    log, client = run(kst(2026, 11, 9, 10, 44))
+                            S.N_RESULT: json.dumps({"month": "2026-11", "spent": 59.5})})  # 기본 예산 60 (DN2026_0119 A6)
+    log, client = run(kst(2026, 11, 22, 10, 44))
     assert client.calls == [] and "budget:month" in log.codes
     assert any("예산" in t for t in novel.tg.sent)
 
 
 def test_tn12_run_cap(novel):
-    log, client = run(kst(2026, 11, 9, 10, 44), Scripted([{"data": novel_fixtures.bible(), "out": 320_000}]))
+    log, client = run(kst(2026, 11, 22, 10, 44), Scripted([{"data": novel_fixtures.bible(), "out": 320_000}]))
     assert "budget:run" in log.codes  # 첫 호출 $3.2 → 검수 호출 전 중단
 
 
@@ -434,84 +445,13 @@ def pub(when):
     return log
 
 
-def test_tn17_notice_then_publish_after_2h(live):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 7, 50))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_APPROVED and live.tg.sent == []  # 08시 전 예고 없음
-    pub(kst(2026, 11, 29, 8, 17))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-    assert any("제1화 — 10:17 이후 발행됩니다." in t and "중단'을 체크" in t for t in live.tg.sent)
-    assert live.graph.writes() == []
-    pub(kst(2026, 11, 29, 10, 10))
-    assert live.graph.writes() == []  # 예고 + 2시간 전
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
-    assert live.fake.val(e1, S.N_FB_ID) == "61_99"
-    caption = live.graph.writes()[0][2]["caption"]
-    assert "제1화 합성 문장" in caption and "#사건소설" in caption and "AI의 도움" in caption
-    pub(kst(2026, 11, 29, 11, 25))
-    assert len(live.graph.writes()) == 1  # 하루 1건·중복 없음
-    assert sum("발행됩니다" in t for t in live.tg.sent) == 1
-
-
-def test_publish_at_not_before_10():
-    ctx = SimpleNamespace(now=kst(2026, 11, 29, 7, 0), today=date(2026, 11, 29))
-    assert run_novel_publish.publish_at(ctx) == kst(2026, 11, 29, 10, 0)
-    ctx = SimpleNamespace(now=kst(2026, 11, 29, 10, 21), today=date(2026, 11, 29))
-    assert run_novel_publish.publish_at(ctx) == kst(2026, 11, 29, 12, 21)
-
-
-def test_tn07_auto_publish_pass_only(live):
-    add_episode_row(live.fake, 1, 1, S.NS_REVIEW, verdict="HUMAN_REQUIRED")
-    pub(kst(2026, 11, 29, 8, 17))
-    assert live.tg.sent == []  # 검수 플래그 회차는 승인 없이 예고하지 않는다
-    add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29), model="claude-opus-4-8")
-    pub(kst(2026, 11, 29, 8, 20))
-    assert live.tg.sent == []  # 요청 모델이 아닌 응답(fallback)도 자동 대상 아님
-    e3 = add_episode_row(live.fake, 1, 3, S.NS_REVIEW, due=date(2026, 11, 29))
-    pub(kst(2026, 11, 29, 8, 25))
-    assert live.fake.val(e3, S.N_STATE) == S.NS_SCHEDULED  # PASS + 요청 모델 → 승인 없이 예고
-    pub(kst(2026, 11, 29, 10, 25))
-    assert live.fake.val(e3, S.N_STATE) == S.NS_PUBLISHED
-
-
-def test_tn07_code_cannot_approve_or_skip_notice(live):
+def test_tn07_code_approves_only_via_gate_and_never_skips_notice(live):
     e1 = add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
     with pytest.raises(novel_store.TransitionError):
-        novel_store.transition(e1, S.NS_APPROVED)
-    with pytest.raises(novel_store.TransitionError):
         novel_store.transition(e1, S.NS_PUBLISHED)  # 예고 없이 게시 불가
-
-
-def test_tn02_stop_after_notice_blocks_publish(live):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    e1["properties"][S.N_STOP]["checkbox"] = True  # 회장이 2시간 안에 중단
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == []
-    assert live.fake.val(e1, S.N_STATE) == S.NS_STOPPED
-
-
-def test_tn02_stop_rechecked_right_before_post(live, monkeypatch):
-    """목록을 읽은 뒤 게시 직전 사이에 체크한 중단도 막는다(행을 다시 읽음)."""
-    import copy
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    stale = copy.deepcopy(live.fake.rows(DB12))  # 실행 시작 때 읽은 목록(중단 전)
-    monkeypatch.setattr(novel_store, "all_rows", lambda: copy.deepcopy(stale))
-    e1["properties"][S.N_STOP]["checkbox"] = True  # 그 뒤 회장이 체크
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == []
-
-
-def test_tn01_notice_not_sent_means_no_publish(live, env):
-    env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
-        PAGE76_NOVEL_TG_BOT_TOKEN="", PAGE76_NOVEL_PROMPT_PAGE_ID=live.prompt_page)
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    log = pub(kst(2026, 11, 29, 8, 17))
-    assert "tg:notice_failed" in log.codes and live.fake.val(e1, S.N_STATE) == S.NS_APPROVED
-    pub(kst(2026, 11, 29, 12, 34))
-    assert live.graph.writes() == []
+    novel_store.transition(e1, S.NS_APPROVED)  # DN2026_0119 A1: 자동 게이트 통과 = 승인(코드 전이 허용)
+    with pytest.raises(novel_store.TransitionError):
+        novel_store.transition(e1, S.NS_PUBLISHED)  # 승인에서도 예약 등록(발행예고) 없이 게시 불가
 
 
 def test_publish_switch_off(live, env):
@@ -531,53 +471,17 @@ def test_generation_pipeline_never_posts(live):
     assert live.fake.val(row(live.fake, "N1-E01"), S.N_STATE) == S.NS_APPROVED
 
 
-def test_tn17_edited_violation_holds(live):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED, body=_body("\n2026-11-29 오후였다."))
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == [] and live.fake.val(e1, S.N_STATE) == S.NS_HELD
-    assert "R02:real_date" in live.fake.val(e1, S.N_RESULT)
-    pub(kst(2026, 11, 29, 11, 25))
-    assert sum("게시 전 검사 실패" in t for t in live.tg.sent) == 1  # 재시도 실행마다 반복하지 않음
-    e1["properties"][S.N_STATE]["select"] = {"name": S.NS_APPROVED}  # 회장이 고친 뒤 다시 승인
-    pub(kst(2026, 11, 29, 12, 34))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-    assert sum("이후 발행됩니다" in t for t in live.tg.sent) == 2
-
-
-def test_tn17_unconfirmed_law_blocks(live):
-    add_episode_row(live.fake, 1, 1, S.NS_APPROVED, body=_body("\n{{LAW_1350}}"))
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == []
-    assert any("LAW:unconfirmed:LAW_1350" in t for t in live.tg.sent)
-
-
-def test_tn17_confirmed_law_substituted(live):
-    add_episode_row(live.fake, 1, 1, S.NS_APPROVED, body=_body("\n{{LAW_76_2}}"))
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    caption = live.graph.writes()[0][2]["caption"]
-    assert "법률 블록 76의2 합성 문안" in caption and "{{" not in caption
-
-
-def test_publish_failure_retries_next_slot(live):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(400, {"error": {"code": 100, "message": "합성 오류"}})
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(200, {"id": "p1", "post_id": "61_99"})
-    pub(kst(2026, 11, 29, 11, 25))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
-
-
 def test_remind_day_before(live):
-    add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
-    add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29), verdict="HUMAN_REQUIRED")
-    run(kst(2026, 11, 28, 20, 25))
-    assert any("자동 발행됩니다" in t and "N1-E01" in t and "N1-E02" not in t for t in live.tg.sent)
-    assert any("자동 발행 대상이 아님" in t and "N1-E02" in t for t in live.tg.sent)
+    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
+    run(kst(2026, 11, 28, 20, 25), Scripted([{"data": None, "stop": "max_tokens"}]))  # 제2화 생성 실패(재시도 대기)
+    e2 = row(live.fake, "N1-E02")
+    assert live.fake.val(e2, S.N_STATE) == S.NS_CHECK_FAILED
+    assert any("자동 예약 게시됩니다" in t and "N1-E01" in t and "11-29(일)" in t for t in live.tg.sent)
+    assert not any("N1-E02" in t for t in live.tg.sent)  # 모레 게시분은 안내 대상 아님·실패도 알림 없음
+    assert not any("승인'해야" in t or "체크" in t for t in live.tg.sent)  # AC1
+    novel_store.update(row(live.fake, "N1-E01"), {S.N_STATE: {"select": {"name": S.NS_PUBLISHED}}})
+    run(kst(2026, 11, 29, 20, 25), Scripted([{"data": None, "stop": "max_tokens"}]))
+    assert any("자동 검수 중" in t and "N1-E02" in t and "조치 불필요" in t for t in live.tg.sent)
 
 
 # ── TN-13·15·16 로그·멱등·모드 ───────────────────────────
@@ -586,41 +490,8 @@ def test_tn16_dry_run_writes_nothing(novel, env):
         PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
         PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page)
     log = RunLog("novel", "t")
-    run_novel.body(log, now=kst(2026, 11, 9, 10, 44))  # client=None → FixtureClient (키 없이)
+    run_novel.body(log, now=kst(2026, 11, 22, 10, 44))  # client=None → FixtureClient (키 없이)
     assert novel.fake.writes() == [] and novel.tg.sent == []
-
-
-def test_tn16_shadow_never_posts(novel, env):
-    env(PAGE76_MODE="shadow", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
-        PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
-        PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page)
-    add_canon_bible(novel.fake)
-    add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert novel.graph.writes() == []
-    assert any("shadow — 실제 게시 없음" in t for t in novel.tg.sent)
-
-
-def test_shadow_notice_never_counts_for_live(novel, env):
-    """shadow 예고("실제 게시 없음")만 받은 회차를 같은 날 live 로 바꾸면 live 예고 + 새 2시간 뒤에 게시."""
-    base = {"PAGE76_NOVEL_ENABLED": "true", "PAGE76_DB12_ID": DB12, "PAGE76_NOVEL_PUBLISH_ENABLED": "true",
-            "PAGE76_NOVEL_TG_BOT_TOKEN": FAKE_NOVEL_BOT, "PAGE76_NOVEL_TG_CHAT_ID": CHAT,
-            "PAGE76_NOVEL_PROMPT_PAGE_ID": novel.prompt_page}
-    env(PAGE76_MODE="shadow", **base)
-    add_canon_bible(novel.fake)
-    e1 = add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
-    novel.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(200, {"id": "p1", "post_id": "61_99"})
-    pub(kst(2026, 11, 29, 8, 17))
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-    env(PAGE76_MODE="live", **base)
-    pub(kst(2026, 11, 29, 10, 21))
-    assert novel.graph.writes() == []  # shadow 타이머로 게시하지 않음
-    assert any("12:21 이후 발행됩니다." in t for t in novel.tg.sent)  # live 예고 다시
-    pub(kst(2026, 11, 29, 11, 25))
-    assert novel.graph.writes() == []  # 새 2시간 전
-    pub(kst(2026, 11, 29, 12, 34))
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
 
 
 def test_tn16_publish_dry_run_writes_nothing(novel, env):
@@ -634,28 +505,18 @@ def test_tn16_publish_dry_run_writes_nothing(novel, env):
 
 
 def test_tn15_rerun_same_slot_is_idempotent(novel):
-    run(kst(2026, 11, 9, 10, 44))
-    run(kst(2026, 11, 9, 10, 44))
+    run(kst(2026, 11, 22, 10, 44))
+    run(kst(2026, 11, 22, 10, 44))
     assert len(rows(novel.fake, S.NK_BIBLE)) == 1
     assert len([r for r in rows(novel.fake) if novel.fake.val(r, S.N_KEY) == "CONTROL"]) == 1
 
 
-def test_tn13_logs_clean(live, caplog):
-    caplog.set_level(logging.DEBUG)
-    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    run(kst(2026, 11, 15, 12, 44))  # 생성(제2화)
-    pub(kst(2026, 11, 29, 8, 17))   # 예고
-    pub(kst(2026, 11, 29, 10, 21))  # 게시
-    text = caplog.text
-    for secret in ("합성 문장", "표식-NB", "표식-NE", "표식-NR", DB12, live.prompt_page, FAKE_CLAUDE_KEY,
-                   FAKE_NOVEL_BOT, CHAT, "법률 블록 76의2"):
-        assert secret not in text, secret
-
-
 def test_season_dates():
-    assert run_novel.season_start(1) == S.NOVEL_START
-    assert run_novel.due_date(1, 7) == S.NOVEL_START + timedelta(weeks=6)
-    assert run_novel.season_start(2) == S.NOVEL_START + timedelta(weeks=7)
+    # 시작 11-29(일) → 매일, 금요일(12-04) 휴재. 시즌 연속(시즌 사이 휴재 없음)
+    assert run_novel.season_start(1) == S.NOVEL_START == date(2026, 11, 29)
+    assert run_novel.due_date(1, 7) == date(2026, 12, 6)
+    assert run_novel.season_start(2) == date(2026, 12, 7)
+    assert run_novel.due_date(1, 3, (date(2026, 11, 30),)) == date(2026, 12, 2)
 
 
 # ── 공개 문구 검사 (치명-1, novel_rules 1.1.0 · run_novel 1.2.0) ─────────────
@@ -690,7 +551,7 @@ def _ep(**over):
 def test_public_field_banned_term_holds_episode(novel, env):
     env(PAGE76_BANNED_TERMS="비공개금칙어")
     add_canon_bible(novel.fake)
-    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep(card_quote="비공개금칙어 한 줄")}]))
+    _, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": _ep(card_quote="비공개금칙어 한 줄")}]))
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
     assert novel.fake.val(e1, S.N_RESULT) == "rules:R03"
@@ -700,23 +561,23 @@ def test_public_field_banned_term_holds_episode(novel, env):
 def test_public_field_violation_retries_then_fails(novel):
     add_canon_bible(novel.fake)
     bad = _ep(subtitle="서울의 밤")
-    log, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    log, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
     assert "R04:place@subtitle" in novel.fake.val(e1, S.N_RESULT)
     assert len(client.calls) == 1
-    _, retry = run(kst(2026, 11, 15, 12, 44), Scripted([{"data": bad}]))
+    _, retry = run(kst(2026, 11, 26, 12, 44), Scripted([{"data": bad}]))
     assert "R04:place@subtitle" in json.dumps(retry.calls[0], ensure_ascii=False)
 
 
 def test_review_input_includes_public_fields(novel):
     add_canon_bible(novel.fake)
     ep = _ep(card_quote="합성 표지 인용 표식", subtitle="합성 부제 표식", question="합성 질문 표식?")
-    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": ep}]))
+    _, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": ep}]))
     review_call = json.dumps(client.calls[1], ensure_ascii=False)
     for text in ("합성 표지 인용 표식", "합성 부제 표식", "합성 질문 표식?"):
         assert text in review_call
-    assert novel.fake.val(row(novel.fake, "N1-E01"), S.N_STATE) == S.NS_REVIEW
+    assert novel.fake.val(row(novel.fake, "N1-E01"), S.N_STATE) == S.NS_APPROVED
 
 
 def test_publish_rechecks_edited_public_fields(live):
@@ -733,177 +594,7 @@ def test_publish_rechecks_edited_public_fields(live):
 
 
 # ── 게시 선점 (치명-2, run_novel_publish 1.1.0) ─────────────────────────────
-def test_post_ok_but_record_failed_never_reposts(live, monkeypatch):
-    """게시 성공 → 게시완료 기록 실패 → 다음 실행은 다시 게시하지 않고 '확인필요'."""
-    from p76 import notion as notion_mod
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    real = novel_store.transition
-
-    def failing(page, new_state, extra=None):
-        if new_state == S.NS_PUBLISHED:
-            raise notion_mod.NotionError("합성 기록 실패")
-        return real(page, new_state, extra)
-    monkeypatch.setattr(novel_store, "transition", failing)
-    with pytest.raises(notion_mod.NotionError):
-        pub(kst(2026, 11, 29, 10, 21))
-    assert len(live.graph.writes()) == 1
-    assert run_novel_publish.POSTING in live.fake.val(e1, S.N_RESULT)
-    monkeypatch.setattr(novel_store, "transition", real)
-    log = pub(kst(2026, 11, 29, 11, 25))
-    assert len(live.graph.writes()) == 1  # 재게시 없음
-    assert live.fake.val(e1, S.N_STATE) == S.NS_CHECK
-    assert any(c.endswith("posting_unconfirmed") for c in log.codes)
-    assert any("결과가 기록되지 않았습니다" in t for t in live.tg.sent)
-    pub(kst(2026, 11, 29, 12, 34))
-    assert len(live.graph.writes()) == 1
-
-
-def test_unconfirmed_row_blocks_second_notice_same_day(live):
-    from p76 import notion
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))  # 예고(발행예고 + 발행 예정 시각)
-    novel_store.update(e1, {S.N_RESULT: notion.v_rich("notice:live|posting:123")})  # 직전 시도 흔적
-    e2 = add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29))
-    pub(kst(2026, 11, 29, 12, 34))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_CHECK
-    assert live.fake.val(e2, S.N_STATE) == S.NS_REVIEW  # 같은 날 다른 회차 예고 없음
-    assert live.graph.writes() == []
-
-
-def test_claim_written_before_post(live, monkeypatch):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    seen = []
-    real_post = run_novel_publish.graph.post_photo
-
-    def spy(image, caption):
-        seen.append(live.fake.val(e1, S.N_RESULT))
-        return real_post(image, caption)
-    monkeypatch.setattr(run_novel_publish.graph, "post_photo", spy)
-    pub(kst(2026, 11, 29, 10, 21))
-    assert seen and run_novel_publish.POSTING in seen[0] and seen[0].startswith("notice:live|")
-    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
-    assert live.fake.val(e1, S.N_RESULT) == "published"
-
-
-def test_claim_mismatch_does_not_post(live, monkeypatch):
-    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    real_refresh = novel_store.refresh
-    calls = {"n": 0}
-
-    def refresh(page):
-        calls["n"] += 1
-        fresh = real_refresh(page)
-        if calls["n"] == 2:  # 선점 직후 재조회: 다른 실행이 덮어쓴 상황
-            fresh = {**fresh, "properties": {**fresh["properties"],
-                                             S.N_RESULT: {"rich_text": [{"plain_text": "notice:live|posting:999"}]}}}
-        return fresh
-    monkeypatch.setattr(novel_store, "refresh", refresh)
-    log = pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == []
-    assert "novel_publish:claim_mismatch" in log.codes
-
-
-def test_failed_post_clears_claim_and_retries(live):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(400, {"error": {"code": 100, "message": "합성"}})
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)  # 미게시 확정 → 표시 해제
-    live.graph.handlers[("POST", f"{FAKE_PAGE_ID}/photos")] = FakeResp(200, {"id": "p1", "post_id": "61_99"})
-    pub(kst(2026, 11, 29, 11, 25))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
-
-
 # ── G4 리뷰(R6-04) 반영: 같은 날 2건 · 미게시 확정 시 선점 해제 · 선점 후 재확인 ─────
-def test_manual_fb_id_after_unconfirmed_blocks_second_episode(live):
-    """확인필요 → 회장이 FB게시ID만 기록해도 같은 날 다른 회차는 예고·게시하지 않는다."""
-    from p76 import notion
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    novel_store.update(e1, {S.N_RESULT: notion.v_rich("notice:live|posting:123")})
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_CHECK
-    novel_store.update(e1, {S.N_FB_ID: notion.v_rich("61_77")})  # 회장 수기 기록
-    e2 = add_episode_row(live.fake, 1, 2, S.NS_REVIEW, due=date(2026, 11, 29))
-    pub(kst(2026, 11, 29, 11, 25))
-    pub(kst(2026, 11, 29, 14, 12))
-    assert live.fake.val(e2, S.N_STATE) == S.NS_REVIEW and live.graph.writes() == []
-
-
-def test_claim_stale_read_releases_marker(live, monkeypatch):
-    """선점 직후 조회가 옛 값을 돌려주면 게시하지 않고, 표시를 지워 다음 실행에서 재시도한다."""
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    real_refresh = novel_store.refresh
-    calls = {"n": 0}
-
-    def refresh(page):
-        calls["n"] += 1
-        fresh = real_refresh(page)
-        if calls["n"] == 2:
-            fresh = {**fresh, "properties": {**fresh["properties"],
-                                             S.N_RESULT: {"rich_text": [{"plain_text": "notice:live"}]}}}
-        return fresh
-    monkeypatch.setattr(novel_store, "refresh", refresh)
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == []
-    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)
-    monkeypatch.setattr(novel_store, "refresh", real_refresh)
-    pub(kst(2026, 11, 29, 11, 25))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED and len(live.graph.writes()) == 1
-
-
-@pytest.mark.parametrize("change", ["stop", "state"])
-def test_claim_rechecks_stop_and_state(live, monkeypatch, change):
-    """선점 뒤 다시 읽었을 때 중단 체크 또는 상태 변경이 보이면 게시하지 않는다."""
-    add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    real_refresh = novel_store.refresh
-    calls = {"n": 0}
-
-    def refresh(page):
-        calls["n"] += 1
-        fresh = real_refresh(page)
-        if calls["n"] == 2:
-            props = dict(fresh["properties"])
-            if change == "stop":
-                props[S.N_STOP] = {**props[S.N_STOP], "checkbox": True}
-            else:
-                props[S.N_STATE] = {**props[S.N_STATE], "select": {"name": S.NS_HELD}}
-            fresh = {**fresh, "properties": props}
-        return fresh
-    monkeypatch.setattr(novel_store, "refresh", refresh)
-    log = pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == [] and "novel_publish:claim_mismatch" in log.codes
-
-
-def test_tripped_before_claim_does_not_mark(live):
-    from p76 import safety
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    safety.trip("합성:차단")
-    log = pub(kst(2026, 11, 29, 10, 21))
-    assert live.graph.writes() == [] and "novel_publish:graph_write_blocked" in log.codes
-    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)
-
-
-def test_tripped_inside_post_releases_marker(live, monkeypatch):
-    from p76 import safety
-
-    def raise_tripped(image, caption):
-        raise safety.Tripped("합성:차단")
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    pub(kst(2026, 11, 29, 8, 17))
-    monkeypatch.setattr(run_novel_publish.graph, "post_photo", raise_tripped)
-    with pytest.raises(safety.Tripped):
-        pub(kst(2026, 11, 29, 10, 21))
-    assert run_novel_publish.POSTING not in live.fake.val(e1, S.N_RESULT)
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-
-
 def test_publish_rechecks_edited_subtitle(live):
     e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
     live.fake.set_blocks(e1["id"], novel_store.section_blocks([
@@ -957,9 +648,9 @@ def test_bible_r05_is_warning_episode_r05_still_error(env):
 def test_bible_dict_arc_and_w05_accepted(novel, caplog):
     caplog.set_level(logging.WARNING)
     b = {**_dict_arc_bible(), "risk_notes": ["합성 과태료 메모 표식"]}
-    run(kst(2026, 11, 9, 10, 44), Scripted([{"data": b}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{"data": b}]))
     bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
     assert "W05:legal_text" in caplog.text and "합성 과태료 메모 표식" not in caplog.text
     stored = novel_store.json_section(bible, novel_store.H_BIBLE)
     assert [a["episode"] for a in stored["arc"]] == list(range(1, S.NOVEL_EPISODES + 1))
@@ -975,41 +666,44 @@ def test_prev_rule_codes_carried_to_first_note_episode(novel):
     add_canon_bible(novel.fake)
     e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
     _set(e1, **{S.N_RESULT: "rules:R04:place@subtitle,R09:cliche", S.N_ATTEMPTS: 1})
-    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep()}]))
+    _, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": _ep()}]))
     first = client.calls[0]["messages"][0]["content"][-1]["text"]
     assert "직전 실행이 다음 규칙에 걸렸다: R04:place@subtitle, R09:cliche." in first
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_REVIEW and novel.fake.val(e1, S.N_ATTEMPTS) == 2
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED and novel.fake.val(e1, S.N_ATTEMPTS) == 2
 
 
 def test_prev_rule_codes_carried_to_first_note_bible(novel):
     page = novel.fake.add(DB12, **{S.N_KEY: "N1-BIBLE", S.N_KIND: S.NK_BIBLE, S.N_SEASON: 1,
                                    S.N_STATE: S.NS_CHECK_FAILED, S.N_RESULT: "rules:B02:cast_incomplete",
                                    S.N_ATTEMPTS: 1})
-    _, client = run(kst(2026, 11, 9, 10, 44))
+    _, client = run(kst(2026, 11, 22, 10, 44))
     assert "직전 실행이 다음 규칙에 걸렸다: B02:cast_incomplete." in \
         client.calls[0]["messages"][0]["content"][-1]["text"]
-    assert novel.fake.val(page, S.N_STATE) == S.NS_IMPLICIT
+    assert novel.fake.val(page, S.N_STATE) == S.NS_CANON
 
 
 def test_no_carry_note_for_non_rules_failure(novel):
     add_canon_bible(novel.fake)
     e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
     _set(e1, **{S.N_RESULT: "llm:max_tokens", S.N_ATTEMPTS: 1})
-    _, client = run(kst(2026, 11, 15, 10, 44), Scripted([{"data": _ep()}]))
+    _, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": _ep()}]))
     assert "직전 실행이" not in client.calls[0]["messages"][0]["content"][-1]["text"]
 
 
-def test_same_rules_retry_at_most_three_total(novel):
+def test_same_rules_retry_at_most_three_total(novel, glive):
     add_canon_bible(novel.fake)
     bad = _ep(subtitle="서울의 밤")
     calls = []
-    for h in (10, 12, 14, 16):
-        _, client = run(kst(2026, 11, 15, h, 44), Scripted([{"data": bad}]))
+    for when in (kst(2026, 11, 26, 10, 44), kst(2026, 11, 26, 12, 44), kst(2026, 11, 26, 14, 44),
+                 kst(2026, 11, 26, 16, 44), kst(2026, 11, 27, 10, 44)):
+        _, client = run(when, Scripted([{"data": bad}]))
         calls.extend(client.calls)
     e1 = row(novel.fake, "N1-E01")
-    assert len(calls) == 3
-    assert novel.fake.val(e1, S.N_ATTEMPTS) == 3
+    # 3회 소진 → 최종 실패(순연·초기화) → 순연으로 생성 시작일도 하루 밀려(11-27) 그날 재생성 1회
+    assert len(calls) == 4
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 1
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-30"  # 11-29 순연
     assert not run_novel.auto_publishable(e1)
 
 
@@ -1018,7 +712,7 @@ def test_different_rules_keep_retrying(novel):
     e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
     _set(e1, **{S.N_RESULT: "rules:R09:cliche", S.N_ATTEMPTS: 1})
     bad = _ep(subtitle="서울의 밤")
-    run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
+    run(kst(2026, 11, 26, 10, 44), Scripted([{"data": bad}, {"data": bad}]))
     assert novel.fake.val(e1, S.N_ATTEMPTS) == 2
     assert not any(run_novel.REPEAT_NOTE in t for t in novel.tg.sent)
 
@@ -1042,33 +736,7 @@ def test_remind_uses_scheduled_hour_and_day(live, monkeypatch):
     add_episode_row(live.fake, 1, 1, S.NS_REVIEW)
     monkeypatch.setattr(S, "SCHEDULE_CRON", "25 11 * * *")  # KST 20:25 예정
     run(kst(2026, 11, 29, 0, 40))  # 4시간 넘게 늦게 시작 — 예정 시각(11-28 20시대) 기준
-    assert any("자동 발행됩니다" in t and "N1-E01" in t for t in live.tg.sent)
-
-
-def test_novel_publish_too_late_holds(live, monkeypatch):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    monkeypatch.setattr(S, "SCHEDULE_CRON", "17 23 * * 6")  # 토 23:17 UTC = 일 08:17 KST
-    log = pub(kst(2026, 11, 29, 10, 0))  # 103분 지연
-    assert "late:103m" in log.codes
-    assert live.fake.val(e1, S.N_STATE) == S.NS_APPROVED and live.graph.writes() == []
-    assert not any("발행됩니다" in t for t in live.tg.sent)
-    assert any("예약 지연 103분" in t and "게시 보류" in t for t in live.tg.sent)
-
-
-def test_novel_publish_lag_within_limit_proceeds(live, monkeypatch):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    monkeypatch.setattr(S, "SCHEDULE_CRON", "17 23 * * 6")
-    log = pub(kst(2026, 11, 29, 9, 30))  # 73분 지연
-    assert not any(c.startswith("late:") for c in log.codes)
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-
-
-def test_novel_publish_cron_invalid_degrades_only(live, monkeypatch):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_APPROVED)
-    monkeypatch.setattr(S, "SCHEDULE_CRON", "not a cron")
-    log = pub(kst(2026, 11, 29, 8, 17))
-    assert "sched:cron_invalid" in log.codes
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
+    assert any("자동 예약 게시됩니다" in t and "N1-E01" in t for t in live.tg.sent)
 
 
 # ── R6 리뷰 반영 (W4·W5) ────────────────────────────────
@@ -1080,77 +748,19 @@ def test_rule_kinds_ignore_values():
 def test_same_rule_kind_with_different_numbers_stops(novel):
     add_canon_bible(novel.fake)
     short1 = _ep(body="D+1 짧은 본문")
-    run(kst(2026, 11, 15, 10, 44), Scripted([{"data": short1}, {"data": short1}]))
+    run(kst(2026, 11, 26, 10, 44), Scripted([{"data": short1}, {"data": short1}]))
     e1 = row(novel.fake, "N1-E01")
     first = novel.fake.val(e1, S.N_RESULT)
     assert first.startswith("rules:") and "R01:length:" in first
     assert novel.fake.val(e1, S.N_ATTEMPTS) == 1
     short2 = _ep(body="D+1 길이가 다른 짧은 본문입니다")
-    run(kst(2026, 11, 15, 12, 44), Scripted([{"data": short2}, {"data": short2}]))
+    run(kst(2026, 11, 26, 12, 44), Scripted([{"data": short2}, {"data": short2}]))
     assert novel.fake.val(e1, S.N_RESULT) != first  # 글자 수는 다르지만
     assert novel.fake.val(e1, S.N_ATTEMPTS) == 2
-    run(kst(2026, 11, 15, 14, 44), Scripted([{"data": short2}]))
-    assert novel.fake.val(e1, S.N_ATTEMPTS) == 3
-    _, stopped = run(kst(2026, 11, 15, 16, 44))
-    assert stopped.calls == []
-
-
-def test_notify_upper_bound_uses_actual_time(novel, monkeypatch):
-    monkeypatch.setattr(S, "SCHEDULE_CRON", "44 7 * * *")  # 예정 KST 16:44
-    run(kst(2026, 11, 9, 18, 30))  # 실제 18:30 시작 — 상한(18시) 밖이므로 알림 없음
-    bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_IMPLICIT
-    assert novel.fake.val(bible, S.N_NOTIFIED_AT) is None and novel.tg.sent == []
-
-
-
-def test_third_quality_warning_notified_then_published(live):
-    bad = _ep(question="기" * 121)
-    clients = []
-    for h in (10, 12, 14):
-        _, c = run(kst(2026, 11, 15, h, 44), Scripted([{"data": bad}]))
-        clients.append(c)
-    e1 = row(live.fake, "N1-E01")
-    assert [len(c.calls) for c in clients] == [1, 1, 2]  # third includes one safety review
-    assert live.fake.val(e1, S.N_ATTEMPTS) == 3
-    assert run_novel.auto_publishable(e1)
-    assert any("생성 3/3회 종료" in t and "Q:too_long" in t for t in live.tg.sent)
-    pub(kst(2026, 11, 29, 8, 17))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_PUBLISHED
-    assert len(live.graph.writes()) == 1
-
-
-def test_quality_notice_failure_retry_without_regenerating(live, monkeypatch):
-    bad = _ep(question="기" * 121)
-    for h in (10, 12):
-        run(kst(2026, 11, 15, h, 44), Scripted([{"data": bad}]))
-    real_send = novel_tg.send
-    monkeypatch.setattr(novel_tg, "send", lambda kind, *a, **k: False if kind == "T7" else real_send(kind, *a, **k))
-    run(kst(2026, 11, 15, 14, 44), Scripted([{"data": bad}]))
-    e1 = row(live.fake, "N1-E01")
-    assert not run_novel.auto_publishable(e1)
-    pub(kst(2026, 11, 29, 8, 17))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_REVIEW
-    assert live.graph.writes() == []
-    monkeypatch.setattr(novel_tg, "send", real_send)
-    pub(kst(2026, 11, 29, 8, 20))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-    assert live.fake.val(e1, S.N_ATTEMPTS) == 3
-
-
-def test_quality_receipt_invalidated_by_edit(live):
-    e1 = add_episode_row(live.fake, 1, 1, S.NS_REVIEW, question="기" * 121)
-    _set(e1, **{S.N_ATTEMPTS: 3})
-    draft = novel_policy.public_draft(e1)
-    novel_policy.save_json(e1, novel_store.H_META, {"quality_warnings": ["Q:too_long"],
-                                                   "quality_hash": novel_policy.content_hash(draft)})
-    pub(kst(2026, 11, 29, 8, 17))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_SCHEDULED
-    novel_store.append(e1, novel_store.section_blocks([(novel_store.H_QUESTION, "바뀐 질문", "code")]))
-    pub(kst(2026, 11, 29, 10, 21))
-    assert live.fake.val(e1, S.N_STATE) == S.NS_HELD
-    assert live.graph.writes() == []
+    run(kst(2026, 11, 26, 14, 44), Scripted([{"data": short2}]))
+    # 3/3 소진 → 최종 실패(A2-a): 시도 초기화·순연
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 0
+    assert novel.fake.val(e1, S.N_RESULT) == "final:rules:exhausted"
 
 
 @pytest.mark.parametrize("verdict", ["BLOCK", "HUMAN_REQUIRED"])
@@ -1160,9 +770,18 @@ def test_third_quality_warning_never_overrides_ai_review(novel, verdict):
     _set(e1, **{S.N_ATTEMPTS: 2})
     bad = _ep(question="기" * 121)
     review = {**novel_fixtures.review(), "verdict": verdict}
-    run(kst(2026, 11, 15, 10, 44), Scripted([{"data": bad}, {"data": review}]))
-    assert not run_novel.auto_publishable(e1)
-    assert not any("생성 3/3회 종료" in t for t in novel.tg.sent)
+    run(kst(2026, 11, 26, 10, 44), Scripted([{"data": bad}, {"data": review}]))
+    # 1차 검수 결과는 품질 경고로 덮어쓰지 않는다: 1차 게이트(auto:gate1)로는 절대 승인되지 않는다.
+    # HUMAN_REQUIRED 는 자동 수정 → 독립 2차 검수(Opus)를 통과했을 때만 auto:gate2 로 승인될 수 있다(DN2026_0119).
+    assert novel.fake.val(e1, S.N_RESULT) != "auto:gate1"
+    if verdict == "BLOCK":
+        assert not run_novel.auto_publishable(e1)
+        assert not any("생성 3/3회 종료" in t for t in novel.tg.sent)
+    elif run_novel.auto_publishable(e1):
+        # 독립 2차 검수 PASS 뒤에만 품질 경고 안내(T7, 정보성)가 나갈 수 있다
+        assert novel.fake.val(e1, S.N_RESULT) == "auto:gate2"
+    else:
+        assert not any("생성 3/3회 종료" in t for t in novel.tg.sent)
 
 
 def test_partial_repair_preserves_unaffected_fields(novel):
@@ -1174,7 +793,7 @@ def test_partial_repair_preserves_unaffected_fields(novel):
     schema = {"type": "object", "properties": {"body": {"type": "string"}, "question": {"type": "string"}},
               "required": ["body", "question"], "additionalProperties": False}
     client = Scripted([{"data": {"question": "기록은?"}}])
-    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 15, 10), [], {}, {}, client=client)
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 26, 10), [], {}, {}, client=client)
     result = run_novel._llm(ctx, e1, label="N1-E01:write", model=S.MODEL_WRITER, effort="medium",
                             system="repair", user_blocks=[{"text": "repair"}], schema=schema,
                             max_tokens=1000, expected_out=100, stream=True)
@@ -1185,12 +804,13 @@ def test_partial_repair_preserves_unaffected_fields(novel):
 
 
 def test_opus_never_requested(novel):
+    """DN2026_0119: 허용 모델은 작성·1차 검수·독립 2차 검수뿐. 정상 경로(1차 PASS)에서는 Opus 를 부르지 않는다."""
     client = Scripted()
     with pytest.raises(novel_llm.LLMError, match="model:not_allowed"):
-        novel_llm.call(client, label="test", model="claude-opus-5-5", effort="medium", system="x",
+        novel_llm.call(client, label="test", model="claude-haiku-5-5", effort="medium", system="x",
                        user_blocks=[{"text": "x"}], schema={}, max_tokens=10, stream=False)
     assert client.calls == []
-    _, client = run(kst(2026, 11, 9, 10, 44))
+    _, client = run(kst(2026, 11, 22, 10, 44))
     assert all(c["model"] == "claude-sonnet-5-5" and "fallbacks" not in c for c in client.calls)
     assert client.calls[0]["max_tokens"] == 16000
 
@@ -1204,7 +824,7 @@ def test_api_failure_three_total_and_failure_status(novel):
             raise error
     calls = 0
     for h in (10, 12, 14, 16):
-        log, client = run(kst(2026, 11, 9, h, 44), Failing())
+        log, client = run(kst(2026, 11, 22, h, 44), Failing())
         calls += len(client.calls)
         if h != 16:
             assert log.status == "failed"
@@ -1227,7 +847,7 @@ def test_permanent_api_failure_holds_and_saves_private_evidence(novel, caplog):
             raise error
     client = Failing()
     for h in (10, 12, 14, 16):
-        log, _ = run(kst(2026, 11, 9, h, 44), client)
+        log, _ = run(kst(2026, 11, 22, h, 44), client)
         assert log.status == "failed"
     assert len(client.calls) == 1
     bible = row(novel.fake, "N1-BIBLE")
@@ -1255,7 +875,7 @@ def test_evidence_write_failure_keeps_hold(novel, monkeypatch):
     def fail_append(*args, **kwargs):
         raise RuntimeError("PRIVATE-PERSIST-ERROR")
     monkeypatch.setattr(novel_store, "append", fail_append)
-    log, client = run(kst(2026, 11, 9, 10, 44), Failing())
+    log, client = run(kst(2026, 11, 22, 10, 44), Failing())
     assert log.status == "failed"
     bible = row(novel.fake, "N1-BIBLE")
     assert not run_novel._retryable(bible)
@@ -1280,24 +900,24 @@ def test_bible_disclaimers_are_scoped_and_other_content_still_blocked():
 def test_revalidated_bible_skips_writer_and_preserves_provenance(novel, trusted):
     bad = novel_fixtures.bible()
     bad['season_title'] = '은행'
-    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': bad}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{'data': bad}]))
     bible = row(novel.fake, 'N1-BIBLE')
     good = novel_fixtures.bible()
     result = novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0, fallback=False) if trusted else None
     novel_policy.save_candidate(bible, good, result)
     _set(bible, **{S.N_RESULT: 'rules:R04:industry,R07:harm_term'})
-    _, client = run(kst(2026, 11, 9, 12, 44))
+    _, client = run(kst(2026, 11, 22, 12, 44))
     assert len(client.calls) == 1
     assert 'verdict' in client.calls[0]['output_config']['format']['schema']['required']
     fresh = row(novel.fake, 'N1-BIBLE')
     assert novel.fake.val(fresh, S.N_ATTEMPTS) == 1
-    assert novel.fake.val(fresh, S.N_STATE) == (S.NS_IMPLICIT if trusted else S.NS_EXPLICIT)
+    assert novel.fake.val(fresh, S.N_STATE) == (S.NS_CANON if trusted else S.NS_CHECK_FAILED)  # 미검증 출처 → 자동 수정
 
 
 def test_legacy_bible_codes_become_targeted_repair(novel):
     bad = novel_fixtures.bible()
     bad['risk_notes'] = ['은행이 실제 배경이다.']
-    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': bad}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{'data': bad}]))
     bible = row(novel.fake, 'N1-BIBLE')
     _set(bible, **{S.N_RESULT: 'rules:R04:industry'})
     retry = Scripted([{'data': {'risk_notes': ['일반 사무실 배경.']}}, None])
@@ -1309,7 +929,7 @@ def test_legacy_bible_codes_become_targeted_repair(novel):
         p.schemas['nb']['properties'] = {'risk_notes': {'type': 'array', 'items': {'type': 'string'}}}
         return p
     with patch.object(run_novel, '_prompts', prompts):
-        run(kst(2026, 11, 9, 12, 44), retry)
+        run(kst(2026, 11, 22, 12, 44), retry)
     assert retry.calls[0]['output_config']['format']['schema']['required'] == ['risk_notes']
     saved = novel_store.json_section(row(novel.fake, 'N1-BIBLE'), novel_policy.H_DRAFT)
     assert saved['arc'] == bad['arc']
@@ -1330,26 +950,28 @@ def test_metadata_exception_cannot_hide_extra_harm(value):
 def test_candidate_hash_tamper_requires_explicit_review(novel):
     b = novel_fixtures.bible()
     b['season_title'] = '은행'
-    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{'data': b}]))
     page = row(novel.fake, 'N1-BIBLE')
     good = novel_fixtures.bible()
     novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
     good['season_title'] = '출처 기록 이후 바뀐 제목'
     novel_policy.save_candidate(page, good)
-    _, client = run(kst(2026, 11, 9, 12, 44))
+    _, client = run(kst(2026, 11, 22, 12, 44))
     assert len(client.calls) == 1
-    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_EXPLICIT
+    page = row(novel.fake, 'N1-BIBLE')
+    assert novel.fake.val(page, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(page, S.N_RESULT).startswith('review:HUMAN_REQUIRED|')
 
 
 def test_changed_prompt_does_not_reuse_saved_bible(novel):
     b = novel_fixtures.bible()
     b['season_title'] = '은행'
-    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{'data': b}]))
     page = row(novel.fake, 'N1-BIBLE')
     good = novel_fixtures.bible()
     novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
     _set(page, **{S.N_PROMPT_VER: 'different-version'})
-    _, client = run(kst(2026, 11, 9, 12, 44))
+    _, client = run(kst(2026, 11, 22, 12, 44))
     assert 'arc' in client.calls[0]['output_config']['format']['schema']['required']
     assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_ATTEMPTS) == 2
 
@@ -1357,26 +979,466 @@ def test_changed_prompt_does_not_reuse_saved_bible(novel):
 def test_reused_draft_keeps_original_notes_for_ai_and_blocks_refusal(novel):
     b = novel_fixtures.bible()
     b['season_title'] = '은행'
-    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{'data': b}]))
     page = row(novel.fake, 'N1-BIBLE')
     good = novel_fixtures.bible()
     good['risk_notes'] = ['사망·자해·신체 폭력·선정 묘사는 어느 화에도 없다.']
     novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
-    _, client = run(kst(2026, 11, 9, 12, 44), Scripted([{'stop': 'refusal', 'data': None}]))
+    _, client = run(kst(2026, 11, 22, 12, 44), Scripted([{'stop': 'refusal', 'data': None}]))
     assert len(client.calls) == 1
     assert good['risk_notes'][0] in json.dumps(client.calls[0]['messages'], ensure_ascii=False)
-    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_HELD
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_CHECK_FAILED  # 검수 거절 = BLOCK → 자동 수정
+    assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_RESULT).startswith('review:BLOCK|')
     assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_ATTEMPTS) == 1
 
 
 def test_reuse_does_not_bypass_three_attempt_limit(novel):
     b = novel_fixtures.bible()
     b['season_title'] = '은행'
-    run(kst(2026, 11, 9, 10, 44), Scripted([{'data': b}]))
+    run(kst(2026, 11, 22, 10, 44), Scripted([{'data': b}]))
     page = row(novel.fake, 'N1-BIBLE')
     good = novel_fixtures.bible()
     novel_policy.save_candidate(page, good, novel_llm.Result(good, 'end_turn', S.MODEL_WRITER, 0))
     _set(page, **{S.N_ATTEMPTS: 3})
-    _, client = run(kst(2026, 11, 9, 12, 44))
+    _, client = run(kst(2026, 11, 22, 12, 44))
     assert client.calls == []
     assert novel.fake.val(row(novel.fake, 'N1-BIBLE'), S.N_STATE) == S.NS_CHECK_FAILED
+
+
+# ── DN2026_0119 Zero-Touch 생성 측 (DSN-P76-NOVEL-003 §4·§5, run_novel 1.4.0) ─────────────
+@pytest.fixture
+def reviewer2_allowed():
+    """통합 후 novel_llm.call 이 MODEL_REVIEWER_2 를 허용한다(novel_llm 1.2.0) — 실제 호출 경로를 그대로 쓴다."""
+    assert S.MODEL_REVIEWER_2 != S.MODEL_REVIEWER
+
+
+def test_reviewer2_model_allowed_by_llm_gate(novel):
+    client = Scripted([{"data": novel_fixtures.review()}])
+    try:
+        novel_llm.call(client, label="t", model=S.MODEL_REVIEWER_2, effort="medium", system="x",
+                       user_blocks=[{"text": "x"}], schema={}, max_tokens=10, stream=False)
+    except novel_llm.LLMError as e:
+        assert str(e) != "model:not_allowed"
+    assert client.calls and client.calls[0]["model"] == S.MODEL_REVIEWER_2
+
+
+def _flag(**over):
+    return {**novel_fixtures.review(), "identifiability": 1, "verdict": "PASS", **over}
+
+
+def _ctrl(fake):
+    return json.loads(fake.val(row(fake, "CONTROL"), S.N_RESULT) or "{}")
+
+
+def _add_ctrl(fake, data):
+    fake.add(DB12, **{S.N_KEY: "CONTROL", S.N_KIND: S.NK_CONTROL, S.N_RESULT: json.dumps(data)})
+
+
+def test_reviewer2_is_a_different_model(env, monkeypatch):
+    assert S.MODEL_REVIEWER_2 not in (S.MODEL_WRITER, S.MODEL_REVIEWER)
+    assert S.MODEL_REVIEWER_2 in S.MODEL_PRICES
+    monkeypatch.setattr(S, "MODEL_REVIEWER_2", S.MODEL_REVIEWER)
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 26, 10), [], {}, {})
+    with pytest.raises(novel_llm.LLMError, match="review2:same_model"):
+        run_novel.review2(ctx, {"id": "dry-x", "properties": {}}, "t", "x")
+
+
+def test_gate2_after_repairs_approves(novel, reviewer2_allowed):
+    add_canon_bible(novel.fake)
+    run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": _flag()}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    _, c2 = run(kst(2026, 11, 26, 12, 44), Scripted([None, {"data": _flag()}]))
+    assert "identifiability:1" in c2.calls[0]["messages"][0]["content"][-1]["text"]  # 검수 코드 = 수정 지시
+    assert novel_store.json_section(e1, novel_policy.H_GATE) == {"repairs": 2}
+    _, c3 = run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _flag()}, None]))
+    assert [c["model"] for c in c3.calls] == [S.MODEL_WRITER, S.MODEL_REVIEWER, S.MODEL_REVIEWER_2]
+    assert c3.calls[1]["system"] == c3.calls[2]["system"]  # 1차와 같은 시스템 프롬프트·스키마
+    assert c3.calls[1]["output_config"]["format"] == c3.calls[2]["output_config"]["format"]
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED and novel.fake.val(e1, S.N_RESULT) == "auto:gate2"
+    assert novel.fake.val(e1, S.N_VERDICT) == "PASS"
+    assert novel_store.json_section(e1, run_novel.H_REVIEW2)["stage"] == "review2"
+    assert run_novel.auto_publishable(e1)
+    assert not any(t for t in novel.tg.sent if "⚠️" in t)  # 정상 경로 경고·조치 요구 0 (AC1)
+
+
+def test_gate2_fail_postpones_resets_and_creates_notice(novel, glive, reviewer2_allowed):
+    add_canon_bible(novel.fake)
+    for h in (10, 12):
+        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _flag()}]))
+    run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _flag()}, {"data": _flag()}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(e1, S.N_RESULT) == "final:gate2:HUMAN_REQUIRED"
+    assert novel.fake.val(e1, S.N_ATTEMPTS) == 0 and novel_store.json_section(e1, novel_policy.H_GATE) == {"repairs": 0}
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-30"
+    ctrl = _ctrl(novel.fake)
+    assert ctrl["shifts"] == ["2026-11-29"] and ctrl["shift_count"] == {"N1-E01": 1}
+    notice = row(novel.fake, "N1-NOTICE-20261129")
+    assert novel.fake.val(notice, S.N_KIND) == S.NK_NOTICE and novel.fake.val(notice, S.N_STATE) == S.NS_APPROVED
+    assert novel.fake.val(notice, S.N_DUE) == "2026-11-29"
+    meta = novel_store.json_section(notice, novel_store.H_META)
+    assert meta["kind"] == "hiatus_notice" and (meta["season"], meta["episode"]) == (1, 1)
+    sec = novel_store.sections(notice)
+    assert "휴재 안내" in sec[novel_store.H_BODY] and "11-30(월)" in sec[novel_store.H_BODY]
+    assert sec[novel_store.H_QUOTE] and "다음 공개 11-30(월)" in sec[novel_store.H_SUBTITLE]
+    assert any("순연" in t and "조치 불필요" in t for t in novel.tg.sent)
+    assert run_novel._retryable(e1)  # 재생성 대상으로 돌아감
+
+
+def test_block_after_repairs_never_goes_to_reviewer2(novel, glive):
+    add_canon_bible(novel.fake)
+    blocked = {**novel_fixtures.review(), "method_detail": 3, "verdict": "BLOCK"}
+    models = []
+    for h in (10, 12, 14):
+        _, c = run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": blocked}]))
+        models += [x["model"] for x in c.calls]
+    assert S.MODEL_REVIEWER_2 not in models
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_RESULT) == "final:gate1:BLOCK"
+    assert _ctrl(novel.fake)["shifts"] == ["2026-11-29"]
+
+
+def test_bible_gate2_and_final_hold(novel, reviewer2_allowed):
+    for h in (10, 12):
+        run(kst(2026, 11, 22, h, 44), Scripted([None, {"data": _flag()}]))
+    run(kst(2026, 11, 22, 14, 44), Scripted([None, {"data": _flag()}, {"data": _flag()}]))
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_HELD  # 바이블 최종 실패 = 보류 + T5 (게시일 없음)
+    assert any("⚠️ N1-BIBLE 보류" in t for t in novel.tg.sent)
+
+
+def test_shift_limit_holds_with_t5(novel, glive):
+    add_canon_bible(novel.fake)
+    _add_ctrl(novel.fake, {"shifts": ["2026-11-29", "2026-11-30"], "shift_count": {"N1-E01": 2}})
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED, due=date(2026, 12, 1))
+    _set(e1, **{S.N_ATTEMPTS: 3, S.N_RESULT: "rules:R09:cliche"})
+    _, client = run(kst(2026, 11, 28, 10, 44))
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
+    t5 = [t for t in novel.tg.sent if "자동 복구 한도 초과" in t]
+    assert len(t5) == 1 and "사건 소설 시즌 1 제1화" in t5[0] and "연재 일시 정지. 노션 DB-12 확인 필요" in t5[0]
+    ctrl = _ctrl(novel.fake)
+    assert ctrl["shifts"] == ["2026-11-29", "2026-11-30"]  # 한도 초과분은 순연하지 않는다
+    assert (ctrl["paused"]["season"], ctrl["paused"]["episode"]) == (1, 1) and ctrl["paused"]["since"]
+    assert client.calls == []
+
+
+@pytest.fixture
+def glive(novel, env):
+    """생성 측 live (리뷰 W2: 놓친 게시일 순연은 live 만). 바이블은 테스트가 넣는다."""
+    env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12,
+        PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
+        PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page, PAGE76_CLAUDE_KEY=FAKE_CLAUDE_KEY)
+    return novel
+
+
+def test_missed_approved_slot_postponed_only_when_too_late(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    e2 = add_episode_row(novel.fake, 1, 2, S.NS_APPROVED, due=date(2026, 11, 30))
+    run(kst(2026, 11, 28, 23, 0))   # 미래 날짜는 순연하지 않는다
+    run(kst(2026, 11, 29, 11, 40))  # T(12:00)까지 20분 ≥ 15분 — 게시 측이 아직 예약 가능
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-29" and not _ctrl(novel.fake).get("shifts")
+    run(kst(2026, 11, 29, 11, 50))  # 10분 < 15분 → 놓침(b)
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-30" and novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED
+    assert novel.fake.val(e2, S.N_DUE) == "2026-12-01"  # 이후 미게시 회차 재계산
+    # R6-02 P4: 이미 지난(등록 하한을 넘긴) 슬롯에는 곧바로 만료될 안내 행을 만들지 않는다 — shifts 에만 반영
+    assert not rows(novel.fake, S.NK_NOTICE)
+    assert _ctrl(novel.fake)["shift_count"] == {"N1-E01": 1}
+
+
+def test_missed_several_days_is_one_shift_event(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    run(kst(2026, 12, 1, 9, 0))
+    ctrl = _ctrl(novel.fake)
+    assert ctrl["shifts"] == ["2026-11-29", "2026-11-30"] and ctrl["shift_count"] == {"N1-E01": 1}
+    assert novel.fake.val(e1, S.N_DUE) == "2026-12-01"
+    assert not rows(novel.fake, S.NK_NOTICE)  # 지난 슬롯 안내 행 없음(R6-02 P4)
+
+
+def test_posted_rows_never_shifted(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_SCHEDULED)
+    run(kst(2026, 11, 29, 13, 0))
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-29" and not _ctrl(novel.fake).get("shifts")
+
+
+def test_migrate_approved_bible_reviewer2_only(novel, reviewer2_allowed):
+    page = add_canon_bible(novel.fake)
+    novel_store.update(page, {S.N_STATE: {"select": {"name": S.NS_APPROVED}},
+                              S.N_VERDICT: {"select": {"name": "PASS"}}, S.N_MODEL: {"rich_text": [
+                                  {"type": "text", "text": {"content": "unverified"}}]}})
+    _, client = run(kst(2026, 11, 22, 10, 44))
+    assert [c["model"] for c in client.calls] == [S.MODEL_REVIEWER_2]
+    assert novel.fake.val(page, S.N_STATE) == S.NS_CANON and novel.fake.val(page, S.N_RESULT) == "auto:migrate"
+
+
+@pytest.mark.parametrize("state", [S.NS_IMPLICIT, S.NS_EXPLICIT])
+def test_migrate_waiting_bible_fail_regenerates(novel, reviewer2_allowed, state):
+    page = add_canon_bible(novel.fake)
+    novel_store.update(page, {S.N_STATE: {"select": {"name": state}}, S.N_ATTEMPTS: {"number": 3}})
+    _, client = run(kst(2026, 11, 22, 10, 44), Scripted([{"data": _flag()}]))
+    assert [c["model"] for c in client.calls] == [S.MODEL_REVIEWER_2, S.MODEL_WRITER, S.MODEL_REVIEWER]
+    assert novel.fake.val(page, S.N_STATE) == S.NS_CANON and novel.fake.val(page, S.N_ATTEMPTS) == 1
+
+
+def test_migrate_bible_without_json_regenerates(novel):
+    page = novel.fake.add(DB12, **{S.N_KEY: "N1-BIBLE", S.N_KIND: S.NK_BIBLE, S.N_SEASON: 1,
+                                   S.N_STATE: S.NS_EXPLICIT})
+    _, client = run(kst(2026, 11, 22, 10, 44))
+    assert [c["model"] for c in client.calls] == [S.MODEL_WRITER, S.MODEL_REVIEWER]
+    assert novel.fake.val(page, S.N_STATE) == S.NS_CANON
+
+
+def test_migrate_approved_bible_fail_regenerates(novel, reviewer2_allowed):
+    """통합 후 전이 표에 '승인'→'생성중' 이 있다(novel_store 1.1.0): 2차 검수 실패 바이블은 보류가 아니라 재생성 경로."""
+    page = add_canon_bible(novel.fake)
+    novel_store.update(page, {S.N_STATE: {"select": {"name": S.NS_APPROVED}}})
+    run(kst(2026, 11, 22, 10, 44), Scripted([{"data": _flag()}]))
+    assert novel.fake.val(page, S.N_STATE) != S.NS_HELD
+    assert not any("N1-BIBLE 보류" in t for t in novel.tg.sent)
+
+
+def test_migrate_review_episodes(novel):
+    add_canon_bible(novel.fake)
+    ok = add_episode_row(novel.fake, 1, 1, S.NS_REVIEW)
+    flagged = add_episode_row(novel.fake, 1, 2, S.NS_REVIEW, verdict="HUMAN_REQUIRED")
+    _set(flagged, **{S.N_REVIEW_CODES: "identifiability:1;method_detail:0", S.N_ATTEMPTS: 3})
+    _, client = run(kst(2026, 11, 26, 10, 44))
+    assert novel.fake.val(ok, S.N_STATE) == S.NS_APPROVED and novel.fake.val(ok, S.N_RESULT) == "auto:migrate"
+    assert "identifiability:1" in client.calls[0]["messages"][0]["content"][-1]["text"]  # 자동 수정 경로
+    assert novel.fake.val(flagged, S.N_STATE) == S.NS_APPROVED and novel.fake.val(flagged, S.N_ATTEMPTS) == 1
+
+
+def test_budget_save_lowers_write_effort(novel):
+    _add_ctrl(novel.fake, {"month": "2026-11", "spent": 48.0})  # 60 × 0.8
+    _, client = run(kst(2026, 11, 22, 10, 44))
+    assert client.calls[0]["output_config"]["effort"] == S.NOVEL_WRITE_EFFORT_SAVE == "low"
+    assert client.calls[1]["output_config"]["effort"] == "medium"  # 검수는 낮추지 않음
+
+
+def test_budget_below_ratio_keeps_effort(novel):
+    _add_ctrl(novel.fake, {"month": "2026-11", "spent": 47.0})
+    _, client = run(kst(2026, 11, 22, 10, 44))
+    assert client.calls[0]["output_config"]["effort"] == S.NOVEL_WRITE_EFFORT == "medium"
+
+
+def test_notice_rows_kept_and_not_duplicated(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    run(kst(2026, 11, 29, 11, 50))
+    run(kst(2026, 11, 29, 11, 55))
+    keys = [novel.fake.val(r, S.N_KEY) for r in rows(novel.fake, S.NK_NOTICE)]
+    assert keys == []  # 놓친 슬롯에는 안내 행을 만들지 않는다(R6-02 P4), 재실행해도 중복 순연 없음
+    assert _ctrl(novel.fake)["shift_count"] == {"N1-E01": 1}
+
+
+def test_zero_touch_logs_clean(novel, reviewer2_allowed, caplog):
+    caplog.set_level(logging.DEBUG)
+    add_canon_bible(novel.fake)
+    for h in (10, 12):
+        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _flag()}]))
+    run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _flag()}, {"data": _flag()}]))
+    for secret in ("합성 문장", "표식-NB", "표식-NE", "표식-NR", DB12, novel.prompt_page, "휴재 안내"):
+        assert secret not in caplog.text, secret
+    assert f"[Novel] v{run_novel.VERSION}" in caplog.text and run_novel.VERSION == "1.5.0"
+
+
+def test_generation_collect_stops_leaves_fb_scheduled_rows_to_publisher(novel):
+    """DN2026_0119: 생성 파이프라인은 발행예고·확인필요 행의 중단 체크를 '중단'으로 옮기지 않는다(FB 예약 취소는 게시 측)."""
+    add_canon_bible(novel.fake)
+    sched = add_episode_row(novel.fake, 1, 1, S.NS_SCHEDULED)
+    check = add_episode_row(novel.fake, 1, 2, S.NS_CHECK)
+    plain = add_episode_row(novel.fake, 1, 3, S.NS_APPROVED)
+    for page in (sched, check, plain):
+        novel_store.update(page, {S.N_STOP: {"checkbox": True}})
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 26, 10), novel.fake.rows(DB12), {}, {})
+    run_novel.collect_stops(ctx)
+    assert novel.fake.val(sched, S.N_STATE) == S.NS_SCHEDULED
+    assert novel.fake.val(check, S.N_STATE) == S.NS_CHECK
+    assert novel.fake.val(plain, S.N_STATE) == S.NS_STOPPED
+
+
+# ── 리뷰 C2·W2·W3·W5 (run_novel 1.5.0) ─────────────────────
+def _stuck(fake, n, m, state=S.NS_GENERATING):
+    """'승인' 전에서 멈춘 회차 — 시도 소진(재시도·자동 복구 대상 아님)."""
+    page = add_episode_row(fake, n, m, state)
+    _set(page, **{S.N_ATTEMPTS: S.NOVEL_MAX_ATTEMPTS, S.N_RESULT: "rules:R09:cliche"})
+    return page
+
+
+def _notices(fake):
+    return sorted(fake.val(r, S.N_KEY) for r in rows(fake, S.NK_NOTICE))
+
+
+def _t5_pause(tg):
+    return [t for t in tg.sent if "자동 복구 한도 초과" in t]
+
+
+def _days(start, k):
+    return [start + timedelta(days=i) for i in range(k)]
+
+
+def test_c2_stuck_episode_pauses_after_shift_limit(glive):
+    """C2 재현: 승인 못 하는 회차 + 8일 실행 → 순연 NOVEL_SHIFT_MAX 회 뒤 일시 정지, 안내 행 증가 멈춤, T5 1회."""
+    novel = glive
+    add_canon_bible(novel.fake)
+    e1 = _stuck(novel.fake, 1, 1)
+    e2 = add_episode_row(novel.fake, 1, 2, S.NS_APPROVED, due=date(2026, 11, 30))
+    counts = []
+    for day in _days(date(2026, 11, 28), 8):
+        for h, mi in ((10, 44), (22, 15)):
+            run(datetime(day.year, day.month, day.day, h, mi, tzinfo=KST))
+        counts.append(len(_notices(novel.fake)))
+    ctrl = _ctrl(novel.fake)
+    assert ctrl["shift_count"]["N1-E01"] == S.NOVEL_SHIFT_MAX + 1
+    assert len(ctrl["shifts"]) == S.NOVEL_SHIFT_MAX == 2
+    assert counts[-1] == S.NOVEL_SHIFT_MAX and counts[2:] == [counts[-1]] * 6  # 정지 뒤 안내 행이 늘지 않는다
+    assert len(_t5_pause(novel.tg)) == 1 and "시즌 1 제1화" in _t5_pause(novel.tg)[0]
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
+    assert (ctrl["paused"]["season"], ctrl["paused"]["episode"]) == (1, 1)
+    assert novel.fake.val(e1, S.N_DUE) is None and novel.fake.val(e2, S.N_DUE) is None  # 게시 측 등록 대상 아님
+    assert novel.fake.val(e2, S.N_STATE) == S.NS_APPROVED and "paused" not in (novel.fake.val(e2, S.N_RESULT) or "")
+    assert sum("순연 —" in t for t in novel.tg.sent) == S.NOVEL_SHIFT_MAX  # T8 은 순연 횟수만큼만
+
+
+def test_c2_legacy_held_row_never_shifted_pauses_once(glive):
+    """v1.4.0 이 남긴 보류 회차(순연 3회, paused 없음) — 순연하지 않고 정지 1회, 8일 동안 안내 행 0."""
+    novel = glive
+    add_canon_bible(novel.fake)
+    _add_ctrl(novel.fake, {"shifts": ["2026-11-29", "2026-11-30"], "shift_count": {"N1-E01": 3}})
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_HELD, due=date(2026, 12, 1))
+    for day in _days(date(2026, 12, 1), 8):
+        run(datetime(day.year, day.month, day.day, 13, 0, tzinfo=KST))
+    ctrl = _ctrl(novel.fake)
+    assert ctrl["shifts"] == ["2026-11-29", "2026-11-30"] and ctrl["shift_count"] == {"N1-E01": 3}
+    assert _notices(novel.fake) == []
+    assert len(_t5_pause(novel.tg)) == 1 and ctrl["paused"]["episode"] == 1
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
+
+
+@pytest.mark.parametrize("state", [S.NS_HELD, S.NS_REFUSED, S.NS_DISCARDED])
+def test_c2_postpone_skips_human_and_discarded_states(glive, state):
+    novel = glive
+    e1 = add_episode_row(novel.fake, 1, 1, state)
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 30, 13), novel.fake.rows(DB12), {}, {})
+    run_novel.postpone(ctx, e1, "missed")
+    assert not ctx.ctrl.get("shifts") and _notices(novel.fake) == []
+
+
+def test_c2_paused_stops_generation_for_that_season(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    _add_ctrl(novel.fake, {"paused": {"season": 1, "episode": 1, "since": "2026-11-28T13:00:00+00:00"}})
+    add_episode_row(novel.fake, 1, 1, S.NS_HELD)
+    _, client = run(kst(2026, 11, 28, 10, 44))  # 제2·3화 버퍼 생성 시점이지만 멈춘다
+    assert client.calls == [] and not [r for r in rows(novel.fake, S.NK_EPISODE) if novel.fake.val(r, S.N_EPISODE) > 1]
+
+
+@pytest.mark.parametrize("state", [S.NS_APPROVED, S.NS_GENERATING, S.NS_CHECK_FAILED])
+def test_c2_paused_released_when_human_changes_state(glive, state):
+    novel = glive
+    add_canon_bible(novel.fake)
+    _add_ctrl(novel.fake, {"shifts": ["2026-11-29", "2026-11-30"], "shift_count": {"N1-E01": 3},
+                           "paused": {"season": 1, "episode": 1, "since": "2026-11-30T13:00:00+00:00"}})
+    e1 = add_episode_row(novel.fake, 1, 1, state, due=date(2026, 12, 1))
+    novel_store.update(e1, {S.N_DUE: notion.v_date(None)})
+    e2 = add_episode_row(novel.fake, 1, 2, S.NS_APPROVED)
+    novel_store.update(e2, {S.N_DUE: notion.v_date(None)})
+    run(kst(2026, 12, 2, 9, 0), Scripted([{"data": None, "stop": "refusal"}] * 4))
+    ctrl = _ctrl(novel.fake)
+    assert "paused" not in ctrl and ctrl["shift_count"].get("N1-E01", 0) <= 1  # 해제 + 횟수 초기화 → 정상 흐름
+    assert novel.fake.val(e2, S.N_DUE) is not None  # 게시예정일 다시 계산
+    assert not _t5_pause(novel.tg)
+
+
+def test_c2_paused_kept_while_held(glive):
+    novel = glive
+    _add_ctrl(novel.fake, {"paused": {"season": 1, "episode": 1, "since": "2026-11-30T13:00:00+00:00"}})
+    add_episode_row(novel.fake, 1, 1, S.NS_HELD)
+    log, _ = run(kst(2026, 12, 2, 9, 0))
+    assert _ctrl(novel.fake)["paused"]["episode"] == 1 and "N1-E01:paused" in log.codes
+
+
+def test_w2_shadow_never_shifts_missed_slots(novel):
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    for day in _days(date(2026, 11, 29), 5):
+        run(datetime(day.year, day.month, day.day, 22, 15, tzinfo=KST))
+    assert not _ctrl(novel.fake).get("shifts") and _notices(novel.fake) == []
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-29"
+
+
+def test_w3_preempt_at_d_minus_1_2200(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    e1 = _stuck(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    _set(e1, **{S.N_RESULT: "api:x:hold"})  # 재시도·자동 복구 대상 아님
+    run(kst(2026, 11, 28, 21, 59))
+    assert not _ctrl(novel.fake).get("shifts")
+    run(kst(2026, 11, 28, 22, 15))  # 게시일(11-29) D-1 22:00 이후 · 아직 승인 전 → 선제 순연
+    assert _ctrl(novel.fake)["shifts"] == ["2026-11-29"]
+    notice = row(novel.fake, "N1-NOTICE-20261129")
+    assert novel.fake.val(notice, S.N_DUE) == "2026-11-29"  # 안내 행 = 원래 게시일(게시 측이 당일 아침 등록)
+    assert novel.fake.val(notice, S.N_STATE) == S.NS_APPROVED
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-30"
+
+
+def test_w3_approved_not_preempted(glive):
+    novel = glive
+    add_canon_bible(novel.fake)
+    add_episode_row(novel.fake, 1, 1, S.NS_APPROVED)
+    run(kst(2026, 11, 28, 22, 15))
+    assert not _ctrl(novel.fake).get("shifts")  # '승인' 은 T-15분 판정만
+
+
+def test_w5_novel_yml_passes_publish_hhmm():
+    doc = yaml.safe_load((ROOT / ".github/workflows/p76_novel.yml").read_text(encoding="utf-8"))
+    env = doc["jobs"]["run"]["steps"][-1]["env"]
+    assert env["PAGE76_NOVEL_PUBLISH_HHMM"] == "${{ vars.PAGE76_NOVEL_PUBLISH_HHMM }}"
+
+
+
+def test_final_fail_not_postponed_in_shadow(novel):
+    """통합 결정(W2 확장): shadow 에서는 최종 실패여도 순연·휴재 안내를 만들지 않는다."""
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 26, 10), novel.fake.rows(DB12), {}, {})
+    run_novel.postpone(ctx, e1, "final:test")
+    assert "shifts" not in ctx.ctrl and not any("NOTICE" in novel.fake.val(r, S.N_KEY) for r in novel.fake.rows(DB12))
+
+
+def test_pause_withdraws_future_notice_rows(glive):
+    """R6-02 N3: 정지 시 이 시즌의 휴재 안내(승인) 행은 중단, 예약된(발행예고) 안내 행은 N_DUE 를 비워 게시 측이 취소."""
+    novel = glive
+    add_canon_bible(novel.fake)
+    a = novel.fake.add(DB12, **{S.N_KEY: "N1-NOTICE-20261205", S.N_KIND: S.NK_NOTICE, S.N_SEASON: 1, S.N_EPISODE: 3,
+                                S.N_STATE: S.NS_APPROVED, S.N_DUE: "2026-12-05"})
+    b = novel.fake.add(DB12, **{S.N_KEY: "N1-NOTICE-20261206", S.N_KIND: S.NK_NOTICE, S.N_SEASON: 1, S.N_EPISODE: 4,
+                                S.N_STATE: S.NS_SCHEDULED, S.N_DUE: "2026-12-06"})
+    keep = novel.fake.add(DB12, **{S.N_KEY: "N1-NOTICE-20261203", S.N_KIND: S.NK_NOTICE, S.N_SEASON: 1,
+                                   S.N_EPISODE: 2, S.N_STATE: S.NS_APPROVED, S.N_DUE: "2026-12-03"})
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 12, 1, 10), novel.fake.rows(DB12),
+                        {}, {"paused": {"season": 1, "episode": 3, "since": "2026-12-01T00:00:00+00:00"}})
+    run_novel._clear_paused_due(ctx)
+    assert novel.fake.val(a, S.N_STATE) == S.NS_STOPPED and novel.fake.val(a, S.N_RESULT) == "paused_notice"
+    assert novel.fake.val(b, S.N_STATE) == S.NS_SCHEDULED and not novel.fake.val(b, S.N_DUE)
+    assert novel.fake.val(keep, S.N_STATE) == S.NS_APPROVED  # 정지 범위 밖(앞 회차) 안내는 그대로(R6-03)
+
+
+def test_sync_due_and_stops_skip_claimed_rows(glive):
+    """R6-02 N2 / R6-03: 선점 중(posting:) 회차는 생성 측이 날짜·중단을 건드리지 않는다."""
+    novel = glive
+    add_canon_bible(novel.fake)
+    e1 = add_episode_row(novel.fake, 1, 1, S.NS_APPROVED, due=date(2026, 11, 28))  # 계산값(11-29)과 다름
+    _set(e1, **{S.N_RESULT: "posting:9|h:abcd"})
+    novel_store.update(e1, {S.N_STOP: {"checkbox": True}})
+    ctx = run_novel.Ctx(RunLog("novel", "t"), kst(2026, 11, 26, 10), novel.fake.rows(DB12), {}, {})
+    run_novel.sync_due(ctx)
+    run_novel.collect_stops(ctx)
+    assert novel.fake.val(e1, S.N_DUE) == "2026-11-28" and novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED

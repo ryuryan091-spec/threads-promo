@@ -6,7 +6,7 @@ p76/novel_rules.py
   check_episode()  R01~R12 위반 코드 목록 (빈 리스트 = 통과)
   check_bible()    바이블 JSON 검사 (오류 — 재작성·검사실패)
   bible_warnings() 바이블 경고 W05 (차단하지 않음 — 회차 R05 가 게시 전에 막는다)
-  fill_laws()      {{LAW_*}} 자리표시자 → 정본 법률 블록 (확인일 90일 이내만)
+  fill_laws()      {{LAW_*}} 자리표시자 → 정본 법률 블록 (미확인·만료 블록 줄은 제거, DN2026_0119)
   footer()         고정 꼬리말 (픽션 고지·AI 표시·해시태그 — AI 는 쓰지 않는다)
 
 금칙어(BANNED_TERMS)는 호출자가 넘긴다. 위반 코드에는 단어를 넣지 않는다(공개 로그).
@@ -14,15 +14,17 @@ p76/novel_rules.py
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date
 
 from p76 import hiatus_guard, settings
 
-VERSION = "1.1.1"  # 1.1.1: 바이블 R05 → 경고 W05(bible_warnings), 회차 R05 차단 유지
+VERSION = "1.2.1"  # 1.2.1: 꼬리말 숨김 문구 — '확인 시' 약속 삭제(자동 숨김은 금칙어 기준, 리뷰 W7). 1.2.0: DN2026_0119 꼬리말 매일 연재(금 휴재)·미확인 법률 블록 줄 제거(R10). 1.1.1: 바이블 R05 → 경고 W05(bible_warnings), 회차 R05 차단 유지
 # 1.1.0: 공개 문구(표지 인용·부제·열린 질문) 검사 check_public_fields
 
 BODY_MIN, BODY_MAX = 3000, 4200
+logger = logging.getLogger(__name__)
 PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 LAW_NAMES = ("LAW_76_2", "LAW_76_3", "LAW_116", "LAW_1350", "LAW_DISCLAIMER")
 LAW_FINAL_ONLY = ("LAW_116",)
@@ -205,20 +207,43 @@ def law_block_ok(confirmed: date | None, today: date) -> bool:
 
 
 def fill_laws(body: str, laws: dict[str, tuple[str, date | None]], today: date) -> tuple[str, list[str]]:
-    """자리표시자 치환. (치환된 본문, 오류 코드). 오류가 있으면 게시하지 않는다."""
+    """자리표시자 치환. (치환된 본문, 오류 코드). 오류가 있으면 게시하지 않는다.
+
+    DN2026_0119 R10: 문안 없음 → 오류 LAW:missing(게시 차단). 확인일 없음·90일 초과(LAW_DISCLAIMER 제외) →
+    오류 없이 그 자리표시자가 있는 줄을 지운다(미검증 법률 문장은 공개하지 않음). 지운 블록은 코드로만 로그.
+    """
     errors: list[str] = []
+    dropped: set[str] = set()
+    kept: list[str] = []
+    for line in body.split("\n"):
+        names = PLACEHOLDER.findall(line)
+        stale = [n for n in names if laws.get(n, ("", None))[0] and n != "LAW_DISCLAIMER"
+                 and not law_block_ok(laws[n][1], today)]
+        if stale:
+            dropped.update(stale)
+            continue
+        kept.append(line)
+    # 지운 줄 때문에 생긴 연속 빈 줄·앞뒤 빈 줄 정리
+    out: list[str] = []
+    for line in kept:
+        if not line.strip() and (not out or not out[-1].strip()):
+            continue
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    text = "\n".join(out) if dropped else body
+    for name in sorted(dropped):
+        logger.warning(f"[Rules] LAW:dropped:{name}")
 
     def repl(m: re.Match[str]) -> str:
         name = m.group(1)
-        text, confirmed = laws.get(name, ("", None))
-        if not text:
+        block, _ = laws.get(name, ("", None))
+        if not block:
             errors.append(f"LAW:missing:{name}")
             return m.group(0)
-        if name != "LAW_DISCLAIMER" and not law_block_ok(confirmed, today):
-            errors.append(f"LAW:unconfirmed:{name}")
-        return text
+        return block
 
-    return PLACEHOLDER.sub(repl, body), sorted(set(errors))
+    return PLACEHOLDER.sub(repl, text), sorted(set(errors))
 
 
 def footer(season: int, episode: int, question: str) -> str:
@@ -227,9 +252,9 @@ def footer(season: int, episode: int, question: str) -> str:
     if q:
         lines.append(f"💬 {q}")
     lines += [
-        "(실명·회사명은 적지 말아 주세요. 확인 시 숨김 처리됩니다.)",
+        "(실명·회사명은 적지 말아 주세요. 해당 댓글은 숨김 처리될 수 있습니다.)",
         "",
-        f"📖 사건 소설 시즌 {season} · 제{episode}화 / 전 {settings.NOVEL_EPISODES}화 · 매주 일요일",
+        f"📖 사건 소설 시즌 {season} · 제{episode}화 / 전 {settings.NOVEL_EPISODES}화 · 매일 연재(금요일 휴재)",  # DN2026_0119
         "※ 여러 사례를 재구성한 픽션입니다. 법률 자문이 아닙니다.",
         "※ 이 글은 AI의 도움을 받아 작성했습니다.",
         "#사건파일76 #사건소설 #직장내괴롭힘",

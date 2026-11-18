@@ -1,4 +1,8 @@
-"""Bounded Sonnet generation, repair checkpoints and notified quality exceptions."""
+"""Bounded Sonnet generation, repair checkpoints and notified quality exceptions.
+
+DN2026_0119(DSN-P76-NOVEL-003 §5-1): 검수 플래그·BLOCK 도 자동 수정 입력이 된다(결과코드 'review:<판정>|<코드>').
+자동 수정 횟수는 행 페이지의 '자동 게이트 (JSON)' 섹션에 둔다.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +16,8 @@ H_DRAFT = "수정용 초안 (JSON)"
 H_DRAFT_META = "수정용 초안 출처 (JSON)"
 H_USAGE = "사용량 (JSON)"
 H_RELEASE = "품질 경고 알림 (JSON)"
+H_GATE = "자동 게이트 (JSON)"  # DN2026_0119 {"repairs": 자동 수정 횟수}
+REVIEW_PREFIX = "review:"
 QUALITY = {"R09:cliche", "R09:repeated_sentences", "Q:too_long"}
 
 
@@ -103,9 +109,45 @@ def record_usage(row: dict, label: str, res) -> None:
     save_json(row, H_USAGE, total)
 
 
+def gate(row: dict) -> dict:
+    data = store.json_section(row, H_GATE)
+    return {"repairs": int(data.get("repairs") or 0)}
+
+
+def save_gate(row: dict, data: dict) -> None:
+    save_json(row, H_GATE, {"repairs": int(data.get("repairs") or 0)})
+
+
+def review_result_code(verdict: str, codes: str) -> str:
+    """검수 미통과 → 다음 실행의 자동 수정 입력 (코드만, 원고 없음)."""
+    return f"{REVIEW_PREFIX}{verdict}|{codes}"
+
+
+def _review_findings(row: dict) -> dict:
+    review = store.json_section(row, store.H_REVIEW)
+    if not review:
+        review = store.json_section(row, store.H_META).get("review") or {}
+    return {k: review.get(k) for k in ("legal_claims", "advice_tone", "evidence") if review.get(k)}
+
+
+def review_repair(row: dict, schema: dict, blocks: list[dict], candidate: dict, raw: str) -> tuple:
+    """DN2026_0119: 검수 플래그·BLOCK 자동 수정 — 전체 스키마로 다시 받되 직전 초안과 검수 코드를 준다(API 입력에만)."""
+    codes = raw[len(REVIEW_PREFIX):]
+    text = ("[자동 수정 — 안전 검수 미통과] 다음 검수 코드를 해소하도록 고쳐 주세요: " + codes
+            + "\n식별 가능성·수법 상세·법률 단정·조언 어조·피해자 탓·신체 위해 묘사를 줄이고, 나머지는 유지하세요.")
+    findings = _review_findings(row)
+    if findings:
+        text += "\n[검수 지적]\n" + json.dumps(findings, ensure_ascii=False)
+    if candidate:
+        text += "\n[직전 초안]\n" + json.dumps(candidate, ensure_ascii=False)
+    return schema, blocks + [{"text": text}], {}, set()
+
+
 def repair_request(row: dict, schema: dict, blocks: list[dict]) -> tuple:
     candidate = store.json_section(row, H_DRAFT)
     raw = notion.plain(row, S.N_RESULT)
+    if raw.startswith(REVIEW_PREFIX):
+        return review_repair(row, schema, blocks, candidate, raw)
     if not candidate or not raw.startswith("rules:"):
         return schema, blocks, {}, set()
     codes = raw[len("rules:"):].split(",")
