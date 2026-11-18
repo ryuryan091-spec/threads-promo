@@ -237,8 +237,12 @@ class FakeGraph:
     def post(self, url: str, **kwargs: Any) -> FakeResp:
         return self._dispatch("POST", url, kwargs)
 
+    def delete(self, url: str, **kwargs: Any) -> FakeResp:
+        return self._dispatch("DELETE", url, kwargs)
+
     def writes(self) -> list:
-        return [c for c in self.calls if c[0] == "POST"]
+        """Graph 쓰기 = POST · DELETE (DN2026_0119 예약 취소 포함)."""
+        return [c for c in self.calls if c[0] in ("POST", "DELETE")]
 
 
 # ── 공통 상수·도우미 ─────────────────────────────────────
@@ -293,3 +297,54 @@ def jpeg_bytes(w: int, h: int) -> bytes:
     app0 = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00" + b"\x01\x01\x00\x00\x01\x00\x01\x00\x00"
     sof = b"\xff\xc0" + struct.pack(">HBHHB", 11, 8, h, w, 1) + b"\x01\x11\x00"
     return b"\xff\xd8" + app0 + sof + b"\xff\xd9"
+
+
+def schedule_handlers(g: FakeGraph, post_id: str = "61_9", photo_id: str = "ph9") -> dict:
+    """FB 예약 게시 2단계 + 예약 목록 + 게시 확인 + 취소 + 비공개 전환 + 공개 게시물 목록 가짜 응답 (DN2026_0119).
+    state["scheduled"] 는 예약 목록, state["published"] 는 is_published 값, state["delete_fail"] 이 있으면
+    DELETE 가 그 응답을 돌려준다(fail_deletes), state["unpublish"] 는 비공개 전환 응답,
+    state["page_posts"] 는 GET /{page}/posts 목록(합성 message 포함). 테스트가 바꿔 쓴다."""
+    state: dict = {"scheduled": [], "published": False, "created": "2026-11-29T03:00:05+0000",
+                   "delete_fail": None, "unpublish": FakeResp(200, {"success": True}), "page_posts": []}
+
+    def feed(params: dict) -> FakeResp:
+        state["scheduled"].append({"id": post_id, "scheduled_publish_time": int(params["scheduled_publish_time"])})
+        return FakeResp(200, {"id": post_id})
+
+    def listing(params: dict) -> FakeResp:
+        return FakeResp(200, {"data": list(state["scheduled"])})
+
+    def delete(params: dict) -> Any:
+        if state["delete_fail"] is not None:
+            return state["delete_fail"]
+        state["scheduled"] = [p for p in state["scheduled"] if p["id"] != post_id]
+        return FakeResp(200, {"success": True})
+
+    def unpublish(params: dict) -> Any:
+        assert params.get("is_published") == "false"
+        return state["unpublish"]
+
+    def posts(params: dict) -> FakeResp:
+        since, until = int(params["since"]), int(params["until"])
+        rows = [p for p in state["page_posts"]
+                if since <= int(datetime.fromisoformat(p["created_time"].replace("+0000", "+00:00")).timestamp()) <= until]
+        if "message" not in params.get("fields", ""):
+            rows = [{k: v for k, v in p.items() if k != "message"} for p in rows]
+        return FakeResp(200, {"data": rows})
+
+    page = settings.PAGE_ID
+    g.handlers[("POST", f"{page}/photos")] = FakeResp(200, {"id": photo_id})
+    g.handlers[("POST", f"{page}/feed")] = feed
+    g.handlers[("GET", f"{page}/scheduled_posts")] = listing
+    g.handlers[("GET", f"{page}/posts")] = posts
+    g.handlers[("GET", f"{post_id}?is_published,created_time,scheduled_publish_time")] = (
+        lambda params: FakeResp(200, {"id": post_id, "is_published": state["published"],
+                                      "created_time": state["created"]}))
+    g.handlers[("DELETE", post_id)] = delete
+    g.handlers[("POST", post_id)] = unpublish
+    return state
+
+
+def fail_deletes(state: dict, response: Any = None) -> None:
+    """DELETE(예약 취소) 실패 주입 — 기본 4xx(code 100). None 을 넘기려면 state["delete_fail"]=None 으로 되돌린다."""
+    state["delete_fail"] = response if response is not None else err(100)
