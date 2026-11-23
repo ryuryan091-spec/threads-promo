@@ -13,8 +13,10 @@ p76/run_health.py
 
   사건 소설 감시 (DN2026_0119, DSN-P76-NOVEL-003 §9) — PAGE76_DB12_ID 없으면 생략(정보 로그). 읽기만.
   H-N1 바이블 상태      DB-12 바이블 상태 ∉ {정본·생성중·검사실패·중단·폐기}   WARN(정보, 생성 측 자동 재평가)
+                        └ 시즌 제1화 게시일 D-3 이후에도 비정본이면 FAIL(긴급, DN2026_0124)
   H-N2 내일 회차 미준비  KST 18시 이후 AND 내일 게시예정 회차 ∉ {승인·발행예고·게시완료} WARN(정보)
   H-N4 소설 산출 정체    DB-11 24시간 novel 실행 ≥1 전부 쓰기 0 AND 오늘~D+3 회차가 승인 이전  FAIL(경보, RC-3)
+                        └ 일정상 오늘~D+3 회차 행이 DB-12 에 없으면 missing 으로 포함(DN2026_0124)
   H-N5 토큰 만료 임박    debug_token is_valid=false 또는 expires_at>0 이고 14일 이내          FAIL(경보, 사람 조치)
   일일 요약             DB-12 상태별 행 수·오늘/내일 회차 상태·이번 달 비용·DB-11 24시간 상태 건수 (정보)
 
@@ -29,11 +31,12 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from p76 import cli, graph, ledger, notion, novel_store, settings
+from p76 import cli, graph, ledger, notion, novel_calendar, novel_store, settings
 from p76.notify import send
 from p76.runlog import RunLog
 
-VERSION = "1.1.0"  # 1.1.0: DN2026_0119 사건 소설 감시 H-N1·H-N2·H-N4·H-N5 + 일일 요약 (DSN-P76-NOVEL-003 §9)
+VERSION = "1.2.0"  # 1.2.0: DN2026_0124 H-N4 기대 회차 행 누락 감지 · H-N1 제1화 D-3 이내 비정본 FAIL
+# 1.1.0: DN2026_0119 사건 소설 감시 H-N1·H-N2·H-N4·H-N5 + 일일 요약 (DSN-P76-NOVEL-003 §9)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,8 @@ HN4_LOOKBACK_HOURS = 24      # H-N4·요약: DB-11 최근 24시간
 HN4_TARGET_DAYS = 3          # H-N4: 게시예정일 오늘~D+3
 HN5_EXPIRY_DAYS = 14         # H-N5: 만료 D-14
 TOKEN_HINT_HIDS = ("H1", "H2", "H-N5")  # 토큰 교체 안내를 붙이는 항목(사람 조치 문구는 이것만)
-URGENT_HIDS = TOKEN_HINT_HIDS + ("H-N4",)
+URGENT_HIDS = TOKEN_HINT_HIDS + ("H-N1", "H-N4")  # H-N1 은 FAIL(제1화 D-3 이내)일 때만 긴급
+HN_MAX_GLOBAL_INDEX = 400    # 기대 회차 계산 안전 상한(전역 회차 번호)
 
 
 @dataclass
@@ -176,9 +180,51 @@ def _episodes(rows: list[dict]) -> list[dict]:
     return [p for p in rows if novel_store.kind(p) == S.NK_EPISODE]
 
 
-def hn1_bible(rows: list[dict]) -> Check:
-    bad = [f"{novel_store.key(p)}={novel_store.state(p) or '-'}" for p in rows
-           if novel_store.kind(p) == S.NK_BIBLE and novel_store.state(p) not in BIBLE_OK_STATES]
+def _control_data(rows: list[dict]) -> dict:
+    """CONTROL 행 JSON 읽기만(health 는 행을 만들지 않는다 — novel_store.control 은 없으면 생성)."""
+    page = novel_store.find(rows, novel_store.CONTROL_KEY)
+    if page is None:
+        return {}
+    try:
+        data = json.loads(notion.plain(page, S.N_RESULT) or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _shifts(rows: list[dict]) -> tuple[date, ...]:
+    return novel_calendar.parse_shifts(_control_data(rows).get("shifts"))
+
+
+def _season_start(n: int, shifts: tuple[date, ...]) -> date | None:
+    try:
+        return novel_calendar.season_start(n, shifts)
+    except ValueError:  # NOVEL_START 미설정 등
+        return None
+
+
+def hn1_bible(rows: list[dict], today: date | None = None) -> Check:
+    """DN2026_0124 D3: 시즌 제1화 원고 생성 시작(D-3)~제1화 게시일 사이에 그 시즌 정본 바이블이 없으면 FAIL(긴급).
+    생성중·검사실패도 포함(회차를 만들 수 없다). 의도적 중단·폐기 행과 게시일이 지난 시즌은 제외(매일 반복 경보 방지 —
+    게시일 이후 공백은 H-N4 누락 감지가 본다)."""
+    bad, late = [], []
+    shifts = _shifts(rows) if today is not None else ()
+    canon = {novel_store.season(p) for p in rows
+             if novel_store.kind(p) == S.NK_BIBLE and novel_store.state(p) == S.NS_CANON}
+    for p in rows:
+        if novel_store.kind(p) != S.NK_BIBLE:
+            continue
+        st, n = novel_store.state(p), novel_store.season(p)
+        item = f"{novel_store.key(p)}={st or '-'}"
+        if st not in BIBLE_OK_STATES:
+            bad.append(item)
+        if today is None or not n or n in canon or st in (S.NS_STOPPED, S.NS_DISCARDED):
+            continue
+        start = _season_start(n, shifts)
+        if start is not None and start - timedelta(days=S.NOVEL_EPISODE_LEAD_DAYS) <= today <= start:
+            late.append(f"{item}@S1화{start:%m-%d}")
+    if late:
+        return Check("H-N1", FAIL, "bible_not_canon_due", ",".join(late)[:150])
     if bad:
         return Check("H-N1", WARN, "bible_state", ",".join(bad)[:150])
     return Check("H-N1", OK)
@@ -208,6 +254,26 @@ def recent_runs(now: datetime) -> list[dict]:
     return out
 
 
+def _missing_episodes(rows: list[dict], today: date, until: date) -> list[str]:
+    """DN2026_0124 D3: 일정(novel_calendar)상 오늘~until 에 게시될 회차인데 DB-12 에 행이 없으면 '누락'.
+    연재 일시 정지(CONTROL 'paused')·NOVEL_START 미설정이면 판정하지 않는다."""
+    if S.NOVEL_START is None or "paused" in _control_data(rows):
+        return []
+    shifts = _shifts(rows)
+    have = {(novel_store.season(p), novel_store.episode(p)) for p in _episodes(rows)}
+    out = []
+    for k in range(1, HN_MAX_GLOBAL_INDEX + 1):
+        d = novel_calendar.nth_publish_day(S.NOVEL_START, k, shifts)
+        if d > until:
+            break
+        if d < today:
+            continue
+        n, m = (k - 1) // S.NOVEL_EPISODES + 1, (k - 1) % S.NOVEL_EPISODES + 1
+        if (n, m) not in have:
+            out.append(f"S{n}E{m}@{d:%m-%d}=missing")
+    return out
+
+
 def hn4_stalled(rows: list[dict], runs: list[dict], today: date) -> Check:
     novel = [r for r in runs if notion.select(r, S.R_PIPELINE) == NOVEL_PIPELINE]
     if not novel:
@@ -221,6 +287,7 @@ def hn4_stalled(rows: list[dict], runs: list[dict], today: date) -> Check:
         if due is not None and today <= due <= until and novel_store.state(p) not in EPISODE_NOT_PENDING_STATES \
                 and not notion.checkbox(p, S.N_STOP):
             pending.append(f"{novel_store.key(p)}={novel_store.state(p) or '-'}")
+    pending += _missing_episodes(rows, today, until)
     if not pending:
         return Check("H-N4", OK)
     causes = sorted({(notion.plain(r, S.R_ERROR) or "-")[:40] for r in novel})
@@ -281,7 +348,7 @@ def novel_checks(now: datetime) -> tuple[list[Check], str]:
         rows = novel_store.all_rows()
     except notion.NotionError as e:
         return [Check("H-N1", WARN, f"db12:{e}")], ""
-    checks = [hn1_bible(rows), hn2_tomorrow(rows, now_kst)]
+    checks = [hn1_bible(rows, now_kst.date()), hn2_tomorrow(rows, now_kst)]
     runs: list[dict] | None
     try:
         runs = recent_runs(now)

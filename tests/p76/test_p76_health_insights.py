@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 import pytest
 from p76_fake import DB08, DB09, DB11, FAKE_PAGE_ID, FakeResp, add_episode, err
 
-from p76 import cli, run_health, run_insights, runlog, safety, settings
+from p76 import cli, notion, run_health, run_insights, runlog, safety, settings
 from p76.runlog import RunLog
 
 TODAY = date(2026, 11, 12)
@@ -370,3 +370,28 @@ def test_insights_token_invalid_still_degrades_or_trips(insights_env):
     g.handlers[("GET", "61_35?reactions.summary(total_count).limit(0),shares")] = err(190)
     log = run_insights_body()
     assert log.status in ("degraded", "tripped")  # 토큰 무효는 경고로 낮추지 않는다
+
+
+# ── DN2026_0124 D2: NotionError 원인을 DB-11 error_code 에 남긴다 ────────────
+def _err_code(fake) -> str:
+    return "".join(t["text"]["content"] for t in _runlog_post(fake)[settings.R_ERROR]["rich_text"])
+
+
+def test_notion_error_detail_in_error_code(fake_notion, env):
+    env(PAGE76_MODE="shadow")
+
+    def boom(log):
+        raise notion.NotionError("POST http_400:validation_error")
+
+    assert cli.execute("calendar", "9.9", boom) == 1
+    assert _err_code(fake_notion) == "exception:NotionError:POST http_400:validation_error"
+
+
+def test_other_exception_keeps_class_name_only(fake_notion, env):
+    env(PAGE76_MODE="shadow")
+
+    def boom(log):
+        raise ValueError("원고 본문이 들어갈 수 있는 메시지")
+
+    cli.execute("calendar", "9.9", boom)
+    assert _err_code(fake_notion) == "exception:ValueError"

@@ -27,6 +27,7 @@ S = settings
 ROOT = Path(__file__).resolve().parents[2]
 DUE = date(2026, 11, 29)  # 일요일 → T = 11-29 12:00 KST
 T = kst(2026, 11, 29, 12, 0)
+TEST_TERM = "시험금칙어"  # 원고·캡션에 나오지 않는 값
 novel = test_p76_novel.novel  # 공용 fixture(가짜 노션·Graph·텔레그램·카드 렌더)
 
 
@@ -35,7 +36,8 @@ def pubenv(request, env, monkeypatch):
     novel = request.getfixturevalue("novel")
     env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
         PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
-        PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page, PAGE76_CLAUDE_KEY=FAKE_CLAUDE_KEY)
+        PAGE76_NOVEL_PROMPT_PAGE_ID=novel.prompt_page, PAGE76_CLAUDE_KEY=FAKE_CLAUDE_KEY,
+        PAGE76_BANNED_TERMS=TEST_TERM)  # DN2026_0124: live 는 금칙어가 있어야 등록한다
     monkeypatch.delenv("PAGE76_PUBLISH_PROBE", raising=False)
     add_canon_bible(novel.fake)
     novel.state = schedule_handlers(novel.graph, post_id="61_99")
@@ -797,3 +799,16 @@ def test_claimed_row_with_stop_checked_is_reconciled_first(pubenv):
     pub(kst(2026, 11, 28, 12, 0))
     assert v(n, e1, S.N_STATE) in (S.NS_SCHEDULED, S.NS_STOPPED)
     assert v(n, e1, S.N_FB_ID) == "61_55"
+
+
+# ── DN2026_0124 D4: live 에서 금칙어가 비면 새 예약을 등록하지 않는다(fail-closed) ──
+def test_d4_live_without_terms_registers_nothing(pubenv, env):
+    n = pubenv
+    env(PAGE76_MODE="live", PAGE76_NOVEL_ENABLED="true", PAGE76_DB12_ID=DB12, PAGE76_NOVEL_PUBLISH_ENABLED="true",
+        PAGE76_NOVEL_TG_BOT_TOKEN=FAKE_NOVEL_BOT, PAGE76_NOVEL_TG_CHAT_ID=CHAT,
+        PAGE76_NOVEL_PROMPT_PAGE_ID=n.prompt_page, PAGE76_CLAUDE_KEY=FAKE_CLAUDE_KEY, PAGE76_BANNED_TERMS="")
+    row = ep(n)
+    log = pub(kst(2026, 11, 28, 12, 0))
+    assert "no_terms" in log.codes and feeds(n.graph) == []
+    assert v(n, row, S.N_STATE) == S.NS_APPROVED
+    assert any("PAGE76_BANNED_TERMS" in t for t in n.tg.sent)

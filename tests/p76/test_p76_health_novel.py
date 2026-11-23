@@ -207,3 +207,67 @@ def test_db12_error_degrades_without_crash(novel_env):
     fake.fail = lambda m, p: notion.NotionError("POST http_503:unknown") if DB12 in p else None
     log = run()
     assert any(c.startswith("H-N1:db12:") for c in log.codes) and log.status == "degraded"
+
+
+# ── DN2026_0124 D3 ───────────────────────────────────────
+def _set_state(fake, key, state):
+    page = next(p for p in fake.rows(DB12) if fake.val(p, S.N_KEY) == key)
+    page["properties"][S.N_STATE]["select"] = {"name": state}
+
+
+def test_hn1_not_canon_within_d3_is_urgent_fail(novel_env, env, sent):
+    fake, _ = novel_env
+    env(PAGE76_DB12_ID=DB12, PAGE76_NOVEL_START=(TODAY + timedelta(days=2)).isoformat())  # 제1화 11-14(토)
+    _set_state(fake, "N1-BIBLE", S.NS_HELD)
+    log = run(MORNING)
+    assert "H-N1:bible_not_canon_due" in log.codes and log.status == "failed"
+    msg, urgent = next((m, u) for m, u in sent if "H-N1" in m)
+    assert urgent and "N1-BIBLE=보류@S1화11-14" in msg
+
+
+def test_hn1_not_canon_before_d3_stays_warn(novel_env, env, sent):
+    fake, _ = novel_env
+    env(PAGE76_DB12_ID=DB12, PAGE76_NOVEL_START=(TODAY + timedelta(days=4)).isoformat())
+    _set_state(fake, "N1-BIBLE", S.NS_HELD)
+    log = run(MORNING)
+    assert "H-N1:bible_state" in log.codes and "H-N1:bible_not_canon_due" not in log.codes
+
+
+def test_hn4_missing_episode_rows_detected(novel_env, env, sent):
+    fake, _ = novel_env
+    env(PAGE76_DB12_ID=DB12, PAGE76_NOVEL_START=TODAY.isoformat())  # 11-12(목) E1 · 11-14(토) E2 · 11-15 E3
+    run_row(fake, MORNING - timedelta(hours=2), writes=0)
+    log = run(MORNING)
+    assert "H-N4:novel_stalled" in log.codes and log.status == "failed"
+    msg, urgent = next((m, u) for m, u in sent if "H-N4" in m)
+    assert urgent and "S1E3@11-15=missing" in msg and "S1E1" not in msg
+    assert fake.writes() == []
+
+
+def test_hn4_missing_not_judged_when_paused(novel_env, env):
+    fake, _ = novel_env
+    env(PAGE76_DB12_ID=DB12, PAGE76_NOVEL_START=TODAY.isoformat())
+    ctrl = next(p for p in fake.rows(DB12) if fake.val(p, S.N_KEY) == "CONTROL")
+    ctrl["properties"][S.N_RESULT]["rich_text"] = [{"plain_text": json.dumps({"paused": {"season": 1}})}]
+    run_row(fake, MORNING - timedelta(hours=2), writes=0)
+    assert "H-N4:novel_stalled" not in run(MORNING).codes
+
+
+@pytest.mark.parametrize("state", [S.NS_GENERATING, S.NS_CHECK_FAILED])
+def test_hn1_generating_within_d3_is_fail(novel_env, env, state):
+    fake, _ = novel_env
+    env(PAGE76_DB12_ID=DB12, PAGE76_NOVEL_START=(TODAY + timedelta(days=2)).isoformat())
+    _set_state(fake, "N1-BIBLE", state)
+    assert "H-N1:bible_not_canon_due" in run(MORNING).codes
+
+
+@pytest.mark.parametrize("case", ["past_start", "discarded", "other_canon"])
+def test_hn1_due_not_repeated(novel_env, env, case):
+    fake, _ = novel_env
+    start = TODAY - timedelta(days=1) if case == "past_start" else TODAY + timedelta(days=2)
+    env(PAGE76_DB12_ID=DB12, PAGE76_NOVEL_START=start.isoformat())
+    if case == "other_canon":
+        bible(fake, S.NS_HELD, n=1)  # 같은 시즌에 정본이 이미 있음
+    else:
+        _set_state(fake, "N1-BIBLE", S.NS_HELD if case == "past_start" else S.NS_DISCARDED)
+    assert "H-N1:bible_not_canon_due" not in run(MORNING).codes

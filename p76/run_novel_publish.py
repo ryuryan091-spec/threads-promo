@@ -80,7 +80,8 @@ from p76.novel_store import H_BODY, H_META, H_QUESTION, H_QUOTE, H_SUBTITLE
 from p76.run_novel import Ctx, _prompts, collect_stops
 from p76.runlog import RunLog
 
-VERSION = "2.1.0"  # 2.1.0: 리뷰 C1 하루 1건 판정(T 날짜·취소 실패 날짜) · W1 긴급·비공개 전환 · W4 대조 · 일시 정지
+VERSION = "2.1.1"  # 2.1.1: DN2026_0124 live 금칙어 비면 새 예약 등록 중단(fail-closed)
+# 2.1.0: 리뷰 C1 하루 1건 판정(T 날짜·취소 실패 날짜) · W1 긴급·비공개 전환 · W4 대조 · 일시 정지
 # 2.0.0: DN2026_0119 FB 예약 게시(D-1 등록·취소·확인) · 지연 가드·텔레그램 예고 대기 제거 · 부록 · probe
 # 2.0.0 P9: 순연으로 게시예정일이 바뀐 예약 재등록(rescheduled) · 부록 만료(notice_expired)
 # 1.1.1: 예약 지연 가드(MAX_LAG_MIN) · 1.1.0: 게시 직전 선점(posting:) · 미확정 재게시 차단 · 공개 문구 재검사
@@ -826,7 +827,13 @@ def body(log: RunLog, now: datetime | None = None) -> None:
         blocked = reschedule(ctx)
         stops(ctx)
         confirm(ctx)
-        register(ctx, sp, blocked)
+        if _live() and not S.BANNED_TERMS:
+            # DN2026_0124 D4: 금칙어가 비면 원고 검사가 무력하다 — 대조·취소·확인만 하고 새 예약은 등록하지 않는다
+            log.degrade("no_terms")
+            logger.warning("[NovelPub] 금칙어(PAGE76_BANNED_TERMS)가 비어 있음 — 새 예약 등록 중단")
+            _tg("T5", "⚠️ 금칙어 Secret(PAGE76_BANNED_TERMS)이 비어 있어 새 예약 등록을 멈췄습니다 — Secret 확인 필요")
+        else:
+            register(ctx, sp, blocked)
     except novel_prompts.PromptError as e:
         log.fail(str(e))
         _tg("T5", f"⚠️ 프롬프트 정본을 읽지 못함 — {e}")
