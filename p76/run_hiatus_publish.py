@@ -12,7 +12,7 @@ fb-page-publisher run_publish 의 상태 전이·결과 계약을 따른다. 게
      (캘린더키 해시 — 재실행해도 같은 값. 기존 워크플로 무작위 대기를 대신한다)
   4. 등록 대상: 구분=휴재콘텐츠 · 게시상태=승인 · 검수완료 · FB피드ID 없음 ·
      NOVEL_SCHEDULE_MIN_LEAD_MIN ≤ T−now ≤ NOVEL_REGISTER_AHEAD_HOURS.
-     같은 날짜에 이미 발행중·발행완료·부분완료·확인필요 행이 HIATUS_DAILY_CAP(1)건 이상이면 등록하지 않음
+     같은 날짜에 이미 발행중·발행완료·확인필요 행이 HIATUS_DAILY_CAP(1)건 이상이면 등록하지 않음
      (SEC C-22 — 날짜 범위 오늘−1~+2 질의로 판정, 리뷰 W6 c·d).
      T−now < 15분인 미등록 '승인' 행은 게시하지 않고 1회 '실패'(결과코드 missed_slot)로 정리 — 영구 잔류 방지.
      ※ v1 의 '늦게라도 게시' 동작을 바꾼 것이다(리뷰 W6 b). 다시 올리려면 날짜를 고쳐 '승인'으로 되돌린다
@@ -47,13 +47,16 @@ from p76.notify import send
 from p76.redact import redact
 from p76.runlog import RunLog
 
-VERSION = "2.1.0"  # 2.1.0: 리뷰 W6 조회 날짜 하한·정렬 · missed_slot 실패 정리 · 날짜 범위 하루 상한(HIATUS_DAILY_CAP)
+VERSION = "2.1.1"  # 2.1.1: DN2026_0124 조회 필터에서 DB-09 에 없는 '부분완료' 제거 · live 금칙어 비면 등록 중단
+# 2.1.0: 리뷰 W6 조회 날짜 하한·정렬 · missed_slot 실패 정리 · 날짜 범위 하루 상한(HIATUS_DAILY_CAP)
 # 2.0.0: DN2026_0119 FB 예약 게시 전환 · 결정적 지터 · 지연 보류(MAX_LAG) 제거 · 게시 확인
 
 logger = logging.getLogger(__name__)
 DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 CONFIRM_GRACE = timedelta(minutes=30)
-SLOT_STATES = (settings.S_RUNNING, settings.S_DONE, settings.S_PARTIAL, settings.S_CHECK)
+# DN2026_0124 D1: DB-09 게시상태 선택지(초안·검수중·승인·발행중·발행완료·실패·확인필요)에 있는 값만 쓴다.
+#   '부분완료'(S_PARTIAL)는 DB-05 전용 — DB-09 조회 필터에 넣지 않는다.
+SLOT_STATES = (settings.S_RUNNING, settings.S_DONE, settings.S_CHECK)
 LOOKBACK_DAYS = 1    # 조회 날짜 하한 = 오늘(KST) − 1일 (리뷰 W6 a)
 TAKEN_AHEAD_DAYS = 2  # 하루 상한 판정 범위 = 오늘−1 ~ 오늘+2 (등록 창 36시간을 덮는다)
 PAGE_SIZE = 100
@@ -238,6 +241,12 @@ def body(log: RunLog, now: datetime | None = None, banned_terms: tuple[str, ...]
     live = settings.MODE == "live"
     # DN2026_0119 §6-5: 지연 보류(sched.too_late · MAX_LAG_MIN) 제거 — 게시 시각은 FB 예약이 지킨다
     confirm(log, now)
+    if live and not terms:
+        # DN2026_0124 D4: 금칙어가 비면 검사가 무력하다 — 게시 확인만 하고 새 예약은 등록하지 않는다(fail-closed)
+        log.degrade("no_terms")
+        logger.warning("[Hiatus] 금칙어(PAGE76_BANNED_TERMS)가 비어 있음 — 새 예약 등록 중단")
+        send("휴재 게시: 금칙어 Secret(PAGE76_BANNED_TERMS)이 비어 있어 새 예약 등록을 멈췄습니다 — Secret 확인 필요")
+        return
     taken = taken_days(now)
     lo = timedelta(minutes=settings.NOVEL_SCHEDULE_MIN_LEAD_MIN)
     hi = timedelta(hours=settings.NOVEL_REGISTER_AHEAD_HOURS)

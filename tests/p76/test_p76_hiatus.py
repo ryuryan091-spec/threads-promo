@@ -156,6 +156,8 @@ def publish_env(fake_notion, fake_graph, monkeypatch, tmp_path):
     monkeypatch.setattr(card_render, "render", render)
     monkeypatch.setattr(run_hiatus_publish, "send", lambda msg, urgent=False: SENT.append(msg) or True)
     SENT.clear()
+    monkeypatch.setenv("PAGE76_BANNED_TERMS", "시험금칙어")  # DN2026_0124: live 는 금칙어가 있어야 등록한다
+    settings.reload()
     state = schedule_handlers(fake_graph)
     return fake_notion, fake_graph, state
 
@@ -447,3 +449,56 @@ def test_w6_late_published_row_holds_its_published_day(publish_env):
     row = add_row(fake, date(2026, 11, 11))
     run()
     assert g.writes() == [] and fake.val(row, settings.C_STATE) == settings.S_APPROVED
+
+
+# ── DN2026_0124 ─────────────────────────────────────────
+DB09_STATE_OPTIONS = {"초안", "검수중", "승인", "발행중", "발행완료", "실패", "확인필요"}  # DB-09 게시상태 선택지(2026-11-23 노션 실측)
+
+
+def _select_values(node) -> list[str]:
+    if isinstance(node, dict):
+        out = [node["select"]["equals"]] if node.get("property") == settings.C_STATE and "select" in node else []
+        return out + [v for child in node.values() for v in _select_values(child)]
+    if isinstance(node, list):
+        return [v for child in node for v in _select_values(child)]
+    return []
+
+
+def test_d1_state_filters_use_only_db09_options(publish_env):
+    fake, _, _ = publish_env
+    add_row(fake, TODAY)
+    run()
+    values = {v for q in _queries(fake) for v in _select_values(q["filter"])}
+    assert values and values <= DB09_STATE_OPTIONS, values - DB09_STATE_OPTIONS
+    assert settings.S_PARTIAL not in run_hiatus_publish.SLOT_STATES
+
+
+def test_d4_live_without_terms_registers_nothing(publish_env, env):
+    fake, g, _ = publish_env
+    env(PAGE76_BANNED_TERMS="")
+    row = add_row(fake, TODAY)
+    log = run()
+    assert "no_terms" in log.codes and g.writes() == []
+    assert fake.val(row, settings.C_STATE) == settings.S_APPROVED  # 상태를 건드리지 않는다
+    assert any("PAGE76_BANNED_TERMS" in m for m in SENT)
+
+
+@pytest.mark.parametrize("mode", ["dry_run", "shadow"])
+def test_d4_non_live_without_terms_still_checks(publish_env, env, mode):
+    fake, g, _ = publish_env
+    env(PAGE76_MODE=mode, PAGE76_BANNED_TERMS="")
+    add_row(fake, TODAY)
+    log = run()
+    assert "no_terms" not in log.codes and g.writes() == []
+
+
+def test_d4_live_without_terms_still_confirms(publish_env, env):
+    fake, g, state = publish_env
+    row = add_row(fake, TODAY)
+    run()  # 금칙어 있을 때 예약 등록
+    assert fake.val(row, settings.C_STATE) == settings.S_RUNNING
+    env(PAGE76_BANNED_TERMS="")
+    state["published"] = True
+    t = slot(row)
+    log = run_at(TODAY, t.hour, t.minute + 1 if t.minute < 59 else t.minute)
+    assert fake.val(row, settings.C_STATE) == settings.S_DONE and "no_terms" in log.codes  # 게시 확인은 계속

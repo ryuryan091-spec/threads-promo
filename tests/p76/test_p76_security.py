@@ -74,7 +74,7 @@ def test_t_sec_01_pipeline_logs_clean(fake_notion, fake_graph, caplog, monkeypat
     monkeypatch.setattr("p76.card_render.render", render)
     from datetime import datetime
     cli.execute("hiatus_publish", "t", lambda log: run_hiatus_publish.body(
-        log, now=datetime(2026, 11, 10, 12, tzinfo=notion.KST)))
+        log, now=datetime(2026, 11, 10, 12, tzinfo=notion.KST), banned_terms=("시험금칙어",)))  # DN2026_0124 live 금칙어 필수
     text = caplog.text
     assert "회로 차단" in text
     for secret in (FAKE_TOKEN, FAKE_NOTION_TOKEN, FAKE_PAGE_ID, "d9" * 16, "비밀 본문"):

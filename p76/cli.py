@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from p76 import safety, settings
+from p76 import notion, safety, settings
 from p76.notify import send
 from p76.redact import redact, register_masks
 from p76.runlog import RunLog
@@ -36,7 +36,9 @@ def execute(pipeline: str, version: str, body: Callable[[RunLog], None], require
         body(log)
     except Exception as e:  # noqa: BLE001 — 마지막 방어선: 메시지는 마스킹
         logger.error(f"[{pipeline}] 예외 {type(e).__name__}: {redact(e)[:200]}")
-        log.fail(f"exception:{type(e).__name__}")
+        # DN2026_0124 D2: NotionError 메시지는 메서드·HTTP 상태·노션 코드만 담는다(notion._request) — 원인 식별용으로 남긴다
+        detail = f":{redact(e)[:120]}" if isinstance(e, notion.NotionError) else ""
+        log.fail(f"exception:{type(e).__name__}{detail}")
         send(f"{pipeline} 실행 예외 {type(e).__name__} (run {settings.RUN_ID})")
     code = log.finish()
     if safety.tripped():
