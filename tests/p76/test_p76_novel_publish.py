@@ -20,7 +20,17 @@ from test_p76_novel import (
     kst,
 )
 
-from p76 import graph, notion, novel_store, run_novel_publish, safety, settings
+from p76 import (
+    graph,
+    notion,
+    novel_fixtures,
+    novel_policy,
+    novel_rules,
+    novel_store,
+    run_novel_publish,
+    safety,
+    settings,
+)
 from p76.runlog import RunLog
 
 S = settings
@@ -174,6 +184,25 @@ def test_episode_recheck_holds(pubenv):
     e1 = ep(n, body="편집된 본문 D+3 서울에서 생긴 일\n" * 3)
     pub(kst(2026, 11, 28, 12, 0))
     assert v(n, e1, S.N_STATE) == S.NS_HELD and n.graph.writes() == []
+
+
+def test_episode_recheck_warn_only_registers(pubenv):
+    """DN2026_0126: 게시 직전 재검사에서 차단 규칙이 아닌 위반(실제 날짜 R02)은 보류하지 않고 등록한다."""
+    n = pubenv
+    base = novel_fixtures.episode({"messages": [{"content": [{"text": "제1화"}]}]})["body"]
+    assert novel_rules.check_episode(base + "\n2026-11-03", 1) and not novel_policy.blocking(
+        novel_rules.check_episode(base + "\n2026-11-03", 1))
+    e1 = ep(n, body=base + "\n2026-11-03")
+    pub(kst(2026, 11, 28, 12, 0))
+    assert v(n, e1, S.N_STATE) == S.NS_SCHEDULED and len(feeds(n.graph)) == 1
+
+
+def test_episode_truncated_after_approval_holds(pubenv):
+    """R6-03 W3: 승인 뒤 본문이 2,000자 미만으로 잘리면 게시 직전 차단(보류)."""
+    n = pubenv
+    e1 = ep(n, body="D+1 잘린 본문.")
+    pub(kst(2026, 11, 28, 12, 0))
+    assert v(n, e1, S.N_STATE) == S.NS_HELD and "R01:out_of_range" in v(n, e1, S.N_RESULT)
 
 
 def test_bible_stopped_blocks_episode(pubenv):

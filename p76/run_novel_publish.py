@@ -80,7 +80,8 @@ from p76.novel_store import H_BODY, H_META, H_QUESTION, H_QUOTE, H_SUBTITLE
 from p76.run_novel import Ctx, _prompts, collect_stops
 from p76.runlog import RunLog
 
-VERSION = "2.1.2"  # 2.1.2: DN2026_0125 회장 직접 승인 회차는 품질 경고 게이트 통과(novel_policy.release_ok)
+VERSION = "2.2.0"  # 2.2.0: DN2026_0126 게시 직전 검사는 차단 규칙만
+# 2.1.2: DN2026_0125 회장 직접 승인 회차는 품질 경고 게이트 통과(novel_policy.release_ok)
 # 2.1.1: DN2026_0124 live 금칙어 비면 새 예약 등록 중단(fail-closed)
 # 2.1.0: 리뷰 C1 하루 1건 판정(T 날짜·취소 실패 날짜) · W1 긴급·비공개 전환 · W4 대조 · 일시 정지
 # 2.0.0: DN2026_0119 FB 예약 게시(D-1 등록·취소·확인) · 지연 가드·텔레그램 예고 대기 제거 · 부록 · probe
@@ -643,8 +644,11 @@ def _episode_post(ctx: Ctx, row: dict, notify: bool = True) -> tuple[list[str], 
         m, banned_terms=S.BANNED_TERMS)
     filled, law_errors = novel_rules.fill_laws(body, p.laws, ctx.today)
     errors += law_errors
-    if meta.get("quality_warnings"):
-        errors = [e for e in errors if e not in novel_policy.QUALITY]
+    # DN2026_0126: 게시 직전에는 차단 규칙(식별·위해 어휘·자리표시자·법률 문안 없음)만 막는다. 나머지는 생성 때 경고로 알림.
+    errors = novel_policy.blocking(errors)
+    lo, hi = novel_policy.WARN_BODY_RANGE
+    if not lo <= len(body.strip()) <= hi:  # R6-03 W3: 승인 뒤 잘리거나 폭주한 본문은 차단
+        errors.append("R01:out_of_range")
     subtitle = secs.get(H_SUBTITLE, "").strip()
     caption = f"{filled.strip()}\n\n{novel_rules.footer(n, m, question)}"
     return errors, caption, f"사건 소설 시즌 {n} · 제{m}화", secs.get(H_QUOTE, "").strip() or subtitle, subtitle
