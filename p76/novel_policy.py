@@ -66,6 +66,10 @@ def release_ok(row: dict) -> bool:
     meta = store.json_section(row, store.H_META)
     if not meta.get("quality_warnings"):
         return True
+    if store.state(row) == S.NS_APPROVED and notion.select(row, S.N_VERDICT) != "PASS":
+        # DN2026_0125: 코드의 자동 승인은 검수 PASS 일 때만 일어난다(run_novel._gate·_migrate_*).
+        #   PASS 가 아닌 '승인' = 회장이 원고(품질 경고 포함)를 보고 직접 승인한 것 → 발행 결정으로 본다.
+        return True
     digest = content_hash(public_draft(row))
     receipt = store.json_section(row, H_RELEASE)
     return (meta.get("quality_hash") == digest == receipt.get("hash")

@@ -80,7 +80,8 @@ from p76.novel_store import H_BODY, H_META, H_QUESTION, H_QUOTE, H_SUBTITLE
 from p76.run_novel import Ctx, _prompts, collect_stops
 from p76.runlog import RunLog
 
-VERSION = "2.1.1"  # 2.1.1: DN2026_0124 live 금칙어 비면 새 예약 등록 중단(fail-closed)
+VERSION = "2.1.2"  # 2.1.2: DN2026_0125 회장 직접 승인 회차는 품질 경고 게이트 통과(novel_policy.release_ok)
+# 2.1.1: DN2026_0124 live 금칙어 비면 새 예약 등록 중단(fail-closed)
 # 2.1.0: 리뷰 C1 하루 1건 판정(T 날짜·취소 실패 날짜) · W1 긴급·비공개 전환 · W4 대조 · 일시 정지
 # 2.0.0: DN2026_0119 FB 예약 게시(D-1 등록·취소·확인) · 지연 가드·텔레그램 예고 대기 제거 · 부록 · probe
 # 2.0.0 P9: 순연으로 게시예정일이 바뀐 예약 재등록(rescheduled) · 부록 만료(notice_expired)

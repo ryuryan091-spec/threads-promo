@@ -511,6 +511,29 @@ def test_quality_warning_without_receipt_waits(pubenv):
     assert v(n, e1, S.N_STATE) == S.NS_APPROVED
 
 
+@pytest.mark.parametrize("verdict", ["HUMAN_REQUIRED", "BLOCK"])
+def test_quality_warning_human_approved_registers(pubenv, verdict):
+    """DN2026_0125: 검수 PASS 가 아닌 '승인' = 회장 직접 승인 → 품질 경고가 있어도 예약 등록(영수증 불요)."""
+    n = pubenv
+    e1 = ep(n, verdict=verdict)
+    n.fake.set_blocks(e1["id"], list(n.fake.blocks[e1["id"]]) + novel_store.section_blocks(
+        [(novel_store.H_META, json.dumps({"quality_warnings": ["R01:length:2997"], "quoted_journals": []}), "json")]))
+    log = pub(kst(2026, 11, 28, 12, 0))
+    assert "quality:notice_pending" not in log.codes
+    assert len(feeds(n.graph)) == 1 and v(n, e1, S.N_STATE) == S.NS_SCHEDULED
+    assert not any(t.startswith("T7") or "품질 경고" in t for t in n.tg.sent)  # 품질 알림 없음(사람이 이미 봄)
+
+
+def test_quality_warning_human_required_not_approved_waits(pubenv):
+    """회장 승인 전(검토대기 등)은 여전히 등록 대상이 아니다 — 상태 '승인'만 사람 승인으로 본다."""
+    n = pubenv
+    e1 = ep(n, state=S.NS_REVIEW, verdict="HUMAN_REQUIRED")
+    n.fake.set_blocks(e1["id"], list(n.fake.blocks[e1["id"]]) + novel_store.section_blocks(
+        [(novel_store.H_META, json.dumps({"quality_warnings": ["R01:length:2997"], "quoted_journals": []}), "json")]))
+    pub(kst(2026, 11, 28, 12, 0))
+    assert feeds(n.graph) == [] and v(n, e1, S.N_STATE) == S.NS_REVIEW
+
+
 # ── P9 순연 재예약 · 부록 만료 ─────────────────────────────
 def _move_due(page, day):
     page["properties"][S.N_DUE]["date"] = {"start": day.isoformat()}
