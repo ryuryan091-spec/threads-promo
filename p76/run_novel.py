@@ -63,7 +63,8 @@ from p76.novel_store import (
 )
 from p76.runlog import RunLog
 
-VERSION = "1.5.0"  # 1.5.0: 순연 대상에서 보류·거절확인필요·폐기 제외 · 한도 초과 → 시즌 일시 정지(paused) · live 만 놓친
+VERSION = "1.6.0"  # 1.6.0: DN2026_0126 차단=식별·위해·Meta high 만, 그 밖은 경고 승인(사람 승인 없음)
+# 1.5.0: 순연 대상에서 보류·거절확인필요·폐기 제외 · 한도 초과 → 시즌 일시 정지(paused) · live 만 놓친
 #        게시일 순연 · D-1 22:00 선제 순연 (리뷰 C2·W2·W3)
 # 1.4.0: DN2026_0119 Zero-Touch — 매일 연재 일정·자동 승인·2차 검수·순연·이관
 # 1.3.0 · 1.2.1: 바이블 arc 객체 수용 · R05 바이블 경고화 · 재시도 피드백 이월 · 예정 시각 기준 판정
@@ -318,12 +319,21 @@ def _llm(ctx: Ctx, row: dict, *, label: str, model: str, effort: str, system: st
 
 
 def computed_verdict(r: dict) -> str:
-    fails = any(r.get(k) == "fail" for k in ("victim_blame", "graphic_harm", "vigilante", "premature_guilt"))
-    ident, method = int(r.get("identifiability", 3)), int(r.get("method_detail", 3))
-    meta = r.get("meta_policy", "high")
-    if fails or ident >= 2 or method >= 2 or meta == "high":
+    """DN2026_0126 (회장 지시 11-24 B안): 차단(BLOCK)은 ① 실존 회사·사건 식별(identifiability ≥ 2)
+    ② 위해 묘사(graphic_harm fail) ③ Meta 정책 high 만. 그 밖의 지적은 HUMAN_REQUIRED = '경고'
+    (자동 승인 + 텔레그램 경고, 사람 승인 불요). 모두 깨끗하면 PASS. 값이 없으면 보수적으로 본다."""
+    try:
+        ident, method = int(r.get("identifiability", 3)), int(r.get("method_detail", 3))
+    except (TypeError, ValueError):
         return "BLOCK"
-    if r.get("legal_claims") or r.get("advice_tone") or ident == 1 or method == 1 or meta == "med":
+    meta = str(r.get("meta_policy") or "high").strip().lower()
+    harm = str(r.get("graphic_harm") or "").strip().lower()
+    # R6-03 W1: 위해 묘사·Meta 값이 없거나 알 수 없는 값이면 차단 쪽(보수적)으로 본다
+    if ident >= 2 or harm != "pass" or meta not in ("low", "med"):
+        return "BLOCK"
+    fails = any(r.get(k) == "fail" for k in ("victim_blame", "vigilante", "premature_guilt"))
+    if (fails or r.get("legal_claims") or r.get("advice_tone") or ident == 1 or method >= 1
+            or meta == "med"):
         return "HUMAN_REQUIRED"
     return "PASS"
 
@@ -349,7 +359,8 @@ def _review_call(ctx: Ctx, row: dict, target: str, text: str, *, model: str, sta
                expected_out=1500, stream=False)
     verdict = "BLOCK"
     if res.ok:
-        verdict = _worse(str(res.data.get("verdict", "BLOCK")), computed_verdict(res.data))
+        # DN2026_0126: 판정은 점수로 코드가 계산한 값만 쓴다(검수 모델의 verdict 필드는 기록용).
+        verdict = computed_verdict(res.data)
     if res.fallback:
         verdict = _worse(verdict, "HUMAN_REQUIRED")
     data = dict(res.data or {"error": res.refusal or res.stop_reason})
@@ -448,26 +459,43 @@ def _start_attempt(ctx: Ctx, row: dict, tag: str) -> None:
 
 
 # ── DN2026_0119 자동 게이트 · 순연 · 이관 ─────────────────
+def _warn_tail(row: dict, code: str) -> str:
+    """DN2026_0126: 경고 승인이면 텔레그램에 붙일 경고 코드(원고 문장 없음, SEC RR-06)."""
+    verdict = notion.select(row, S.N_VERDICT)
+    if verdict == "PASS" or not code.startswith("auto:warn"):
+        return ""
+    quality = novel_store.json_section(row, H_META).get("quality_warnings") or []
+    q = f" · 규칙 경고 {','.join(quality)}" if quality else ""
+    return (f"\n⚠️ 경고 승인(검수 {verdict or '-'}): {notion.plain(row, S.N_REVIEW_CODES) or '-'}{q}"
+            " — 원고 확인 권장, 중단은 노션 체크")
+
+
 def _approve(ctx: Ctx, row: dict, code: str) -> None:
-    """자동 게이트 통과 → 회차 '승인' / 바이블 '정본' (A1: 게이트 통과 = 승인 위임). 알림은 정보성."""
+    """자동 게이트 통과 → 회차 '승인' / 바이블 '정본' (A1: 게이트 통과 = 승인 위임). 알림은 정보성.
+    DN2026_0126: 경고(HUMAN_REQUIRED)도 자동 승인하고 경고 코드를 알린다."""
     n = novel_store.season(row)
+    warn = _warn_tail(row, code)
     if novel_store.kind(row) == S.NK_BIBLE:
         novel_store.transition(row, S.NS_CANON, {S.N_RESULT: notion.v_rich(code)})
         ctx.log.writes += 1
         logger.info(f"[Novel] {novel_store.key(row)} 정본 ({code})")
         first = season_start(n, ctx.shifts)
-        novel_tg.send("T1c", f"✅ 사건 소설 시즌 {n} 바이블 정본 자동 등록({code}) — 제1화 게시 예정 "
+        sent = novel_tg.send("T1c", f"✅ 사건 소설 시즌 {n} 바이블 정본 자동 등록({code}) — 제1화 게시 예정 "
                              f"{novel_calendar.label(first)}, 원고 생성 "
-                             f"{first - timedelta(days=S.NOVEL_EPISODE_LEAD_DAYS):%m-%d}부터 (조치 불필요)")
+                             f"{first - timedelta(days=S.NOVEL_EPISODE_LEAD_DAYS):%m-%d}부터 (조치 불필요){warn}")
+        if warn and not sent:  # R6-03 W2: 경고 알림 미전달은 실행 기록에 남긴다(health·DB-11 에서 보임)
+            ctx.log.degrade("tg:warn_notice_failed")
         return
     m = novel_store.episode(row)
     novel_store.transition(row, S.NS_APPROVED, {S.N_RESULT: notion.v_rich(code)})
     ctx.log.writes += 1
     chars = notion.number(row, S.N_CHARS) or 0
     logger.info(f"[Novel] {novel_store.key(row)} 승인 ({code}, {chars}자)")
-    novel_tg.send("T2", f"✅ 시즌 {n} 제{m}화 자동 승인({code}) — 게시 {novel_calendar.label(due_date(n, m, ctx.shifts))}"
-                        f" / {chars}자 / 검수 {notion.select(row, S.N_VERDICT) or '-'} (조치 불필요)",
+    sent = novel_tg.send("T2", f"✅ 시즌 {n} 제{m}화 자동 승인({code}) — 게시 {novel_calendar.label(due_date(n, m, ctx.shifts))}"
+                        f" / {chars}자 / 검수 {notion.select(row, S.N_VERDICT) or '-'} (조치 불필요){warn}",
                   novel_tg.page_link(row["id"]))
+    if warn and not sent:  # R6-03 W2
+        ctx.log.degrade("tg:warn_notice_failed")
 
 
 def _record_review2(ctx: Ctx, row: dict, verdict: str, data: dict) -> None:
@@ -484,6 +512,9 @@ def _gate(ctx: Ctx, row: dict, verdict: str, review_json: dict, target: str, tex
     if verdict == "PASS":
         _approve(ctx, row, "auto:gate1")
         return
+    if verdict == "HUMAN_REQUIRED":  # DN2026_0126: 경고 → 자동 수정·2차 검수 없이 경고 승인
+        _approve(ctx, row, "auto:warn:gate1")
+        return
     gate = novel_policy.gate(row)
     attempts = notion.number(row, S.N_ATTEMPTS) or 0
     if gate["repairs"] < S.NOVEL_REPAIR_MAX and attempts < S.NOVEL_MAX_ATTEMPTS:
@@ -494,13 +525,14 @@ def _gate(ctx: Ctx, row: dict, verdict: str, review_json: dict, target: str, tex
         ctx.log.writes += 2
         logger.info(f"[Novel] {novel_store.key(row)} 검수 {verdict} — 자동 수정 {gate['repairs']}/{S.NOVEL_REPAIR_MAX}")
         return
-    if verdict == "BLOCK":  # 수정 뒤에도 BLOCK → 2차 검수로 뒤집지 않는다(설계 §5-1)
-        _final_fail(ctx, row, "gate1:BLOCK")
-        return
+    # DN2026_0126: 수정 뒤에도 1차 BLOCK → 다른 모델 2차 검수로 확인. 2차도 BLOCK 일 때만 차단.
     v2, data = review2(ctx, row, target, text)
     _record_review2(ctx, row, v2, data)
     if v2 == "PASS":
         _approve(ctx, row, "auto:gate2")
+        return
+    if v2 == "HUMAN_REQUIRED":
+        _approve(ctx, row, "auto:warn:gate2")
         return
     _final_fail(ctx, row, f"gate2:{v2}")
 
@@ -803,12 +835,14 @@ def generate_bible(ctx: Ctx, n: int, row: dict | None) -> None:
         bible = normalize_arc(res.data)
         novel_policy.save_candidate(row, bible, res)
     errors = novel_rules.check_bible(bible, banned_terms=S.BANNED_TERMS, journal_numbers=set(journals))
-    if any(e.startswith("R03") for e in errors):
-        _fail_row(ctx, row, S.NS_HELD, "rules:R03")
-        return
-    if errors:
+    # DN2026_0126: 차단 규칙(R03·R04·R07…)·구조 결함(B01~B03)만 재작성. 그 밖은 경고(로그·T1c 에 코드)
+    hard = novel_policy.blocking(errors) + [e for e in errors if e.startswith("B0")]
+    if hard:
         _fail_rules(ctx, row, errors, prev_codes)
         return
+    if errors:
+        ctx.log.degrade(f"{novel_store.key(row)}:rules_warn")
+        logger.warning(f"[Novel] {novel_store.key(row)} 규칙 경고 {','.join(errors)}")
     warnings = novel_rules.bible_warnings(bible)
     if warnings:  # 코드만 남긴다(본문·매칭 문자열 없음, SEC RR-06)
         logger.warning(f"[Novel] {novel_store.key(row)} 경고 {','.join(warnings)}")
@@ -902,10 +936,7 @@ def generate_episode(ctx: Ctx, n: int, m: int, row: dict | None) -> None:
         journals=journals, d_plus_end=(ep.get("continuity") or {}).get("d_plus_end"), prev_d_plus_end=prev_d,
     ) + novel_rules.question_ok(ep.get("question", "")) + novel_rules.check_public_fields(
         public_fields(ep), m, banned_terms=S.BANNED_TERMS)
-    if any(e.startswith("R03") for e in errors):
-        _fail_row(ctx, row, S.NS_HELD, "rules:R03")
-        return
-    if errors and not novel_policy.allow_quality(row, errors, ep):
+    if errors and not novel_policy.allow_quality(row, errors, ep):  # DN2026_0126: 차단 규칙만 재작성(R03 포함)
         _fail_rules(ctx, row, errors, prev_codes)
         return
     writer_fallback = res.fallback

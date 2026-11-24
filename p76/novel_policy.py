@@ -19,17 +19,30 @@ H_RELEASE = "품질 경고 알림 (JSON)"
 H_GATE = "자동 게이트 (JSON)"  # DN2026_0119 {"repairs": 자동 수정 횟수}
 REVIEW_PREFIX = "review:"
 QUALITY = {"R09:cliche", "R09:repeated_sentences", "Q:too_long"}
+# DN2026_0126 (회장 지시 11-24 B안): 회차 규칙 위반 중 '차단'은 실존 회사·식별(R03 금칙어·R04 업종·지명),
+#   위해 어휘(R07), 기술적 결함(R11 자리표시자·R01:empty·LAW:missing)만. 나머지는 경고로 기록하고 발행한다.
+BLOCK_RULES = ("R03", "R04", "R07", "R11", "LAW")
+WARN_BODY_RANGE = (2000, 6000)  # 이 밖의 분량은 생성 결함(잘림·폭주)으로 보고 차단
+
+
+def _rule(code: str) -> str:
+    return code.split("@", 1)[0].split(":", 1)[0]
+
+
+def blocking(errors: list[str]) -> list[str]:
+    """차단 규칙 위반만 (DN2026_0126)."""
+    return [e for e in errors if _rule(e) in BLOCK_RULES or e.split("@", 1)[0] == "R01:empty"]
 
 
 def quality_only(errors: list[str], body: str) -> bool:
-    # Short/oversized output cannot use the warning exception.
-    return bool(errors) and 2000 <= len(body.strip()) <= 6000 and all(
-        e in QUALITY or e.startswith("R01:length:") for e in errors)
+    """경고만 있는 원고인가 — 차단 규칙 없음 + 분량이 정상 범위(DN2026_0126)."""
+    lo, hi = WARN_BODY_RANGE
+    return bool(errors) and lo <= len(body.strip()) <= hi and not blocking(errors)
 
 
 def allow_quality(row: dict, errors: list[str], draft: dict) -> bool:
-    return (notion.number(row, S.N_ATTEMPTS) == S.NOVEL_MAX_ATTEMPTS
-            and quality_only(errors, str(draft.get("body") or "")))
+    """DN2026_0126: 시도 횟수와 관계없이 경고만 있으면 재작성 없이 진행(경고 기록 + 텔레그램)."""
+    return quality_only(errors, str(draft.get("body") or ""))
 
 
 def content_hash(draft: dict) -> str:
@@ -67,8 +80,8 @@ def release_ok(row: dict) -> bool:
     if not meta.get("quality_warnings"):
         return True
     if store.state(row) == S.NS_APPROVED and notion.select(row, S.N_VERDICT) != "PASS":
-        # DN2026_0125: 코드의 자동 승인은 검수 PASS 일 때만 일어난다(run_novel._gate·_migrate_*).
-        #   PASS 가 아닌 '승인' = 회장이 원고(품질 경고 포함)를 보고 직접 승인한 것 → 발행 결정으로 본다.
+        # DN2026_0125: PASS 가 아닌 '승인' = 회장 직접 승인 → 발행 결정.
+        # DN2026_0126: 또는 경고 승인(run_novel._approve 가 경고 코드를 텔레그램으로 보낸 뒤) → 발행.
         return True
     digest = content_hash(public_draft(row))
     receipt = store.json_section(row, H_RELEASE)
@@ -87,7 +100,7 @@ def notify_quality(row: dict, log) -> None:
     if (notion.select(row, S.N_VERDICT) != "PASS" or store.stopped(row)
             or meta.get("quality_hash") != digest or not allow_quality(row, errors, draft)):
         return
-    text = (f"⚠️ {store.key(row)} 생성 3/3회 종료 — 품질 경고: {', '.join(errors)}.\n"
+    text = (f"⚠️ {store.key(row)} 품질 경고: {', '.join(errors)} (DN2026_0126 경고 후 발행).\n"
             "완성 원고 AI 검수 PASS. 이 경고를 포함한 원고를 기존 일정에 따라 발행합니다.\n"
             + ("shadow 모드: 실제 게시 없음.\n" if S.MODE != "live" else "")
             + "원고와 경고는 아래 노션에서 확인하세요. 중단 체크 시 발행하지 않습니다.")

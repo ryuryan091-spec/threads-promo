@@ -251,9 +251,22 @@ def test_verdict_recomputed():
     clean = novel_fixtures.review()
     assert run_novel.computed_verdict(clean) == "PASS"
     assert run_novel.computed_verdict({**clean, "identifiability": 1}) == "HUMAN_REQUIRED"
-    assert run_novel.computed_verdict({**clean, "method_detail": 2}) == "BLOCK"
-    assert run_novel.computed_verdict({**clean, "victim_blame": "fail"}) == "BLOCK"
+    # DN2026_0126 B안: 차단은 식별(≥2)·위해 묘사·Meta high 만
+    assert run_novel.computed_verdict({**clean, "identifiability": 2}) == "BLOCK"
+    assert run_novel.computed_verdict({**clean, "graphic_harm": "fail"}) == "BLOCK"
+    assert run_novel.computed_verdict({**clean, "meta_policy": "high"}) == "BLOCK"
+    for warn in ({"method_detail": 3}, {"victim_blame": "fail"}, {"vigilante": "fail"}, {"premature_guilt": "fail"},
+                 {"legal_claims": ["x"]}, {"advice_tone": ["x"]}, {"meta_policy": "med"}):
+        assert run_novel.computed_verdict({**clean, **warn}) == "HUMAN_REQUIRED", warn
+    assert run_novel.computed_verdict({}) == "BLOCK"  # 값 없음 = 보수적
     assert run_novel._worse("PASS", "HUMAN_REQUIRED") == "HUMAN_REQUIRED"
+
+
+def test_model_verdict_field_is_ignored(novel):
+    """DN2026_0126: 검수 모델의 verdict 필드가 아니라 점수로 계산한 판정을 쓴다."""
+    run(kst(2026, 11, 22, 10, 44), Scripted([None, {"data": {**novel_fixtures.review(), "verdict": "BLOCK"}}]))
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON and novel.fake.val(bible, S.N_RESULT) == "auto:gate1"
 
 
 def test_prompt_page_parse_and_draft_refused(novel, env):
@@ -327,24 +340,25 @@ def test_tn02_global_switch(novel, env):
 
 
 # ── TN-06·08·09 판정·거절 ────────────────────────────────
-def test_tn06_human_required_bible_goes_to_auto_repair(novel):
-    flagged = {**novel_fixtures.review(), "identifiability": 1, "verdict": "PASS"}
-    run(kst(2026, 11, 22, 10, 44), Scripted([None, {"data": flagged}]))
+def test_tn06_human_required_bible_is_warn_canon(novel):
+    """DN2026_0126: 경고(HUMAN_REQUIRED) 바이블은 자동 수정·사람 승인 없이 정본 + 텔레그램 경고."""
+    flagged = {**novel_fixtures.review(), "identifiability": 1, "legal_claims": ["법 문장"], "verdict": "PASS"}
+    _, client = run(kst(2026, 11, 22, 10, 44), Scripted([None, {"data": flagged}]))
     bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_CHECK_FAILED
-    assert novel.fake.val(bible, S.N_RESULT).startswith("review:HUMAN_REQUIRED|identifiability:1")
-    assert novel_store.json_section(bible, novel_policy.H_GATE) == {"repairs": 1}
-    assert novel.tg.sent == []  # 자동 수정은 알림 없음(AC1)
-    _, client = run(kst(2026, 11, 22, 12, 44))  # 다음 실행: 검수 코드를 수정 지시로 넣어 재작성 → PASS → 정본
-    assert "identifiability:1" in client.calls[0]["messages"][0]["content"][-1]["text"]
     assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
+    assert novel.fake.val(bible, S.N_RESULT) == "auto:warn:gate1"
+    assert novel.fake.val(bible, S.N_VERDICT) == "HUMAN_REQUIRED"
+    assert len(client.calls) == 2  # 작성 + 1차 검수만(2차·재작성 없음)
+    warn = [t for t in novel.tg.sent if "경고 승인" in t]
+    assert len(warn) == 1 and "identifiability:1" in warn[0] and "legal:1" in warn[0]
+    assert "법 문장" not in warn[0]  # 원고 인용은 보내지 않는다
 
 
-def test_tn06_fallback_model_forces_repair(novel):
+def test_tn06_fallback_model_is_warn(novel):
     run(kst(2026, 11, 22, 10, 44), Scripted([{"data": novel_fixtures.bible(), "model": "claude-opus-4-8"}]))
     bible = row(novel.fake, "N1-BIBLE")
-    assert novel.fake.val(bible, S.N_STATE) == S.NS_CHECK_FAILED
-    assert novel.fake.val(bible, S.N_RESULT).startswith("review:HUMAN_REQUIRED|")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON  # DN2026_0126: fallback = 경고 승인
+    assert novel.fake.val(bible, S.N_RESULT) == "auto:warn:gate1"
 
 
 def test_tn08_refusal_no_retry(novel):
@@ -364,11 +378,30 @@ def test_tn09_max_tokens_not_saved(novel):
 
 def test_review_block_goes_to_auto_repair(novel):
     add_canon_bible(novel.fake)
-    blocked = {**novel_fixtures.review(), "method_detail": 3, "verdict": "BLOCK"}
+    blocked = {**novel_fixtures.review(), "identifiability": 3, "verdict": "PASS"}
     run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": blocked}]))
     e1 = row(novel.fake, "N1-E01")
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED  # DN2026_0119: BLOCK → 자동 수정
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED  # BLOCK(식별) → 자동 수정
     assert novel.fake.val(e1, S.N_RESULT).startswith("review:BLOCK|")
+
+
+@pytest.mark.parametrize("over", [{"method_detail": 3}, {"victim_blame": "fail"}, {"advice_tone": ["조언"]}])
+def test_non_blocking_review_is_warn_approved(novel, over):
+    """DN2026_0126 B안: 식별·위해·Meta high 가 아니면 경고 승인(사람 승인 없음)."""
+    add_canon_bible(novel.fake)
+    run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": {**novel_fixtures.review(), **over}}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED and novel.fake.val(e1, S.N_RESULT) == "auto:warn:gate1"
+    assert run_novel.auto_publishable(e1)
+    assert any("경고 승인" in t and "제1화" in t for t in novel.tg.sent)
+
+
+@pytest.mark.parametrize("over", [{"graphic_harm": "fail"}, {"meta_policy": "high"}, {"identifiability": 2}])
+def test_blocking_review_never_approved_on_gate1(novel, over):
+    add_canon_bible(novel.fake)
+    run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": {**novel_fixtures.review(), **over}}]))
+    e1 = row(novel.fake, "N1-E01")
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED and not run_novel.auto_publishable(e1)
 
 
 # ── 회차 생성 ────────────────────────────────────────────
@@ -554,9 +587,11 @@ def test_public_field_banned_term_holds_episode(novel, env):
     add_canon_bible(novel.fake)
     _, client = run(kst(2026, 11, 26, 10, 44), Scripted([{"data": _ep(card_quote="비공개금칙어 한 줄")}]))
     e1 = row(novel.fake, "N1-E01")
-    assert novel.fake.val(e1, S.N_STATE) == S.NS_HELD
-    assert novel.fake.val(e1, S.N_RESULT) == "rules:R03"
-    assert len(client.calls) == 1  # 재작성·검수 호출 없음
+    # DN2026_0126: 금칙어 = 차단 → 보류(사람) 대신 재작성 대상. 검수 호출 없음, 단어는 결과에 없음
+    assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
+    assert novel.fake.val(e1, S.N_RESULT) == "rules:R03:banned_term@card_quote"
+    assert len(client.calls) == 1
+    assert not run_novel.auto_publishable(e1)
 
 
 def test_public_field_violation_retries_then_fails(novel):
@@ -764,25 +799,20 @@ def test_same_rule_kind_with_different_numbers_stops(novel):
     assert novel.fake.val(e1, S.N_RESULT) == "final:rules:exhausted"
 
 
-@pytest.mark.parametrize("verdict", ["BLOCK", "HUMAN_REQUIRED"])
-def test_third_quality_warning_never_overrides_ai_review(novel, verdict):
+@pytest.mark.parametrize("over", [{"identifiability": 3}, {"identifiability": 1}])
+def test_quality_warning_never_overrides_ai_review(novel, over):
+    """규칙 경고(품질)는 검수 판정을 덮어쓰지 않는다: 식별 BLOCK 이면 경고 원고라도 승인되지 않는다(DN2026_0126)."""
     add_canon_bible(novel.fake)
     e1 = add_episode_row(novel.fake, 1, 1, S.NS_CHECK_FAILED)
-    _set(e1, **{S.N_ATTEMPTS: 2})
+    _set(e1, **{S.N_ATTEMPTS: 1})
     bad = _ep(question="기" * 121)
-    review = {**novel_fixtures.review(), "verdict": verdict}
-    run(kst(2026, 11, 26, 10, 44), Scripted([{"data": bad}, {"data": review}]))
-    # 1차 검수 결과는 품질 경고로 덮어쓰지 않는다: 1차 게이트(auto:gate1)로는 절대 승인되지 않는다.
-    # HUMAN_REQUIRED 는 자동 수정 → 독립 2차 검수(Opus)를 통과했을 때만 auto:gate2 로 승인될 수 있다(DN2026_0119).
-    assert novel.fake.val(e1, S.N_RESULT) != "auto:gate1"
-    if verdict == "BLOCK":
+    run(kst(2026, 11, 26, 10, 44), Scripted([{"data": bad}, {"data": {**novel_fixtures.review(), **over}}]))
+    if over["identifiability"] >= 2:
         assert not run_novel.auto_publishable(e1)
-        assert not any("생성 3/3회 종료" in t for t in novel.tg.sent)
-    elif run_novel.auto_publishable(e1):
-        # 독립 2차 검수 PASS 뒤에만 품질 경고 안내(T7, 정보성)가 나갈 수 있다
-        assert novel.fake.val(e1, S.N_RESULT) == "auto:gate2"
     else:
-        assert not any("생성 3/3회 종료" in t for t in novel.tg.sent)
+        assert novel.fake.val(e1, S.N_RESULT) == "auto:warn:gate1" and run_novel.auto_publishable(e1)
+        warn = [t for t in novel.tg.sent if "경고 승인" in t]
+        assert len(warn) == 1 and "규칙 경고" in warn[0]
 
 
 def test_partial_repair_preserves_unaffected_fields(novel):
@@ -912,7 +942,8 @@ def test_revalidated_bible_skips_writer_and_preserves_provenance(novel, trusted)
     assert 'verdict' in client.calls[0]['output_config']['format']['schema']['required']
     fresh = row(novel.fake, 'N1-BIBLE')
     assert novel.fake.val(fresh, S.N_ATTEMPTS) == 1
-    assert novel.fake.val(fresh, S.N_STATE) == (S.NS_CANON if trusted else S.NS_CHECK_FAILED)  # 미검증 출처 → 자동 수정
+    assert novel.fake.val(fresh, S.N_STATE) == S.NS_CANON  # DN2026_0126: 미검증 출처(fallback 취급) = 경고 정본
+    assert novel.fake.val(fresh, S.N_RESULT) == ("auto:gate1" if trusted else "auto:warn:gate1")
 
 
 def test_legacy_bible_codes_become_targeted_repair(novel):
@@ -960,8 +991,9 @@ def test_candidate_hash_tamper_requires_explicit_review(novel):
     _, client = run(kst(2026, 11, 22, 12, 44))
     assert len(client.calls) == 1
     page = row(novel.fake, 'N1-BIBLE')
-    assert novel.fake.val(page, S.N_STATE) == S.NS_CHECK_FAILED
-    assert novel.fake.val(page, S.N_RESULT).startswith('review:HUMAN_REQUIRED|')
+    assert novel.fake.val(page, S.N_STATE) == S.NS_CANON  # DN2026_0126: 출처 불일치 = 경고 정본(텔레그램 경고)
+    assert novel.fake.val(page, S.N_RESULT) == 'auto:warn:gate1'
+    assert any('경고 승인' in t for t in novel.tg.sent)
 
 
 def test_changed_prompt_does_not_reuse_saved_bible(novel):
@@ -1027,6 +1059,11 @@ def _flag(**over):
     return {**novel_fixtures.review(), "identifiability": 1, "verdict": "PASS", **over}
 
 
+def _blk(**over):
+    """DN2026_0126: 차단 판정(식별 가능성 3)."""
+    return {**novel_fixtures.review(), "identifiability": 3, "verdict": "PASS", **over}
+
+
 def _ctrl(fake):
     return json.loads(fake.val(row(fake, "CONTROL"), S.N_RESULT) or "{}")
 
@@ -1046,13 +1083,13 @@ def test_reviewer2_is_a_different_model(env, monkeypatch):
 
 def test_gate2_after_repairs_approves(novel, reviewer2_allowed):
     add_canon_bible(novel.fake)
-    run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": _flag()}]))
+    run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": _blk()}]))
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
-    _, c2 = run(kst(2026, 11, 26, 12, 44), Scripted([None, {"data": _flag()}]))
-    assert "identifiability:1" in c2.calls[0]["messages"][0]["content"][-1]["text"]  # 검수 코드 = 수정 지시
+    _, c2 = run(kst(2026, 11, 26, 12, 44), Scripted([None, {"data": _blk()}]))
+    assert "identifiability:3" in c2.calls[0]["messages"][0]["content"][-1]["text"]  # 검수 코드 = 수정 지시
     assert novel_store.json_section(e1, novel_policy.H_GATE) == {"repairs": 2}
-    _, c3 = run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _flag()}, None]))
+    _, c3 = run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _blk()}, None]))
     assert [c["model"] for c in c3.calls] == [S.MODEL_WRITER, S.MODEL_REVIEWER, S.MODEL_REVIEWER_2]
     assert c3.calls[1]["system"] == c3.calls[2]["system"]  # 1차와 같은 시스템 프롬프트·스키마
     assert c3.calls[1]["output_config"]["format"] == c3.calls[2]["output_config"]["format"]
@@ -1066,11 +1103,11 @@ def test_gate2_after_repairs_approves(novel, reviewer2_allowed):
 def test_gate2_fail_postpones_resets_and_creates_notice(novel, glive, reviewer2_allowed):
     add_canon_bible(novel.fake)
     for h in (10, 12):
-        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _flag()}]))
-    run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _flag()}, {"data": _flag()}]))
+        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _blk()}]))
+    run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _blk()}, {"data": _blk()}]))
     e1 = row(novel.fake, "N1-E01")
     assert novel.fake.val(e1, S.N_STATE) == S.NS_CHECK_FAILED
-    assert novel.fake.val(e1, S.N_RESULT) == "final:gate2:HUMAN_REQUIRED"
+    assert novel.fake.val(e1, S.N_RESULT) == "final:gate2:BLOCK"
     assert novel.fake.val(e1, S.N_ATTEMPTS) == 0 and novel_store.json_section(e1, novel_policy.H_GATE) == {"repairs": 0}
     assert novel.fake.val(e1, S.N_DUE) == "2026-11-30"
     ctrl = _ctrl(novel.fake)
@@ -1087,23 +1124,23 @@ def test_gate2_fail_postpones_resets_and_creates_notice(novel, glive, reviewer2_
     assert run_novel._retryable(e1)  # 재생성 대상으로 돌아감
 
 
-def test_block_after_repairs_never_goes_to_reviewer2(novel, glive):
+def test_block_after_repairs_confirmed_by_reviewer2(novel, glive, reviewer2_allowed):
+    """DN2026_0126: 수정 뒤에도 1차 BLOCK → 2차(다른 모델) 확인. 2차가 경고면 경고 승인, 차단 아님."""
     add_canon_bible(novel.fake)
-    blocked = {**novel_fixtures.review(), "method_detail": 3, "verdict": "BLOCK"}
-    models = []
-    for h in (10, 12, 14):
-        _, c = run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": blocked}]))
-        models += [x["model"] for x in c.calls]
-    assert S.MODEL_REVIEWER_2 not in models
+    for h in (10, 12):
+        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _blk()}]))
+    _, c = run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _blk()}, {"data": _flag()}]))
+    assert [x["model"] for x in c.calls][-1] == S.MODEL_REVIEWER_2
     e1 = row(novel.fake, "N1-E01")
-    assert novel.fake.val(e1, S.N_RESULT) == "final:gate1:BLOCK"
-    assert _ctrl(novel.fake)["shifts"] == ["2026-11-29"]
+    assert novel.fake.val(e1, S.N_RESULT) == "auto:warn:gate2" and novel.fake.val(e1, S.N_VERDICT) == "HUMAN_REQUIRED"
+    assert run_novel.auto_publishable(e1)
+    assert "shifts" not in _ctrl(novel.fake)
 
 
 def test_bible_gate2_and_final_hold(novel, reviewer2_allowed):
     for h in (10, 12):
-        run(kst(2026, 11, 22, h, 44), Scripted([None, {"data": _flag()}]))
-    run(kst(2026, 11, 22, 14, 44), Scripted([None, {"data": _flag()}, {"data": _flag()}]))
+        run(kst(2026, 11, 22, h, 44), Scripted([None, {"data": _blk()}]))
+    run(kst(2026, 11, 22, 14, 44), Scripted([None, {"data": _blk()}, {"data": _blk()}]))
     bible = row(novel.fake, "N1-BIBLE")
     assert novel.fake.val(bible, S.N_STATE) == S.NS_HELD  # 바이블 최종 실패 = 보류 + T5 (게시일 없음)
     assert any("⚠️ N1-BIBLE 보류" in t for t in novel.tg.sent)
@@ -1243,11 +1280,11 @@ def test_zero_touch_logs_clean(novel, reviewer2_allowed, caplog):
     caplog.set_level(logging.DEBUG)
     add_canon_bible(novel.fake)
     for h in (10, 12):
-        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _flag()}]))
-    run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _flag()}, {"data": _flag()}]))
+        run(kst(2026, 11, 26, h, 44), Scripted([None, {"data": _blk()}]))
+    run(kst(2026, 11, 26, 14, 44), Scripted([None, {"data": _blk()}, {"data": _blk()}]))
     for secret in ("합성 문장", "표식-NB", "표식-NE", "표식-NR", DB12, novel.prompt_page, "휴재 안내"):
         assert secret not in caplog.text, secret
-    assert f"[Novel] v{run_novel.VERSION}" in caplog.text and run_novel.VERSION == "1.5.0"
+    assert f"[Novel] v{run_novel.VERSION}" in caplog.text and run_novel.VERSION == "1.6.0"
 
 
 def test_generation_collect_stops_leaves_fb_scheduled_rows_to_publisher(novel):
@@ -1443,3 +1480,33 @@ def test_sync_due_and_stops_skip_claimed_rows(glive):
     run_novel.sync_due(ctx)
     run_novel.collect_stops(ctx)
     assert novel.fake.val(e1, S.N_DUE) == "2026-11-28" and novel.fake.val(e1, S.N_STATE) == S.NS_APPROVED
+
+
+# ── DN2026_0126 R6-03 보강 ───────────────────────────────
+@pytest.mark.parametrize("over", [{"graphic_harm": None}, {"graphic_harm": "FAIL"}, {"meta_policy": "HIGH"},
+                                  {"meta_policy": None}, {"identifiability": "x"}])
+def test_missing_or_unknown_safety_values_block(over):
+    r = {**novel_fixtures.review(), **over}
+    if over.get("graphic_harm", "x") is None:
+        r.pop("graphic_harm")
+    assert run_novel.computed_verdict(r) == "BLOCK"
+    assert run_novel.computed_verdict({**novel_fixtures.review(), "meta_policy": "MED"}) == "HUMAN_REQUIRED"
+
+
+def test_warn_notice_failure_is_logged(novel, monkeypatch):
+    add_canon_bible(novel.fake)
+    monkeypatch.setattr(novel.tg, "post", lambda url, json=None, timeout=None: FakeResp(500, {"ok": False}))
+    log, _ = run(kst(2026, 11, 26, 10, 44), Scripted([None, {"data": {**novel_fixtures.review(), "identifiability": 1}}]))
+    assert "tg:warn_notice_failed" in log.codes
+    assert novel.fake.val(row(novel.fake, "N1-E01"), S.N_RESULT) == "auto:warn:gate1"
+
+
+def test_bible_non_blocking_rule_is_warn_canon(novel):
+    b = novel_fixtures.bible()
+    b["risk_notes"] = ["2026-11-29 오후 기준 점검"]  # R02 실제 날짜 = 경고(차단 아님)
+    errs = novel_rules.check_bible(b)
+    assert errs and not novel_policy.blocking(errs)
+    log, _ = run(kst(2026, 11, 22, 10, 44), Scripted([{"data": b}]))
+    bible = row(novel.fake, "N1-BIBLE")
+    assert novel.fake.val(bible, S.N_STATE) == S.NS_CANON
+    assert "N1-BIBLE:rules_warn" in log.codes
